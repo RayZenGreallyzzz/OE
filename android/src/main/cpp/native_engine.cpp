@@ -764,7 +764,8 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsse
  prepared.vertices.assign(ptr,ptr+count);
  env->ReleaseFloatArrayElements(data,ptr,JNI_ABORT);
  // Keep the previous GPU asset intact until replacement is ready.
- while(glGetError()!=GL_NO_ERROR){} // Drain earlier unrelated GL errors.
+ // Bounded error drain: never block indefinitely on a lost GL context.
+ for(int i=0;i<8&&glGetError()!=GL_NO_ERROR;i++){}
  uploadAsset(prepared);
  const GLenum error=glGetError();
  if(error!=GL_NO_ERROR||!prepared.gpu.vao||!prepared.gpu.buffer||prepared.gpu.count<=0){

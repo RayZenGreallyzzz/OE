@@ -2,6 +2,8 @@ package game.oe.editor;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.Intent;
+import android.net.Uri;
 import android.opengl.GLSurfaceView;
 import android.os.Bundle;
 import android.view.Gravity;
@@ -18,6 +20,11 @@ import android.graphics.Color;
 import android.graphics.Typeface;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.util.Map;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.nio.file.Files;
 import java.nio.charset.StandardCharsets;
 import org.json.JSONArray;
@@ -43,10 +50,15 @@ public class EditorActivity extends Activity {
     private static native String[] nativeLabels();
     private static native int[] nativeIds();
     private static native void nativeReset(boolean withDemo);
+    private static native boolean nativeRegisterAsset(String key, float[] vertices);
+    private static native int nativeAddImportedPlaced(String key, float x, float z, float yaw, float size);
+    private static final int PICK_GLB = 702;
+    private static final int MAX_ASSETS = 12;
 
     private EditorSurface surface;
     private TextView selectionText;
     private TextView statusText;
+    private volatile boolean importing = false;
     private final int gold = Color.rgb(240, 192, 113);
     private final int text = Color.rgb(234, 228, 218);
 
@@ -113,7 +125,7 @@ public class EditorActivity extends Activity {
         top.setOrientation(LinearLayout.VERTICAL);
 
         TextView title = new TextView(this);
-        title.setText("OE  /  ORVETRA ENGINE     •     NATIVE ANDROID 0.2");
+        title.setText("OE  /  ORVETRA ENGINE     •     NATIVE ANDROID 0.3");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         title.setTextSize(13);
@@ -127,6 +139,7 @@ public class EditorActivity extends Activity {
         addTool(tools, "+ Кузница", () -> addEntity(1));
         addTool(tools, "+ Аукцион", () -> addEntity(2));
         addTool(tools, "+ Фонарь", () -> addEntity(3));
+        addTool(tools, "Импорт GLB", this::pickGlb);
         addTool(tools, "Объекты", this::showObjects);
         addTool(tools, "Сохранить", this::saveScene);
         addTool(tools, "Загрузить", this::loadScene);
@@ -162,7 +175,7 @@ public class EditorActivity extends Activity {
         inspector.addView(otherRow);
 
         statusText = new TextView(this);
-        statusText.setText("Камера: 1 палец — вращение; 2 пальца — масштаб. При простое кадры не перерисовываются.");
+        statusText.setText("Камера: 1 палец — вращение; 2 пальца — масштаб. Импорт GLB: до 24 МБ / 90 тыс. треугольников, без текстур. При простое перерисовки нет.");
         statusText.setTextColor(Color.rgb(167, 177, 189));
         statusText.setTextSize(10);
         inspector.addView(statusText);
@@ -196,37 +209,129 @@ public class EditorActivity extends Activity {
             }
         });
     }
-    private void loadScene() {
-        try {
-            File file = saveFile();
-            if (!file.exists()) { message("Сначала сохрани сцену"); return; }
-            if (file.length() > 200000L) throw new IllegalArgumentException("Файл слишком большой");
-            String content = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
-            JSONObject document = new JSONObject(content);
-            if (document.optInt("version", -1) != 1) throw new IllegalArgumentException("Неверная версия формата");
-            JSONArray array = document.getJSONArray("items");
-            if (array.length() > 300) throw new IllegalArgumentException("Превышен лимит объектов");
-            final int count = array.length();
-            final int[] types = new int[count];
-            final float[] xs = new float[count], zs = new float[count], yaws = new float[count], sizes = new float[count];
-            for (int i = 0; i < count; i++) {
-                JSONObject obj = array.getJSONObject(i);
-                int type = obj.getInt("type");
-                double x = obj.getDouble("x"), z = obj.getDouble("z"), yaw = obj.getDouble("yaw"), size = obj.getDouble("size");
-                if (type < 0 || type > 5 || !Double.isFinite(x) || !Double.isFinite(z) ||
-                    !Double.isFinite(yaw) || !Double.isFinite(size) || Math.abs(x)>300 ||
-                    Math.abs(z)>300 || Math.abs(yaw)>36000 || size<.2 || size>8) {
-                    throw new IllegalArgumentException("Неверный объект №" + i);
-                }
-                types[i] = type; xs[i]=(float)x; zs[i]=(float)z; yaws[i]=(float)yaw; sizes[i]=(float)size;
+
+    private File modelDir() throws Exception {
+        File dir = new File(getFilesDir(), "models");
+        if (!dir.exists() && !dir.mkdirs()) throw new Exception("Нет доступа к папке моделей");
+        return dir;
+    }
+    private byte[] limitedRead(InputStream input) throws Exception {
+        try (InputStream stream = input; ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n=stream.read(buf))!=-1) {
+                if (out.size() + n > GlbReader.MAX_BYTES) throw new Exception("GLB больше 24 МБ");
+                out.write(buf,0,n);
             }
-            edit(() -> {
-                nativeReset(false);
-                for (int i = 0; i < count; i++)
-                    nativeAddPlaced(types[i],xs[i],zs[i],yaws[i],sizes[i]);
-            });
-            message("Сцена загружена · " + count + " объектов");
-        } catch (Exception e) { message("Ошибка загрузки: " + e.getMessage()); }
+            return out.toByteArray();
+        }
+    }
+    private void pickGlb() {
+        if(importing) { message("Импорт или загрузка уже выполняется"); return; }
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        try { startActivityForResult(intent, PICK_GLB); }
+        catch(Exception e) { message("Файловый менеджер недоступен: "+e.getMessage()); }
+    }
+    @Override protected void onActivityResult(int requestCode,int resultCode,Intent intent) {
+        super.onActivityResult(requestCode,resultCode,intent);
+        if(requestCode!=PICK_GLB || resultCode!=RESULT_OK || intent==null || intent.getData()==null)return;
+        final Uri uri=intent.getData();
+        if(importing)return;
+        importing=true;
+        message("Читаю модель GLB…");
+        new Thread(() -> {
+            try {
+                InputStream stream=getContentResolver().openInputStream(uri);
+                if(stream==null)throw new Exception("Не удалось открыть файл");
+                byte[] bytes=limitedRead(stream);
+                final String key=GlbReader.key(bytes);
+                final GlbReader.Result model=GlbReader.decode(bytes);
+                File destination=new File(modelDir(),key);
+                if(!destination.exists())Files.write(destination.toPath(),bytes);
+                surface.queueEvent(() -> {
+                    boolean success=nativeRegisterAsset(key,model.vertices);
+                    int id=success?nativeAddImportedPlaced(key,0,11,0,1):0;
+                    if(id!=0) {
+                        surface.requestRender();
+                        refreshSelected();
+                        message("GLB добавлен · "+model.triangles+" треугольников (без текстур)");
+                    } else message("Не удалось добавить GLB: лимит моделей или объектов");
+                    importing=false;
+                });
+            }catch(Exception e){ importing=false; message("Ошибка GLB: "+e.getMessage()); }
+        },"oe-glb-import").start();
+    }
+    private static final class SavedEntity {
+        int type;
+        float x,z,yaw,size;
+        String asset;
+    }
+    private static boolean validAsset(String name) {
+        return name!=null && name.matches("oe_[0-9a-f]{24}\\.glb");
+    }
+    private void loadScene() {
+        if(importing){message("Импорт или загрузка уже выполняется");return;}
+        importing=true;
+        new Thread(() -> {
+            try {
+                File file=saveFile();
+                if(!file.exists())throw new Exception("Сначала сохрани сцену");
+                if(file.length()>200000L)throw new Exception("Файл сцены слишком большой");
+                JSONObject document=new JSONObject(new String(Files.readAllBytes(file.toPath()),StandardCharsets.UTF_8));
+                if(document.optInt("version",-1)!=1)throw new Exception("Неверная версия сцены");
+                JSONArray arr=document.getJSONArray("items");
+                if(arr.length()>300)throw new Exception("Слишком много объектов");
+                SavedEntity[] items=new SavedEntity[arr.length()];
+                HashSet<String> assets=new HashSet<>();
+                for(int i=0;i<items.length;i++){
+                    JSONObject object=arr.getJSONObject(i);
+                    SavedEntity e=new SavedEntity();
+                    e.type=object.getInt("type");
+                    double x=object.getDouble("x"),z=object.getDouble("z");
+                    double yaw=object.getDouble("yaw"),size=object.getDouble("size");
+                    if(e.type<0||e.type>6||!Double.isFinite(x)||!Double.isFinite(z)||
+                       !Double.isFinite(yaw)||!Double.isFinite(size)||Math.abs(x)>300||
+                       Math.abs(z)>300||Math.abs(yaw)>36000||size<.2||size>8)
+                       throw new Exception("Неверный объект "+i);
+                    e.x=(float)x;e.z=(float)z;e.yaw=(float)yaw;e.size=(float)size;
+                    if(e.type==6){
+                        e.asset=object.getString("asset");
+                        if(!validAsset(e.asset))throw new Exception("Неверная ссылка модели");
+                        assets.add(e.asset);
+                    }
+                    items[i]=e;
+                }
+                if(assets.size()>MAX_ASSETS)throw new Exception("Слишком много разных GLB-моделей");
+                Map<String,GlbReader.Result> meshes=new HashMap<>();
+                for(String asset:assets){
+                    File model=new File(modelDir(),asset);
+                    if(!model.isFile()||model.length()>GlbReader.MAX_BYTES)throw new Exception("Модель отсутствует: "+asset);
+                    byte[] bytes=Files.readAllBytes(model.toPath());
+                    if(!GlbReader.key(bytes).equals(asset))throw new Exception("Модель повреждена: "+asset);
+                    meshes.put(asset,GlbReader.decode(bytes));
+                }
+                surface.queueEvent(() -> {
+                    nativeReset(false);
+                    for(Map.Entry<String,GlbReader.Result> entry:meshes.entrySet()){
+                        if(!nativeRegisterAsset(entry.getKey(),entry.getValue().vertices)){
+                            message("Не удалось загрузить GLB: "+entry.getKey());
+                            importing=false;
+                            return;
+                        }
+                    }
+                    for(SavedEntity e:items){
+                        if(e.type==6)nativeAddImportedPlaced(e.asset,e.x,e.z,e.yaw,e.size);
+                        else nativeAddPlaced(e.type,e.x,e.z,e.yaw,e.size);
+                    }
+                    surface.requestRender();
+                    refreshSelected();
+                    message("Сцена загружена · "+items.length+" объектов, GLB "+assets.size());
+                    importing=false;
+                });
+            }catch(Exception e){importing=false;message("Ошибка загрузки: "+e.getMessage());}
+        },"oe-scene-load").start();
     }
     private void askReset() {
         new AlertDialog.Builder(this).setTitle("Новая сцена")

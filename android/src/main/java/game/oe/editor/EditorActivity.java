@@ -26,6 +26,9 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -68,7 +71,12 @@ public class EditorActivity extends Activity {
     private static native boolean nativeRedo();
     private static native void nativeClearHistory();
     private static native int nativeDuplicateSelected();
-    private static native boolean nativeRegisterAsset(String key, float[] vertices);
+    private static native boolean nativeRegisterAsset(String key, float[] vertices, float centerY, float radius);
+    private static native String[] nativeLoadedAssetKeys();
+    private static native boolean nativeCanRegisterMore(int newUniqueAssets);
+    private static native void nativeDiscardUnusedAsset(String key);
+    private static native boolean nativeReplaceScene(int size, boolean demoRoads,
+            int[] kinds, float[] transforms, String[] modelKeys);
     private static native int nativeAddImportedPlaced(String key, float x, float z, float yaw, float size);
     private static final int PICK_GLB = 702;
     private static final int MAX_ASSETS = 12;
@@ -92,6 +100,7 @@ public class EditorActivity extends Activity {
         ui(() -> Toast.makeText(this, s, Toast.LENGTH_SHORT).show());
     }
     private void edit(Runnable work) {
+        if(importing) {message("Дождись завершения загрузки сцены");return;}
         surface.queueEvent(() -> {
             work.run();
             surface.requestRender();
@@ -147,7 +156,7 @@ public class EditorActivity extends Activity {
         top.setOrientation(LinearLayout.VERTICAL);
 
         TextView title = new TextView(this);
-        title.setText("OE  /  ORVETRA ENGINE     •     NATIVE ANDROID 0.6.2 · LOW POWER TEST");
+        title.setText("OE  /  ORVETRA ENGINE     •     NATIVE ANDROID 0.6.3 · GLB SAFETY TEST");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         title.setTextSize(13);
@@ -350,6 +359,7 @@ public class EditorActivity extends Activity {
     private File saveFile() { return new File(getFilesDir(), "oe_scene_v1.json"); }
     // AtomicFile preserves the last valid scene if Android stops the app during a write.
     private void saveScene() {
+        if(importing){message("Дождись завершения загрузки сцены");return;}
         surface.queueEvent(() -> {
             String json=nativeSceneSnapshot();
             AtomicFile atomic=new AtomicFile(saveFile());
@@ -402,19 +412,40 @@ public class EditorActivity extends Activity {
                 if(stream==null)throw new Exception("Не удалось открыть файл");
                 byte[] bytes=limitedRead(stream);
                 final String key=GlbReader.key(bytes);
-                final GlbReader.Result model=GlbReader.decode(bytes);
                 File destination=new File(modelDir(),key);
                 if(!destination.exists())Files.write(destination.toPath(),bytes);
+                // GPU asset lookup MUST run on the GL thread; do not decode a
+                // large file again when the content-addressed resource exists.
                 surface.queueEvent(() -> {
-                    boolean success=nativeRegisterAsset(key,model.vertices);
-                    importing=false;
-                    if(success) {
-                        surface.requestRender();
-                        ui(() -> enterPlaceMode(6, key));
-                        message("GLB прочитан: "+model.triangles+" треугольников. Теперь коснись карты.");
-                    } else message("Не удалось загрузить GLB: лимит уникальных моделей");
+                    if(Arrays.asList(nativeLoadedAssetKeys()).contains(key)){
+                        importing=false;
+                        ui(() -> enterPlaceMode(6,key));
+                        message("GLB уже загружена — использую модель из памяти");
+                    }else{
+                        new Thread(() -> {
+                            try{
+                                final GlbReader.Result model=GlbReader.decode(bytes);
+                                surface.queueEvent(() -> {
+                                    boolean success=nativeRegisterAsset(key,model.vertices,
+                                            model.boundCenterY,model.boundRadius);
+                                    importing=false;
+                                    if(success){
+                                        surface.requestRender();
+                                        ui(() -> enterPlaceMode(6,key));
+                                        message("GLB прочитан: "+model.triangles+" треугольников. Коснись карты.");
+                                    }else message("Не удалось загрузить GLB: память, лимит или GPU");
+                                });
+                            }catch(Exception e){
+                                importing=false;
+                                message("Ошибка GLB: "+e.getMessage());
+                            }
+                        },"oe-glb-decode").start();
+                    }
                 });
-            }catch(Exception e){ importing=false; message("Ошибка GLB: "+e.getMessage()); }
+            }catch(Exception e){
+                importing=false;
+                message("Ошибка GLB: "+e.getMessage());
+            }
         },"oe-glb-import").start();
     }
     private static final class SavedEntity {
@@ -428,84 +459,119 @@ public class EditorActivity extends Activity {
     private void loadScene() {
         if(importing){message("Импорт или загрузка уже выполняется");return;}
         importing=true;
-        new Thread(() -> {
-            try {
-                File file=saveFile();
-                ByteArrayOutputStream jsonBytes=new ByteArrayOutputStream();
-                try(InputStream in=new AtomicFile(file).openRead()){
-                    byte[] buffer=new byte[4096];
-                    int count;
-                    while((count=in.read(buffer))!=-1){
-                        if(jsonBytes.size()+count>200000)throw new Exception("Файл сцены слишком большой");
-                        jsonBytes.write(buffer,0,count);
-                    }
-                }catch(java.io.FileNotFoundException missing){throw new Exception("Сначала сохрани сцену");}
-                JSONObject document=new JSONObject(new String(jsonBytes.toByteArray(),StandardCharsets.UTF_8));
-                if(document.optInt("version",-1)!=1)throw new Exception("Неверная версия сцены");
-                final boolean demoRoads=document.optBoolean("demoRoads", false);
-                final int worldSize=document.optInt("worldSize",1024);
-                if(worldSize!=1024&&worldSize!=2048&&worldSize!=4096&&worldSize!=8192&&worldSize!=16384)
-                    throw new Exception("Неподдерживаемый размер карты");
-                JSONArray arr=document.getJSONArray("items");
-                if(arr.length()>300)throw new Exception("Слишком много объектов");
-                SavedEntity[] items=new SavedEntity[arr.length()];
-                HashSet<String> assets=new HashSet<>();
-                for(int i=0;i<items.length;i++){
-                    JSONObject object=arr.getJSONObject(i);
-                    SavedEntity e=new SavedEntity();
-                    e.type=object.getInt("type");
-                    double x=object.getDouble("x"),z=object.getDouble("z");
-                    double yaw=object.getDouble("yaw"),size=object.getDouble("size");
-                    if(e.type<0||e.type>6||!Double.isFinite(x)||!Double.isFinite(z)||
-                       !Double.isFinite(yaw)||!Double.isFinite(size)||
-                       Math.abs(z)>worldSize/2.0||Math.abs(x)>worldSize/2.0||Math.abs(yaw)>36000||size<.2||size>8)
-                       throw new Exception("Неверный объект "+i);
-                    e.x=(float)x;e.z=(float)z;e.yaw=(float)yaw;e.size=(float)size;
-                    if(e.type==6){
-                        e.asset=object.getString("asset");
-                        if(!validAsset(e.asset))throw new Exception("Неверная ссылка модели");
-                        assets.add(e.asset);
-                    }
-                    items[i]=e;
+        // Take a consistent snapshot of the registered GPU assets. The reader
+        // thread can skip expensive decode work for those immutable GLBs.
+        surface.queueEvent(() -> {
+            final HashSet<String> cached=new HashSet<>(Arrays.asList(nativeLoadedAssetKeys()));
+            new Thread(() -> readAndPrepareScene(cached),"oe-scene-load").start();
+        });
+    }
+    private void readAndPrepareScene(HashSet<String> cached) {
+        try {
+            File file=saveFile();
+            ByteArrayOutputStream jsonBytes=new ByteArrayOutputStream();
+            try(InputStream in=new AtomicFile(file).openRead()){
+                byte[] buffer=new byte[4096];
+                int count;
+                while((count=in.read(buffer))!=-1){
+                    if(jsonBytes.size()+count>200000)throw new Exception("Файл сцены слишком большой");
+                    jsonBytes.write(buffer,0,count);
                 }
-                if(assets.size()>MAX_ASSETS)throw new Exception("Слишком много разных GLB-моделей");
-                Map<String,GlbReader.Result> meshes=new HashMap<>();
-                for(String asset:assets){
-                    File model=new File(modelDir(),asset);
-                    if(!model.isFile()||model.length()>GlbReader.MAX_BYTES)throw new Exception("Модель отсутствует: "+asset);
-                    byte[] bytes=Files.readAllBytes(model.toPath());
-                    if(!GlbReader.key(bytes).equals(asset))throw new Exception("Модель повреждена: "+asset);
-                    meshes.put(asset,GlbReader.decode(bytes));
+            }catch(java.io.FileNotFoundException missing){
+                throw new Exception("Сначала сохрани сцену");
+            }
+            JSONObject document=new JSONObject(new String(jsonBytes.toByteArray(),StandardCharsets.UTF_8));
+            if(document.optInt("version",-1)!=1)throw new Exception("Неверная версия сцены");
+            final boolean demoRoads=document.optBoolean("demoRoads",false);
+            final int worldSize=document.optInt("worldSize",1024);
+            if(worldSize!=1024&&worldSize!=2048&&worldSize!=4096&&worldSize!=8192&&worldSize!=16384)
+                throw new Exception("Неподдерживаемый размер карты");
+            JSONArray arr=document.getJSONArray("items");
+            if(arr.length()>300)throw new Exception("Слишком много объектов");
+            SavedEntity[] items=new SavedEntity[arr.length()];
+            HashSet<String> assets=new HashSet<>();
+            int[] kinds=new int[arr.length()];
+            float[] transforms=new float[arr.length()*4];
+            String[] modelKeys=new String[arr.length()];
+            for(int i=0;i<items.length;i++){
+                JSONObject object=arr.getJSONObject(i);
+                SavedEntity e=new SavedEntity();
+                e.type=object.getInt("type");
+                double x=object.getDouble("x"),z=object.getDouble("z");
+                double yaw=object.getDouble("yaw"),size=object.getDouble("size");
+                if(e.type<0||e.type>6||!Double.isFinite(x)||!Double.isFinite(z)||
+                    !Double.isFinite(yaw)||!Double.isFinite(size)||
+                    Math.abs(z)>worldSize/2.0||Math.abs(x)>worldSize/2.0||
+                    Math.abs(yaw)>36000||size<.2||size>8)
+                    throw new Exception("Неверный объект "+i);
+                e.x=(float)x;e.z=(float)z;e.yaw=(float)yaw;e.size=(float)size;
+                if(e.type==6){
+                    e.asset=object.getString("asset");
+                    if(!validAsset(e.asset))throw new Exception("Неверная ссылка модели");
+                    assets.add(e.asset);
                 }
-                surface.queueEvent(() -> {
-                    nativeReset(false);
-                    if(!nativeSetWorldSize(worldSize)) {
-                        message("Не удалось восстановить размер карты");
-                        importing=false;
-                        return;
+                items[i]=e;
+                kinds[i]=e.type;
+                transforms[i*4]=e.x;
+                transforms[i*4+1]=e.z;
+                transforms[i*4+2]=e.yaw;
+                transforms[i*4+3]=e.size;
+                modelKeys[i]=e.asset;
+            }
+            if(assets.size()>MAX_ASSETS)throw new Exception("Слишком много разных GLB-моделей");
+            Map<String,GlbReader.Result> missing=new LinkedHashMap<>();
+            // Verify that each GLB still has a file on disk, but decode only
+            // resources not already resident in the renderer.
+            for(String asset:assets){
+                File model=new File(modelDir(),asset);
+                if(!model.isFile()||model.length()<=0||
+                   model.length()>GlbReader.MAX_BYTES)
+                    throw new Exception("Модель отсутствует или слишком большая: "+asset);
+                if(cached.contains(asset))continue;
+                byte[] bytes=Files.readAllBytes(model.toPath());
+                if(!GlbReader.key(bytes).equals(asset))
+                    throw new Exception("Модель повреждена: "+asset);
+                missing.put(asset,GlbReader.decode(bytes));
+            }
+            surface.queueEvent(() -> {
+                ArrayList<String> uploaded=new ArrayList<>();
+                boolean committed=false;
+                try {
+                    if(!nativeCanRegisterMore(missing.size()))
+                        throw new Exception("Недостаточно свободных слотов GLB (макс. 12)");
+                    for(Map.Entry<String,GlbReader.Result> entry:missing.entrySet()){
+                        GlbReader.Result mesh=entry.getValue();
+                        if(!nativeRegisterAsset(entry.getKey(),mesh.vertices,
+                                mesh.boundCenterY,mesh.boundRadius))
+                            throw new Exception("Ошибка загрузки GPU: "+entry.getKey());
+                        uploaded.add(entry.getKey());
                     }
-                    nativeSetDemoRoads(demoRoads);
-                    for(Map.Entry<String,GlbReader.Result> entry:meshes.entrySet()){
-                        if(!nativeRegisterAsset(entry.getKey(),entry.getValue().vertices)){
-                            message("Не удалось загрузить GLB: "+entry.getKey());
-                            importing=false;
-                            return;
-                        }
-                    }
-                    for(SavedEntity e:items){
-                        if(e.type==6)nativeAddImportedPlaced(e.asset,e.x,e.z,e.yaw,e.size);
-                        else nativeAddPlaced(e.type,e.x,e.z,e.yaw,e.size);
-                    }
+                    if(!nativeReplaceScene(worldSize,demoRoads,kinds,transforms,modelKeys))
+                        throw new Exception("Сцена не прошла полную проверку в движке");
+                    committed=true;
                     surface.requestRender();
                     refreshSelected();
-                    nativeClearHistory(); // loading a project starts a new history baseline
-                    message("Сцена загружена · "+items.length+" объектов, GLB "+assets.size());
+                    message("Сцена загружена · "+items.length+" объектов, GLB "+assets.size()+
+                            " (из памяти "+(assets.size()-missing.size())+")");
+                }catch(Exception e){
+                    message("Сцена НЕ изменена: "+e.getMessage());
+                }finally{
+                    if(!committed){
+                        // Roll back newly uploaded resources without touching
+                        // assets referenced by the currently open scene.
+                        for(String asset:uploaded)
+                            if(!asset.equals(placingGlb))nativeDiscardUnusedAsset(asset);
+                    }
                     importing=false;
-                });
-            }catch(Exception e){importing=false;message("Ошибка загрузки: "+e.getMessage());}
-        },"oe-scene-load").start();
+                }
+            });
+        }catch(Exception e){
+            importing=false;
+            message("Сцена НЕ изменена: "+e.getMessage());
+        }
     }
     private void askReset() {
+        if(importing){message("Дождись завершения загрузки сцены");return;}
         String[] choices={"Пустая карта — удалить ВСЕ объекты", "Восстановить демонстрационный город"};
         new AlertDialog.Builder(this).setTitle("Новая сцена OE")
             .setItems(choices,(dialog,option)->{
@@ -581,6 +647,7 @@ public class EditorActivity extends Activity {
             return (float)Math.hypot(e.getX(0)-e.getX(1),e.getY(0)-e.getY(1));
         }
         @Override public boolean onTouchEvent(MotionEvent e) {
+            if(importing)return true; // Prevent input changes during scene replacement.
             int action=e.getActionMasked();
             if(action==MotionEvent.ACTION_DOWN) {
                 downX=lastX=e.getX();downY=lastY=e.getY();multiTouch=false;lastPinch=0;

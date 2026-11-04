@@ -9,6 +9,8 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <unordered_map>
+#include <cstdint>
 
 namespace {
 constexpr float PI = 3.14159265358979323846f;
@@ -18,13 +20,17 @@ struct Vec3 {float x, y, z;};
 struct Vec4 {float x, y, z, w;};
 struct Mat4 {float m[16]{};};
 struct Mesh {GLuint vao=0, buffer=0; GLsizei count=0;};
-struct Entity {int id=0, type=0; float x=0, z=0, yaw=0, size=1;};
+struct Entity {int id=0, type=0; float x=0, z=0, yaw=0, size=1; std::string asset;};
 struct Color {float r,g,b;};
 struct Shader {
  GLuint program=0;
  GLint locMvp=-1, locModel=-1, locColor=-1, locLight=-1;
 };
+struct Asset { Mesh gpu; std::vector<float> vertices; };
 static Mesh gMeshes[3];
+static std::unordered_map<std::string,Asset> gAssets;
+static constexpr int MAX_ASSETS=12;
+static constexpr int MAX_IMPORTED_TRIANGLES=90000;
 static Shader gShader;
 static std::vector<Entity> gEntities;
 static int gNextId=1, gSelected=0, gWidth=1, gHeight=1;
@@ -98,6 +104,21 @@ std::vector<float> geometry(int kind){
  }
  return d;
 }
+void uploadAsset(Asset&asset){
+ const auto &v=asset.vertices;
+ if(v.empty())return;
+ Mesh &m=asset.gpu;
+ m.count=static_cast<GLsizei>(v.size()/9);
+ glGenVertexArrays(1,&m.vao);glBindVertexArray(m.vao);
+ glGenBuffers(1,&m.buffer);glBindBuffer(GL_ARRAY_BUFFER,m.buffer);
+ glBufferData(GL_ARRAY_BUFFER,static_cast<GLsizeiptr>(v.size()*sizeof(float)),v.data(),GL_STATIC_DRAW);
+ const GLsizei stride=9*sizeof(float);
+ for(int attrib=0;attrib<3;attrib++){
+   glEnableVertexAttribArray(attrib);
+   glVertexAttribPointer(attrib,3,GL_FLOAT,GL_FALSE,stride,reinterpret_cast<void*>(static_cast<uintptr_t>(attrib*3*sizeof(float))));
+ }
+ glBindVertexArray(0);
+}
 GLuint shader(GLenum kind,const char*src){
  GLuint s=glCreateShader(kind);glShaderSource(s,1,&src,nullptr);glCompileShader(s);
  GLint ok=GL_FALSE;glGetShaderiv(s,GL_COMPILE_STATUS,&ok);
@@ -108,22 +129,26 @@ void setupGL(){
  const char*vert=R"(#version 300 es
  layout(location=0) in vec3 aPos;
  layout(location=1) in vec3 aNormal;
+ layout(location=2) in vec3 aColor;
  uniform mat4 uMvp;
  uniform mat4 uModel;
  out vec3 vNormal;
+ out vec3 vColor;
  void main(){
    gl_Position=uMvp*vec4(aPos,1.0);
    vNormal=normalize(mat3(uModel)*aNormal);
+   vColor=aColor;
  })";
  const char*frag=R"(#version 300 es
  precision mediump float;
  in vec3 vNormal;
+ in vec3 vColor;
  uniform vec3 uColor;
  uniform float uHighlight;
  out vec4 fragColor;
  void main(){
    float sun=max(dot(normalize(vNormal),normalize(vec3(-.55,1.,.5))),0.);
-   vec3 color=uColor*(.52+.48*sun);
+   vec3 color=uColor*vColor*(.52+.48*sun);
    color=mix(color,vec3(.99,.72,.30),uHighlight*.30);
    fragColor=vec4(color,1.);
  })";
@@ -144,8 +169,11 @@ void setupGL(){
   glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)(d.size()*sizeof(float)),d.data(),GL_STATIC_DRAW);
   glEnableVertexAttribArray(0);glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,6*sizeof(float),nullptr);
   glEnableVertexAttribArray(1);glVertexAttribPointer(1,3,GL_FLOAT,GL_FALSE,6*sizeof(float),reinterpret_cast<void*>(3*sizeof(float)));
+  glDisableVertexAttribArray(2);
  }
+ for(auto &kv:gAssets)uploadAsset(kv.second);
  glBindVertexArray(0);
+ glVertexAttrib3f(2,1,1,1);
  glEnable(GL_DEPTH_TEST);
  glDisable(GL_CULL_FACE);
  glClearColor(.065f,.088f,.13f,1);
@@ -159,6 +187,18 @@ void draw(const Mat4&vp,int kind,Vec3 position,Vec3 dimensions,float yaw,Color c
  glUniform1f(gShader.locLight,selected?1.f:0.f);
  const Mesh &mesh=gMeshes[std::max(0,std::min(2,kind))];
  glBindVertexArray(mesh.vao);glDrawArrays(GL_TRIANGLES,0,mesh.count);
+}
+void drawImported(const Mat4&vp,const Entity&e){
+ auto it=gAssets.find(e.asset);
+ if(it==gAssets.end()||it->second.gpu.count==0)return;
+ const Mat4 model=mul(mul(translate({e.x,0,e.z}),rotateY(e.yaw*RAD)),scale({e.size,e.size,e.size}));
+ const Mat4 mvp=mul(vp,model);
+ glUniformMatrix4fv(gShader.locMvp,1,GL_FALSE,mvp.m);
+ glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
+ glUniform3f(gShader.locColor,1,1,1);
+ glUniform1f(gShader.locLight,e.id==gSelected?1.f:0.f);
+ const Mesh &m=it->second.gpu;
+ glBindVertexArray(m.vao);glDrawArrays(GL_TRIANGLES,0,m.count);
 }
 void part(const Mat4&vp,const Entity&e,int kind,float x,float y,float z,float sx,float sy,float sz,Color color){
  const float a=e.yaw*RAD,c=std::cos(a),s=std::sin(a),k=e.size;
@@ -198,6 +238,7 @@ void building(const Mat4&vp,const Entity&e){
  }
 }
 void drawEntity(const Mat4&vp,const Entity&e){
+ if(e.type==6){drawImported(vp,e);return;}
  switch(e.type){
  case 0:case 1:case 2:building(vp,e);break;
  case 3:
@@ -219,7 +260,7 @@ void drawEntity(const Mat4&vp,const Entity&e){
 }
 int add(int type,float x,float z,float yaw,float size){
  if(type<0||type>5||gEntities.size()>=MAX_ENTITIES)return 0;
- int id=gNextId++;gEntities.push_back({id,type,x,z,yaw,size});gSelected=id;return id;
+ int id=gNextId++;gEntities.push_back({id,type,x,z,yaw,size,""});gSelected=id;return id;
 }
 void reset(bool demo){
  gEntities.clear();gNextId=1;gSelected=0;
@@ -237,8 +278,8 @@ void reset(bool demo){
 }
 Entity* selected(){for(auto &e:gEntities)if(e.id==gSelected)return &e;return nullptr;}
 const char* nameFor(int type){
- const char* names[]={"Таверна","Кузница","Аукционный дом","Фонарь","Фонтан","Дерево"};
- return type>=0&&type<6?names[type]:"Объект";
+ const char* names[]={"Таверна","Кузница","Аукционный дом","Фонарь","Фонтан","Дерево","Модель GLB"};
+ return type>=0&&type<7?names[type]:"Объект";
 }
 } // namespace
 
@@ -270,8 +311,8 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePick(JNIEnv*,jcl
  const Mat4 vp=viewProjection();
  float depth=1e9f;int found=0;
  for(const auto&e:gEntities){
-  const float range=e.type<3?3.5f:2.0f;
-  const float h=e.type<3?5.8f:4.9f;
+  const float range=e.type<3||e.type==6?3.5f:2.0f;
+  const float h=e.type<3||e.type==6?6.f:4.9f;
   float left=1e9f,top=1e9f,right=-1e9f,bottom=-1e9f,minW=1e9f;
   int visible=0;
   for(float xx:{-range,range})for(float zz:{-range,range})for(float yy:{0.f,h}){
@@ -320,7 +361,9 @@ JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSceneSnapshot
  for(size_t i=0;i<gEntities.size();i++){
   const auto&e=gEntities[i];if(i)out<<",";
   out<<"{\"type\":"<<e.type<<",\"x\":"<<e.x<<",\"z\":"<<e.z
-     <<",\"yaw\":"<<e.yaw<<",\"size\":"<<e.size<<"}";
+     <<",\"yaw\":"<<e.yaw<<",\"size\":"<<e.size;
+  if(e.type==6)out<<",\"asset\":\""<<e.asset<<"\"";
+  out<<"}";
  }
  out<<"]}";return env->NewStringUTF(out.str().c_str());
 }
@@ -338,6 +381,41 @@ JNIEXPORT jintArray JNICALL Java_game_oe_editor_EditorActivity_nativeIds(JNIEnv*
  ids.reserve(gEntities.size());for(const auto&e:gEntities)ids.push_back(e.id);
  if(!ids.empty())env->SetIntArrayRegion(arr,0,(jsize)ids.size(),ids.data());
  return arr;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsset(JNIEnv*env,jclass,jstring key,jfloatArray data){
+ if(!key||!data)return JNI_FALSE;
+ const char*raw=env->GetStringUTFChars(key,nullptr);
+ if(!raw)return JNI_FALSE;
+ std::string assetKey(raw);env->ReleaseStringUTFChars(key,raw);
+ if(assetKey.size()!=31||assetKey.compare(0,3,"oe_")!=0||assetKey.substr(assetKey.size()-4)!=".glb")return JNI_FALSE;
+ for(size_t i=3;i<assetKey.size()-4;i++)if(!((assetKey[i]>='0'&&assetKey[i]<='9')||(assetKey[i]>='a'&&assetKey[i]<='f')))return JNI_FALSE;
+ jsize count=env->GetArrayLength(data);
+ if(count<=0||count>MAX_IMPORTED_TRIANGLES*27||count%27!=0)return JNI_FALSE;
+ if(gAssets.find(assetKey)==gAssets.end()&&gAssets.size()>=MAX_ASSETS)return JNI_FALSE;
+ jfloat*ptr=env->GetFloatArrayElements(data,nullptr);
+ if(!ptr)return JNI_FALSE;
+ bool valid=true;
+ for(jsize i=0;i<count;i++)if(!std::isfinite(ptr[i])||std::abs(ptr[i])>10000){valid=false;break;}
+ if(!valid){env->ReleaseFloatArrayElements(data,ptr,JNI_ABORT);return JNI_FALSE;}
+ Asset&a=gAssets[assetKey];
+ if(a.gpu.vao)glDeleteVertexArrays(1,&a.gpu.vao);
+ if(a.gpu.buffer)glDeleteBuffers(1,&a.gpu.buffer);
+ a.vertices.assign(ptr,ptr+count);
+ env->ReleaseFloatArrayElements(data,ptr,JNI_ABORT);
+ a.gpu={};uploadAsset(a);
+ return JNI_TRUE;
+}
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeAddImportedPlaced(JNIEnv*env,jclass,jstring key,jfloat x,jfloat z,jfloat yaw,jfloat size){
+ if(!key)return 0;
+ const char*raw=env->GetStringUTFChars(key,nullptr);
+ if(!raw)return 0;
+ std::string asset(raw);env->ReleaseStringUTFChars(key,raw);
+ if(gAssets.find(asset)==gAssets.end()||gEntities.size()>=MAX_ENTITIES||
+ !std::isfinite(x)||!std::isfinite(z)||!std::isfinite(yaw)||!std::isfinite(size)||
+ std::abs(x)>300||std::abs(z)>300||std::abs(yaw)>36000||size<.2f||size>8)return 0;
+ int id=gNextId++;
+ gEntities.push_back({id,6,x,z,yaw,size,asset});
+ gSelected=id;return id;
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeReset(JNIEnv*,jclass,jboolean withDemo){reset(withDemo==JNI_TRUE);}
 } // extern C

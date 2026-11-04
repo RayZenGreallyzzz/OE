@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#101521">
+  <title>OE — Orvetra Engine</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="src/engine.js" defer></script>
+  <script src="src/editor.js" defer></script>
+</head>
+<body>
+  <header class="toolbar">
+    <div class="brand"><strong>OE</strong><span>Orvetra Engine <small>ALPHA 0.1</small></span></div>
+    <div class="actions">
+      <button id="add-tavern" title="Добавить таверну">+ Таверна</button>
+      <button id="add-forge" title="Добавить кузницу">+ Кузница</button>
+      <button id="add-auction" title="Добавить аукцион">+ Аукцион</button>
+      <button id="save" title="Сохранить в браузере">Сохранить</button>
+      <button id="export" title="Скачать JSON">Экспорт</button>
+      <button id="import" title="Открыть JSON">Импорт</button>
+      <input id="import-file" type="file" accept=".json,application/json" hidden>
+      <button id="play" class="primary">▶ Играть</button>
+    </div>
+  </header>
+  <div class="workspace">
+    <aside class="panel hierarchy">
+      <h2>Иерархия сцены <span id="entity-count">0</span></h2>
+      <div class="small-help">Нажми на объект, чтобы изменить его.</div>
+      <div id="hierarchy-list" class="entity-list" aria-label="Объекты сцены"></div>
+      <div class="panel-bottom">
+        <button id="add-box">+ Куб</button>
+        <button id="add-roof">+ Крыша</button>
+        <button id="add-pillar">+ Колонна</button>
+      </div>
+    </aside>
+    <main class="viewport-wrap">
+      <div class="viewport-top"><span class="pill">3D VIEWPORT · WebGL2</span><span id="mode">РЕДАКТОР</span></div>
+      <canvas id="viewport" aria-label="Трёхмерный редактор сцены"></canvas>
+      <div id="render-error" class="render-error" hidden></div>
+      <div class="viewport-tip" id="tip">Проведи пальцем — вращать · колесо / два пальца — масштаб</div>
+      <div class="touch-controls" id="touch-controls" hidden>
+        <button type="button" data-key="w" aria-label="Вперёд">▲</button>
+        <div><button type="button" data-key="a" aria-label="Влево">◀</button><button type="button" data-key="s" aria-label="Назад">▼</button><button type="button" data-key="d" aria-label="Вправо">▶</button></div>
+      </div>
+    </main>
+    <aside class="panel inspector">
+      <h2>Инспектор</h2>
+      <div id="inspector-content"><p class="empty">Выбери объект на сцене.</p></div>
+      <section class="info-box">
+        <h3>Orvetra · демо-квартал</h3>
+        <p>Таверна, кузница, аукцион, площадь и свет. Это прототип архитектуры — не готовая графика Unreal.</p>
+      </section>
+      <button id="reset" class="secondary danger">Сбросить демо-сцену</button>
+    </aside>
+  </div>
+  <footer class="status"><span id="status">Загрузка движка…</span><span id="fps">— FPS</span><span>OE v0.1 · без библиотек и сборки</span></footer>
+</body>
+</html>

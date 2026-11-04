@@ -1,6 +1,8 @@
 package game.oe.editor;
 
 import android.app.Activity;
+import android.util.AtomicFile;
+import android.os.SystemClock;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.net.Uri;
@@ -39,6 +41,7 @@ public class EditorActivity extends Activity {
     private static native void nativeInit();
     private static native void nativeResize(int width, int height);
     private static native void nativeDraw();
+    private static native String nativeRenderStats();
     private static native void nativeOrbit(float dx, float dy, float zoom);
     private static native void nativePan(float dx, float dy);
     private static native void nativeFocusLocation(int index);
@@ -73,6 +76,8 @@ public class EditorActivity extends Activity {
     private EditorSurface surface;
     private TextView selectionText;
     private TextView statusText;
+    private TextView renderStatsText;
+    private volatile long statsUpdatedAt=0;
     private volatile boolean importing = false;
     private volatile int placingKind = -1;
     private volatile String placingGlb = null;
@@ -142,7 +147,7 @@ public class EditorActivity extends Activity {
         top.setOrientation(LinearLayout.VERTICAL);
 
         TextView title = new TextView(this);
-        title.setText("OE  /  ORVETRA ENGINE     •     NATIVE ANDROID 0.6 · EDITOR");
+        title.setText("OE  /  ORVETRA ENGINE     •     NATIVE ANDROID 0.6.1 · STABILITY TEST");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         title.setTextSize(13);
@@ -214,6 +219,12 @@ public class EditorActivity extends Activity {
         statusText.setTextColor(Color.rgb(167, 177, 189));
         statusText.setTextSize(10);
         inspector.addView(statusText);
+
+        renderStatsText = new TextView(this);
+        renderStatsText.setText("Рендер: данные появятся после первого кадра");
+        renderStatsText.setTextColor(Color.rgb(125, 195, 151));
+        renderStatsText.setTextSize(10);
+        inspector.addView(renderStatsText);
         FrameLayout.LayoutParams ip = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
         root.addView(inspector, ip);
 
@@ -337,18 +348,23 @@ public class EditorActivity extends Activity {
         });
     }
     private File saveFile() { return new File(getFilesDir(), "oe_scene_v1.json"); }
+    // AtomicFile preserves the last valid scene if Android stops the app during a write.
     private void saveScene() {
         surface.queueEvent(() -> {
-            String json = nativeSceneSnapshot();
-            try (FileOutputStream stream = new FileOutputStream(saveFile())) {
+            String json=nativeSceneSnapshot();
+            AtomicFile atomic=new AtomicFile(saveFile());
+            FileOutputStream stream=null;
+            try {
+                stream=atomic.startWrite();
                 stream.write(json.getBytes(StandardCharsets.UTF_8));
-                message("Сцена сохранена в памяти планшета");
-            } catch (Exception e) {
-                message("Ошибка сохранения: " + e.getMessage());
+                atomic.finishWrite(stream);
+                message("Сцена сохранена безопасно");
+            } catch(Exception e) {
+                if(stream!=null)atomic.failWrite(stream);
+                message("Ошибка сохранения: "+e.getMessage());
             }
         });
     }
-
     private File modelDir() throws Exception {
         File dir = new File(getFilesDir(), "models");
         if (!dir.exists() && !dir.mkdirs()) throw new Exception("Нет доступа к папке моделей");
@@ -415,9 +431,16 @@ public class EditorActivity extends Activity {
         new Thread(() -> {
             try {
                 File file=saveFile();
-                if(!file.exists())throw new Exception("Сначала сохрани сцену");
-                if(file.length()>200000L)throw new Exception("Файл сцены слишком большой");
-                JSONObject document=new JSONObject(new String(Files.readAllBytes(file.toPath()),StandardCharsets.UTF_8));
+                ByteArrayOutputStream jsonBytes=new ByteArrayOutputStream();
+                try(InputStream in=new AtomicFile(file).openRead()){
+                    byte[] buffer=new byte[4096];
+                    int count;
+                    while((count=in.read(buffer))!=-1){
+                        if(jsonBytes.size()+count>200000)throw new Exception("Файл сцены слишком большой");
+                        jsonBytes.write(buffer,0,count);
+                    }
+                }catch(java.io.FileNotFoundException missing){throw new Exception("Сначала сохрани сцену");}
+                JSONObject document=new JSONObject(new String(jsonBytes.toByteArray(),StandardCharsets.UTF_8));
                 if(document.optInt("version",-1)!=1)throw new Exception("Неверная версия сцены");
                 final boolean demoRoads=document.optBoolean("demoRoads", false);
                 final int worldSize=document.optInt("worldSize",1024);
@@ -519,6 +542,13 @@ public class EditorActivity extends Activity {
                 }
                 @Override public void onDrawFrame(javax.microedition.khronos.opengles.GL10 gl) {
                     nativeDraw();
+                    // Low-rate diagnostics only. No continuous rendering or FPS loop.
+                    long now=SystemClock.uptimeMillis();
+                    if(now-statsUpdatedAt>=900){
+                        statsUpdatedAt=now;
+                        final String stats=nativeRenderStats();
+                        ui(() -> {if(renderStatsText!=null)renderStatsText.setText(stats);});
+                    }
                 }
             });
             // Critical for low-power tablets: zero unnecessary redraws while idle.

@@ -16,6 +16,8 @@ import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.widget.EditText;
+import android.text.InputType;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import java.io.File;
@@ -40,6 +42,9 @@ public class EditorActivity extends Activity {
     private static native void nativeOrbit(float dx, float dy, float zoom);
     private static native void nativePan(float dx, float dy);
     private static native void nativeFocusLocation(int index);
+    private static native int nativeGetWorldSize();
+    private static native boolean nativeSetWorldSize(int size);
+    private static native boolean nativeJumpTo(float x, float z);
     private static native int nativePick(float x, float y);
     private static native int nativeAdd(int kind);
     private static native int nativePlaceAtScreen(int kind, float x, float y);
@@ -133,7 +138,7 @@ public class EditorActivity extends Activity {
         top.setOrientation(LinearLayout.VERTICAL);
 
         TextView title = new TextView(this);
-        title.setText("OE  /  ORVETRA ENGINE     •     NATIVE ANDROID 0.4 · WORLD 1024m");
+        title.setText("OE  /  ORVETRA ENGINE     •     NATIVE ANDROID 0.5 · OPEN WORLD");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         title.setTextSize(13);
@@ -148,6 +153,8 @@ public class EditorActivity extends Activity {
         addTool(tools, "+ Аукцион", () -> enterPlaceMode(2, null));
         addTool(tools, "+ Фонарь", () -> enterPlaceMode(3, null));
         addTool(tools, "Локации", this::showLocations);
+        addTool(tools, "Размер карты", this::showWorldSize);
+        addTool(tools, "Координаты", this::showCoordinateJump);
         addTool(tools, "Отмена", this::cancelPlace);
         addTool(tools, "Импорт GLB", this::pickGlb);
         addTool(tools, "Объекты", this::showObjects);
@@ -190,7 +197,7 @@ public class EditorActivity extends Activity {
         inspector.addView(editRow);
 
         statusText = new TextView(this);
-        statusText.setText("Карта 1024×1024 м · 5 локаций. Один палец — вращать; два — двигать и приближать; кнопка + и касание карты — поставить здание.");
+        statusText.setText("Размер мира: 1–16 км · 64-метровые участки. Для изменения открой «Размер карты», затем «Сохранить».");
         statusText.setTextColor(Color.rgb(167, 177, 189));
         statusText.setTextSize(10);
         inspector.addView(statusText);
@@ -209,7 +216,7 @@ public class EditorActivity extends Activity {
     private void cancelPlace() {
         placingKind = -1;
         placingGlb = null;
-        statusText.setText("Режим выбора · карта 1024×1024 м. Для перемещения используй два пальца.");
+        statusText.setText("Режим выбора · два пальца — перемещение; кнопки «Размер карты» и «Координаты» — большой мир.");
         message("Размещение отменено");
     }
     private void showLocations() {
@@ -224,6 +231,54 @@ public class EditorActivity extends Activity {
                 message("Переход: "+locations[index]);
             })
             .setNegativeButton("Закрыть", null).show();
+    }
+    private void showWorldSize() {
+        final int[] sizes={1024,2048,4096,8192,16384};
+        final String[] titles={"1 × 1 км  (1 км²)","2 × 2 км  (4 км²)",
+                "4 × 4 км  (16 км²)","8 × 8 км  (64 км²)","16 × 16 км  (256 км²)"};
+        surface.queueEvent(() -> {
+            final int current=nativeGetWorldSize();
+            int selected=0;
+            for(int i=0;i<sizes.length;i++)if(sizes[i]==current)selected=i;
+            final int checked=selected;
+            ui(() -> new AlertDialog.Builder(this).setTitle("Размер мира OE")
+                .setSingleChoiceItems(titles,checked,(dialog,which)->{
+                    final int size=sizes[which];
+                    edit(() -> {
+                        if(nativeSetWorldSize(size)) {
+                            message("Карта теперь "+(size/1024)+" × "+(size/1024)+" км. Нажми «Сохранить».");
+                            ui(() -> statusText.setText("Мир "+(size/1024)+" × "+(size/1024)+" км · 64 м на участок · «Координаты» — переход по карте"));
+                        } else message("Нельзя уменьшить карту: за новыми границами есть объекты.");
+                    });
+                    dialog.dismiss();
+                })
+                .setNegativeButton("Отмена",null).show());
+        });
+    }
+    private void showCoordinateJump() {
+        LinearLayout fields=new LinearLayout(this);
+        fields.setOrientation(LinearLayout.VERTICAL);
+        fields.setPadding(dp(22),dp(8),dp(22),dp(4));
+        EditText x=new EditText(this), z=new EditText(this);
+        int mode=InputType.TYPE_CLASS_NUMBER|InputType.TYPE_NUMBER_FLAG_DECIMAL|InputType.TYPE_NUMBER_FLAG_SIGNED;
+        x.setInputType(mode);z.setInputType(mode);
+        x.setSingleLine(true);z.setSingleLine(true);
+        x.setHint("X (метры, например 2000)");z.setHint("Z (метры, например -1500)");
+        fields.addView(x);fields.addView(z);
+        new AlertDialog.Builder(this).setTitle("Перейти к координатам")
+            .setMessage("Центр карты: X=0, Z=0. Координаты должны быть внутри выбранного мира.")
+            .setView(fields)
+            .setPositiveButton("Перейти",(d,which)->{
+                try {
+                    final float px=Float.parseFloat(x.getText().toString().trim());
+                    final float pz=Float.parseFloat(z.getText().toString().trim());
+                    edit(() -> {
+                        if(nativeJumpTo(px,pz))message("Камера перемещена: X "+px+", Z "+pz);
+                        else message("Точка за границами карты. Увеличь мир или введи другие координаты.");
+                    });
+                }catch(Exception error){message("Укажи числовые значения X и Z.");}
+            })
+            .setNegativeButton("Отмена",null).show();
     }
     private void askDeleteSelected() {
         if(placingKind != -1)cancelPlace();
@@ -330,6 +385,9 @@ public class EditorActivity extends Activity {
                 JSONObject document=new JSONObject(new String(Files.readAllBytes(file.toPath()),StandardCharsets.UTF_8));
                 if(document.optInt("version",-1)!=1)throw new Exception("Неверная версия сцены");
                 final boolean demoRoads=document.optBoolean("demoRoads", false);
+                final int worldSize=document.optInt("worldSize",1024);
+                if(worldSize!=1024&&worldSize!=2048&&worldSize!=4096&&worldSize!=8192&&worldSize!=16384)
+                    throw new Exception("Неподдерживаемый размер карты");
                 JSONArray arr=document.getJSONArray("items");
                 if(arr.length()>300)throw new Exception("Слишком много объектов");
                 SavedEntity[] items=new SavedEntity[arr.length()];
@@ -342,7 +400,7 @@ public class EditorActivity extends Activity {
                     double yaw=object.getDouble("yaw"),size=object.getDouble("size");
                     if(e.type<0||e.type>6||!Double.isFinite(x)||!Double.isFinite(z)||
                        !Double.isFinite(yaw)||!Double.isFinite(size)||Math.abs(x)>300||
-                       Math.abs(z)>300||Math.abs(yaw)>36000||size<.2||size>8)
+                       Math.abs(z)>worldSize/2.0||Math.abs(x)>worldSize/2.0||Math.abs(yaw)>36000||size<.2||size>8)
                        throw new Exception("Неверный объект "+i);
                     e.x=(float)x;e.z=(float)z;e.yaw=(float)yaw;e.size=(float)size;
                     if(e.type==6){
@@ -363,6 +421,11 @@ public class EditorActivity extends Activity {
                 }
                 surface.queueEvent(() -> {
                     nativeReset(false);
+                    if(!nativeSetWorldSize(worldSize)) {
+                        message("Не удалось восстановить размер карты");
+                        importing=false;
+                        return;
+                    }
                     nativeSetDemoRoads(demoRoads);
                     for(Map.Entry<String,GlbReader.Result> entry:meshes.entrySet()){
                         if(!nativeRegisterAsset(entry.getKey(),entry.getValue().vertices)){

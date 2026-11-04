@@ -38,8 +38,12 @@ public class EditorActivity extends Activity {
     private static native void nativeResize(int width, int height);
     private static native void nativeDraw();
     private static native void nativeOrbit(float dx, float dy, float zoom);
+    private static native void nativePan(float dx, float dy);
+    private static native void nativeFocusLocation(int index);
     private static native int nativePick(float x, float y);
     private static native int nativeAdd(int kind);
+    private static native int nativePlaceAtScreen(int kind, float x, float y);
+    private static native int nativePlaceImportedAtScreen(String key, float x, float y);
     private static native int nativeAddPlaced(int kind, float x, float z, float yaw, float scale);
     private static native void nativeSelect(int id);
     private static native void nativeNudge(float dx, float dz);
@@ -50,6 +54,8 @@ public class EditorActivity extends Activity {
     private static native String[] nativeLabels();
     private static native int[] nativeIds();
     private static native void nativeReset(boolean withDemo);
+    private static native void nativeSetDemoRoads(boolean enabled);
+    private static native boolean nativeDeleteSelected();
     private static native boolean nativeRegisterAsset(String key, float[] vertices);
     private static native int nativeAddImportedPlaced(String key, float x, float z, float yaw, float size);
     private static final int PICK_GLB = 702;
@@ -59,6 +65,8 @@ public class EditorActivity extends Activity {
     private TextView selectionText;
     private TextView statusText;
     private volatile boolean importing = false;
+    private volatile int placingKind = -1;
+    private volatile String placingGlb = null;
     private final int gold = Color.rgb(240, 192, 113);
     private final int text = Color.rgb(234, 228, 218);
 
@@ -125,7 +133,7 @@ public class EditorActivity extends Activity {
         top.setOrientation(LinearLayout.VERTICAL);
 
         TextView title = new TextView(this);
-        title.setText("OE  /  ORVETRA ENGINE     •     NATIVE ANDROID 0.3");
+        title.setText("OE  /  ORVETRA ENGINE     •     NATIVE ANDROID 0.4 · WORLD 1024m");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         title.setTextSize(13);
@@ -135,10 +143,12 @@ public class EditorActivity extends Activity {
         HorizontalScrollView scroll = new HorizontalScrollView(this);
         scroll.setHorizontalScrollBarEnabled(false);
         LinearLayout tools = row();
-        addTool(tools, "+ Таверна", () -> addEntity(0));
-        addTool(tools, "+ Кузница", () -> addEntity(1));
-        addTool(tools, "+ Аукцион", () -> addEntity(2));
-        addTool(tools, "+ Фонарь", () -> addEntity(3));
+        addTool(tools, "+ Таверна", () -> enterPlaceMode(0, null));
+        addTool(tools, "+ Кузница", () -> enterPlaceMode(1, null));
+        addTool(tools, "+ Аукцион", () -> enterPlaceMode(2, null));
+        addTool(tools, "+ Фонарь", () -> enterPlaceMode(3, null));
+        addTool(tools, "Локации", this::showLocations);
+        addTool(tools, "Отмена", this::cancelPlace);
         addTool(tools, "Импорт GLB", this::pickGlb);
         addTool(tools, "Объекты", this::showObjects);
         addTool(tools, "Сохранить", this::saveScene);
@@ -174,8 +184,13 @@ public class EditorActivity extends Activity {
         addControl(otherRow, "+ Размер", () -> edit(() -> nativeScale(1.10f)));
         inspector.addView(otherRow);
 
+        LinearLayout editRow = row();
+        addControl(editRow, "🗑 Удалить выбранное", this::askDeleteSelected);
+        addControl(editRow, "Локации карты", this::showLocations);
+        inspector.addView(editRow);
+
         statusText = new TextView(this);
-        statusText.setText("Камера: 1 палец — вращение; 2 пальца — масштаб. Импорт GLB: до 24 МБ / 90 тыс. треугольников, без текстур. При простое перерисовки нет.");
+        statusText.setText("Карта 1024×1024 м · 5 локаций. Один палец — вращать; два — двигать и приближать; кнопка + и касание карты — поставить здание.");
         statusText.setTextColor(Color.rgb(167, 177, 189));
         statusText.setTextSize(10);
         inspector.addView(statusText);
@@ -184,8 +199,42 @@ public class EditorActivity extends Activity {
 
         setContentView(root);
     }
-    private void addEntity(int kind) {
-        edit(() -> nativeAdd(kind));
+    private void enterPlaceMode(int kind, String asset) {
+        if(importing) { message("Сначала дождись завершения импорта"); return; }
+        placingKind = kind;
+        placingGlb = asset;
+        statusText.setText("РАЗМЕЩЕНИЕ: коснись свободной земли, чтобы поставить объект. Для отмены нажми «Отмена».");
+        message("Коснись места на карте для размещения");
+    }
+    private void cancelPlace() {
+        placingKind = -1;
+        placingGlb = null;
+        statusText.setText("Режим выбора · карта 1024×1024 м. Для перемещения используй два пальца.");
+        message("Размещение отменено");
+    }
+    private void showLocations() {
+        final String[] locations = {
+            "🏰 Город · центр", "🌲 Волшебный лес · восток",
+            "🗿 Древние руины · запад", "🕯 Катакомбы · север", "🌾 Дикие земли · юг"
+        };
+        new AlertDialog.Builder(this).setTitle("Локации карты · 1024×1024 м")
+            .setItems(locations, (d, index) -> {
+                cancelPlace();
+                edit(() -> nativeFocusLocation(index));
+                message("Переход: "+locations[index]);
+            })
+            .setNegativeButton("Закрыть", null).show();
+    }
+    private void askDeleteSelected() {
+        if(placingKind != -1)cancelPlace();
+        new AlertDialog.Builder(this).setTitle("Удалить объект?")
+            .setMessage("Будет удалён только выбранный объект. Изменение можно сохранить после удаления.")
+            .setPositiveButton("Удалить", (d, which) ->
+                edit(() -> {
+                    if(nativeDeleteSelected())message("Объект удалён");
+                    else message("Сначала выбери объект касанием или через «Объекты»");
+                }))
+            .setNegativeButton("Отмена", null).show();
     }
     private void showObjects() {
         surface.queueEvent(() -> {
@@ -252,13 +301,12 @@ public class EditorActivity extends Activity {
                 if(!destination.exists())Files.write(destination.toPath(),bytes);
                 surface.queueEvent(() -> {
                     boolean success=nativeRegisterAsset(key,model.vertices);
-                    int id=success?nativeAddImportedPlaced(key,0,11,0,1):0;
-                    if(id!=0) {
-                        surface.requestRender();
-                        refreshSelected();
-                        message("GLB добавлен · "+model.triangles+" треугольников (без текстур)");
-                    } else message("Не удалось добавить GLB: лимит моделей или объектов");
                     importing=false;
+                    if(success) {
+                        surface.requestRender();
+                        ui(() -> enterPlaceMode(6, key));
+                        message("GLB прочитан: "+model.triangles+" треугольников. Теперь коснись карты.");
+                    } else message("Не удалось загрузить GLB: лимит уникальных моделей");
                 });
             }catch(Exception e){ importing=false; message("Ошибка GLB: "+e.getMessage()); }
         },"oe-glb-import").start();
@@ -281,6 +329,7 @@ public class EditorActivity extends Activity {
                 if(file.length()>200000L)throw new Exception("Файл сцены слишком большой");
                 JSONObject document=new JSONObject(new String(Files.readAllBytes(file.toPath()),StandardCharsets.UTF_8));
                 if(document.optInt("version",-1)!=1)throw new Exception("Неверная версия сцены");
+                final boolean demoRoads=document.optBoolean("demoRoads", false);
                 JSONArray arr=document.getJSONArray("items");
                 if(arr.length()>300)throw new Exception("Слишком много объектов");
                 SavedEntity[] items=new SavedEntity[arr.length()];
@@ -314,6 +363,7 @@ public class EditorActivity extends Activity {
                 }
                 surface.queueEvent(() -> {
                     nativeReset(false);
+                    nativeSetDemoRoads(demoRoads);
                     for(Map.Entry<String,GlbReader.Result> entry:meshes.entrySet()){
                         if(!nativeRegisterAsset(entry.getKey(),entry.getValue().vertices)){
                             message("Не удалось загрузить GLB: "+entry.getKey());
@@ -334,16 +384,26 @@ public class EditorActivity extends Activity {
         },"oe-scene-load").start();
     }
     private void askReset() {
-        new AlertDialog.Builder(this).setTitle("Новая сцена")
-            .setMessage("Вернуть первоначальный квартал? Сначала сохрани изменения.")
-            .setPositiveButton("Сбросить", (d, w) -> edit(() -> nativeReset(true)))
-            .setNegativeButton("Отмена", null).show();
+        String[] choices={"Пустая карта — удалить ВСЕ объекты", "Восстановить демонстрационный город"};
+        new AlertDialog.Builder(this).setTitle("Новая сцена OE")
+            .setItems(choices,(dialog,option)->{
+                boolean demo=(option==1);
+                new AlertDialog.Builder(this).setTitle(demo?"Загрузить демо?":"Очистить карту?")
+                    .setMessage("Все текущие несохранённые объекты исчезнут. Ранее сохранённый файл останется доступен через «Загрузить».")
+                    .setPositiveButton(demo?"Загрузить":"Очистить",(confirm,which)->{
+                        cancelPlace();
+                        edit(()->nativeReset(demo));
+                        message(demo?"Демонстрационный квартал восстановлен":"Пустая карта: все объекты удалены");
+                    })
+                    .setNegativeButton("Отмена",null).show();
+            })
+            .setNegativeButton("Отмена",null).show();
     }
     @Override protected void onResume() { super.onResume(); if (surface != null) surface.onResume(); }
     @Override protected void onPause() { if (surface != null) surface.onPause(); super.onPause(); }
 
     private final class EditorSurface extends GLSurfaceView {
-        private float lastX, lastY, downX, downY, lastPinch;
+        private float lastX, lastY, downX, downY, lastPinch, lastMidX, lastMidY;
         private boolean multiTouch = false;
         EditorSurface() {
             super(EditorActivity.this);
@@ -376,17 +436,23 @@ public class EditorActivity extends Activity {
             }
             if(action==MotionEvent.ACTION_POINTER_DOWN) {
                 multiTouch=true;
-                if(e.getPointerCount()>=2)lastPinch=pinch(e);
+                if(e.getPointerCount()>=2){
+                    lastPinch=pinch(e);
+                    lastMidX=(e.getX(0)+e.getX(1))*.5f;
+                    lastMidY=(e.getY(0)+e.getY(1))*.5f;
+                }
                 return true;
             }
             if(action==MotionEvent.ACTION_MOVE) {
                 if(e.getPointerCount()>=2) {
                     float p=pinch(e);
-                    if(lastPinch>1 && p>1) {
-                        final float zoom=Math.max(.7f,Math.min(1.3f,lastPinch/p));
-                        queueEvent(() -> {nativeOrbit(0,0,zoom);requestRender();});
-                    }
-                    lastPinch=p;
+                    final float midX=(e.getX(0)+e.getX(1))*.5f;
+                    final float midY=(e.getY(0)+e.getY(1))*.5f;
+                    final float dxMid=midX-lastMidX,dyMid=midY-lastMidY;
+                    final float zoom=(lastPinch>1 && p>1)?Math.max(.7f,Math.min(1.3f,lastPinch/p)):1f;
+                    if(zoom!=1f||dxMid!=0||dyMid!=0)
+                        queueEvent(() -> {nativePan(dxMid,dyMid);nativeOrbit(0,0,zoom);requestRender();});
+                    lastPinch=p;lastMidX=midX;lastMidY=midY;
                 } else if(!multiTouch) {
                     float x=e.getX(),y=e.getY();
                     final float dx=x-lastX,dy=y-lastY;
@@ -399,7 +465,21 @@ public class EditorActivity extends Activity {
             if(action==MotionEvent.ACTION_UP) {
                 if(!multiTouch && Math.hypot(e.getX()-downX,e.getY()-downY)<dp(8)) {
                     final float x=e.getX(),y=e.getY();
-                    queueEvent(() -> {nativeSelect(nativePick(x,y));requestRender();refreshSelected();});
+                    final int kind=placingKind;
+                    final String asset=placingGlb;
+                    if(kind>=0) {
+                        queueEvent(() -> {
+                            int id=kind==6?nativePlaceImportedAtScreen(asset,x,y):nativePlaceAtScreen(kind,x,y);
+                            if(id>0){
+                                placingKind=-1;placingGlb=null;
+                                ui(() -> statusText.setText("Объект размещён · для следующего используй + в панели."));
+                                message("Объект добавлен на карту");
+                            } else message("Место занято или вне карты — коснись свободного участка");
+                            requestRender();refreshSelected();
+                        });
+                    } else {
+                        queueEvent(() -> {nativeSelect(nativePick(x,y));requestRender();refreshSelected();});
+                    }
                 }
                 multiTouch=false;
                 return true;

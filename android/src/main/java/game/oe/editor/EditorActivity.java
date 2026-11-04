@@ -224,7 +224,7 @@ public class EditorActivity extends Activity {
             "🏰 Город · центр", "🌲 Волшебный лес · восток",
             "🗿 Древние руины · запад", "🕯 Катакомбы · север", "🌾 Дикие земли · юг"
         };
-        new AlertDialog.Builder(this).setTitle("Локации карты · 1024×1024 м")
+        new AlertDialog.Builder(this).setTitle("Локации мира OE")
             .setItems(locations, (d, index) -> {
                 cancelPlace();
                 edit(() -> nativeFocusLocation(index));
@@ -399,7 +399,7 @@ public class EditorActivity extends Activity {
                     double x=object.getDouble("x"),z=object.getDouble("z");
                     double yaw=object.getDouble("yaw"),size=object.getDouble("size");
                     if(e.type<0||e.type>6||!Double.isFinite(x)||!Double.isFinite(z)||
-                       !Double.isFinite(yaw)||!Double.isFinite(size)||Math.abs(x)>300||
+                       !Double.isFinite(yaw)||!Double.isFinite(size)||
                        Math.abs(z)>worldSize/2.0||Math.abs(x)>worldSize/2.0||Math.abs(yaw)>36000||size<.2||size>8)
                        throw new Exception("Неверный объект "+i);
                     e.x=(float)x;e.z=(float)z;e.yaw=(float)yaw;e.size=(float)size;

@@ -39,6 +39,42 @@ static Vec3 gTarget{0,1.2f,1.3f};
 static bool gSceneInitialized=false, gDemoRoads=false;
 constexpr float WORLD_TILE=64.0f;
 static int gWorldSize=1024; // Set in app to 1024/2048/4096/8192/16384 meters.
+// Bounded snapshots keep undo predictable on RAM-constrained Android devices.
+struct SceneSnapshot {
+ std::vector<Entity> entities;
+ int nextId=1, selected=0, worldSize=1024;
+ bool demoRoads=false;
+ Vec3 target{0,1.2f,1.3f};
+ float cameraDistance=28.f;
+};
+static std::vector<SceneSnapshot> gUndo,gRedo;
+static bool gSuspendHistory=false;
+static constexpr size_t HISTORY_LIMIT=40;
+SceneSnapshot captureScene(){return {gEntities,gNextId,gSelected,gWorldSize,gDemoRoads,gTarget,gDistance};}
+void restoreScene(const SceneSnapshot&s){
+ gEntities=s.entities;gNextId=s.nextId;gSelected=s.selected;gWorldSize=s.worldSize;
+ gDemoRoads=s.demoRoads;gTarget=s.target;gDistance=s.cameraDistance;gSceneInitialized=true;
+}
+void pushBounded(std::vector<SceneSnapshot>&stack,SceneSnapshot value){
+ if(stack.size()>=HISTORY_LIMIT)stack.erase(stack.begin());
+ stack.push_back(std::move(value));
+}
+void recordEdit(){
+ if(!gSceneInitialized||gSuspendHistory)return;
+ pushBounded(gUndo,captureScene());gRedo.clear();
+}
+bool undoEdit(){
+ if(gUndo.empty())return false;
+ pushBounded(gRedo,captureScene());
+ SceneSnapshot snapshot=std::move(gUndo.back());gUndo.pop_back();
+ restoreScene(snapshot);return true;
+}
+bool redoEdit(){
+ if(gRedo.empty())return false;
+ pushBounded(gUndo,captureScene());
+ SceneSnapshot snapshot=std::move(gRedo.back());gRedo.pop_back();
+ restoreScene(snapshot);return true;
+}
 float worldHalf(){return static_cast<float>(gWorldSize)*.5f;}
 bool allowedWorldSize(int size){
  return size==1024||size==2048||size==4096||size==8192||size==16384;
@@ -324,9 +360,13 @@ void drawEntity(const Mat4&vp,const Entity&e){
 }
 int add(int type,float x,float z,float yaw,float size){
  if(type<0||type>5||gEntities.size()>=MAX_ENTITIES)return 0;
+ recordEdit();
  int id=gNextId++;gEntities.push_back({id,type,x,z,yaw,size,""});gSelected=id;return id;
 }
 void reset(bool demo){
+ recordEdit(); // demo generation is a single undoable change
+ const bool wasMuted=gSuspendHistory;
+ gSuspendHistory=true;
  gEntities.clear();gNextId=1;gSelected=0;
  gSceneInitialized=true;gDemoRoads=demo;
  gTarget={0,1.2f,1.3f};gDistance=28.f;
@@ -341,6 +381,7 @@ void reset(bool demo){
   add(5,11,8,0,1.2f);
   gSelected=0;
  }
+ gSuspendHistory=wasMuted;
 }
 Entity* selected(){for(auto &e:gEntities)if(e.id==gSelected)return &e;return nullptr;}
 const char* nameFor(int type){
@@ -390,6 +431,8 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeSetWorldSize
  float half=static_cast<float>(newSize)*.5f;
  // Never silently hide buildings when shrinking the world.
  for(const auto&e:gEntities)if(std::abs(e.x)>half-1.f||std::abs(e.z)>half-1.f)return JNI_FALSE;
+ if(gWorldSize==newSize)return JNI_TRUE;
+ recordEdit();
  gWorldSize=newSize;
  gTarget.x=clampf(gTarget.x,-half+4.f,half-4.f);
  gTarget.z=clampf(gTarget.z,-half+4.f,half-4.f);
@@ -449,6 +492,7 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePlaceImportedAtS
  if(!raw)return 0;
  std::string asset(raw);env->ReleaseStringUTFChars(key,raw);
  if(gAssets.find(asset)==gAssets.end()||gEntities.size()>=MAX_ENTITIES)return 0;
+ recordEdit();
  int id=gNextId++;gEntities.push_back({id,6,x,z,0,1,asset});gSelected=id;return id;
 }
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeAddPlaced(JNIEnv*,jclass,jint type,jfloat x,jfloat z,jfloat yaw,jfloat size){
@@ -462,19 +506,32 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeSelect(JNIEnv*,j
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeDeleteSelected(JNIEnv*,jclass){
  auto it=std::find_if(gEntities.begin(),gEntities.end(),[](const Entity&e){return e.id==gSelected;});
  if(it==gEntities.end())return JNI_FALSE;
- gEntities.erase(it);gSelected=0;return JNI_TRUE;
+ recordEdit();gEntities.erase(it);gSelected=0;return JNI_TRUE;
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeSetDemoRoads(JNIEnv*,jclass,jboolean enabled){
+ if(gDemoRoads!=(enabled==JNI_TRUE))recordEdit();
  gDemoRoads=(enabled==JNI_TRUE);
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeNudge(JNIEnv*,jclass,jfloat x,jfloat z){
- if(Entity*e=selected()){e->x=clampf(e->x+x,-worldHalf(),worldHalf());e->z=clampf(e->z+z,-worldHalf(),worldHalf());}
+ if(!std::isfinite(x)||!std::isfinite(z))return;
+ if(Entity*e=selected()){
+  const float nx=clampf(e->x+x,-worldHalf(),worldHalf());
+  const float nz=clampf(e->z+z,-worldHalf(),worldHalf());
+  if(nx==e->x&&nz==e->z)return;
+  recordEdit();e->x=nx;e->z=nz;
+ }
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeRotate(JNIEnv*,jclass,jfloat deg){
- if(Entity*e=selected())e->yaw=std::fmod(e->yaw+deg,360.f);
+ if(!std::isfinite(deg)||deg==0)return;
+ if(Entity*e=selected()){recordEdit();e->yaw=std::fmod(e->yaw+deg,360.f);}
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeScale(JNIEnv*,jclass,jfloat factor){
- if(Entity*e=selected())e->size=clampf(e->size*factor,.2f,8);
+ if(!std::isfinite(factor)||factor<=0)return;
+ if(Entity*e=selected()){
+  const float next=clampf(e->size*factor,.2f,8);
+  if(next==e->size)return;
+  recordEdit();e->size=next;
+ }
 }
 JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSelectedInfo(JNIEnv*env,jclass){
  Entity*e=selected();if(!e)return env->NewStringUTF("Выбери здание касанием или через список «Объекты»");
@@ -539,9 +596,33 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeAddImportedPlace
  if(gAssets.find(asset)==gAssets.end()||gEntities.size()>=MAX_ENTITIES||
  !std::isfinite(x)||!std::isfinite(z)||!std::isfinite(yaw)||!std::isfinite(size)||
  std::abs(x)>worldHalf()||std::abs(z)>worldHalf()||std::abs(yaw)>36000||size<.2f||size>8)return 0;
+ recordEdit();
  int id=gNextId++;
  gEntities.push_back({id,6,x,z,yaw,size,asset});
  gSelected=id;return id;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeUndo(JNIEnv*,jclass){
+ return undoEdit()?JNI_TRUE:JNI_FALSE;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRedo(JNIEnv*,jclass){
+ return redoEdit()?JNI_TRUE:JNI_FALSE;
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeClearHistory(JNIEnv*,jclass){
+ gUndo.clear();gRedo.clear();
+}
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeDuplicateSelected(JNIEnv*,jclass){
+ Entity*original=selected();
+ if(!original||gEntities.size()>=MAX_ENTITIES)return 0;
+ Entity copy=*original;
+ const float offset=(copy.type<=2||copy.type==6?7.5f:2.5f)*copy.size;
+ float nx=copy.x+offset;
+ if(nx>worldHalf()-2.f)nx=copy.x-offset;
+ if(nx<-worldHalf()+2.f)return 0;
+ copy.x=nx;
+ recordEdit();
+ copy.id=gNextId++;
+ gEntities.push_back(copy);gSelected=copy.id;
+ return copy.id;
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeReset(JNIEnv*,jclass,jboolean withDemo){reset(withDemo==JNI_TRUE);}
 } // extern C

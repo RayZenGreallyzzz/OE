@@ -61,6 +61,10 @@ public class EditorActivity extends Activity {
     private static native void nativeReset(boolean withDemo);
     private static native void nativeSetDemoRoads(boolean enabled);
     private static native boolean nativeDeleteSelected();
+    private static native boolean nativeUndo();
+    private static native boolean nativeRedo();
+    private static native void nativeClearHistory();
+    private static native int nativeDuplicateSelected();
     private static native boolean nativeRegisterAsset(String key, float[] vertices);
     private static native int nativeAddImportedPlaced(String key, float x, float z, float yaw, float size);
     private static final int PICK_GLB = 702;
@@ -138,7 +142,7 @@ public class EditorActivity extends Activity {
         top.setOrientation(LinearLayout.VERTICAL);
 
         TextView title = new TextView(this);
-        title.setText("OE  /  ORVETRA ENGINE     •     NATIVE ANDROID 0.5 · OPEN WORLD");
+        title.setText("OE  /  ORVETRA ENGINE     •     NATIVE ANDROID 0.6 · EDITOR");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         title.setTextSize(13);
@@ -161,6 +165,9 @@ public class EditorActivity extends Activity {
         addTool(tools, "Сохранить", this::saveScene);
         addTool(tools, "Загрузить", this::loadScene);
         addTool(tools, "Новая сцена", this::askReset);
+        addTool(tools, "↶ Отменить", this::undoAction);
+        addTool(tools, "↷ Повторить", this::redoAction);
+        addTool(tools, "⧉ Копировать", this::duplicateAction);
         scroll.addView(tools);
         top.addView(scroll);
         FrameLayout.LayoutParams tp = new FrameLayout.LayoutParams(-1, -2, Gravity.TOP);
@@ -190,6 +197,12 @@ public class EditorActivity extends Activity {
         addControl(otherRow, "− Размер", () -> edit(() -> nativeScale(.90f)));
         addControl(otherRow, "+ Размер", () -> edit(() -> nativeScale(1.10f)));
         inspector.addView(otherRow);
+
+        LinearLayout historyRow = row();
+        addControl(historyRow, "↶ Отмена", this::undoAction);
+        addControl(historyRow, "↷ Повтор", this::redoAction);
+        addControl(historyRow, "⧉ Копия", this::duplicateAction);
+        inspector.addView(historyRow);
 
         LinearLayout editRow = row();
         addControl(editRow, "🗑 Удалить выбранное", this::askDeleteSelected);
@@ -279,6 +292,28 @@ public class EditorActivity extends Activity {
                 }catch(Exception error){message("Укажи числовые значения X и Z.");}
             })
             .setNegativeButton("Отмена",null).show();
+    }
+    private void undoAction() {
+        if(importing){message("Дождись завершения загрузки сцены");return;}
+        edit(() -> {
+            if(nativeUndo())message("Изменение отменено");
+            else message("История отмены пуста");
+        });
+    }
+    private void redoAction() {
+        if(importing){message("Дождись завершения загрузки сцены");return;}
+        edit(() -> {
+            if(nativeRedo())message("Изменение повторено");
+            else message("История повтора пуста");
+        });
+    }
+    private void duplicateAction() {
+        if(importing){message("Дождись завершения загрузки сцены");return;}
+        if(placingKind!=-1)cancelPlace();
+        edit(() -> {
+            if(nativeDuplicateSelected()!=0)message("Копия создана рядом — можешь её двигать");
+            else message("Выбери объект: возможно достигнут лимит или край карты");
+        });
     }
     private void askDeleteSelected() {
         if(placingKind != -1)cancelPlace();
@@ -440,6 +475,7 @@ public class EditorActivity extends Activity {
                     }
                     surface.requestRender();
                     refreshSelected();
+                    nativeClearHistory(); // loading a project starts a new history baseline
                     message("Сцена загружена · "+items.length+" объектов, GLB "+assets.size());
                     importing=false;
                 });

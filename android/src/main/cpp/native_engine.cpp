@@ -28,6 +28,16 @@ struct Shader {
 };
 struct Asset { Mesh gpu; std::vector<float> vertices; };
 static Mesh gMeshes[3];
+static Mesh gStaticMeshes[6]; // Every decorative object is a single combined draw.
+void bakeStaticMesh(int type);
+// Cached, combined flat terrain: one GLES draw call per frame instead of one per tile.
+struct TerrainGpu {
+ GLuint vao=0, buffer=0;
+ GLsizei vertices=0;
+ int gridX=2147483647,gridZ=2147483647,worldSize=0,tiles=0;
+};
+static TerrainGpu gTerrain;
+static int gDrawCalls=0,gTriangles=0;
 static std::unordered_map<std::string,Asset> gAssets;
 static constexpr int MAX_ASSETS=12;
 static constexpr int MAX_IMPORTED_TRIANGLES=90000;
@@ -219,7 +229,20 @@ void setupGL(){
   glEnableVertexAttribArray(1);glVertexAttribPointer(1,3,GL_FLOAT,GL_FALSE,6*sizeof(float),reinterpret_cast<void*>(3*sizeof(float)));
   glDisableVertexAttribArray(2);
  }
+ for(int kind=0;kind<6;kind++)bakeStaticMesh(kind);
  for(auto &kv:gAssets)uploadAsset(kv.second);
+ // A new OpenGL context needs new handles; never reuse IDs from the previous context.
+ gTerrain={};
+ glGenVertexArrays(1,&gTerrain.vao);
+ glGenBuffers(1,&gTerrain.buffer);
+ glBindVertexArray(gTerrain.vao);
+ glBindBuffer(GL_ARRAY_BUFFER,gTerrain.buffer);
+ const GLsizei terrainStride=9*sizeof(float);
+ for(int attrib=0;attrib<3;attrib++){
+  glEnableVertexAttribArray(attrib);
+  glVertexAttribPointer(attrib,3,GL_FLOAT,GL_FALSE,terrainStride,
+    reinterpret_cast<void*>(static_cast<uintptr_t>(attrib*3*sizeof(float))));
+ }
  glBindVertexArray(0);
  glVertexAttrib3f(2,1,1,1);
  glEnable(GL_DEPTH_TEST);
@@ -235,6 +258,7 @@ void draw(const Mat4&vp,int kind,Vec3 position,Vec3 dimensions,float yaw,Color c
  glUniform1f(gShader.locLight,selected?1.f:0.f);
  const Mesh &mesh=gMeshes[std::max(0,std::min(2,kind))];
  glBindVertexArray(mesh.vao);glDrawArrays(GL_TRIANGLES,0,mesh.count);
+ ++gDrawCalls;gTriangles+=mesh.count/3;
 }
 void drawImported(const Mat4&vp,const Entity&e){
  auto it=gAssets.find(e.asset);
@@ -247,6 +271,7 @@ void drawImported(const Mat4&vp,const Entity&e){
  glUniform1f(gShader.locLight,e.id==gSelected?1.f:0.f);
  const Mesh &m=it->second.gpu;
  glBindVertexArray(m.vao);glDrawArrays(GL_TRIANGLES,0,m.count);
+ ++gDrawCalls;gTriangles+=m.count/3;
 }
 void part(const Mat4&vp,const Entity&e,int kind,float x,float y,float z,float sx,float sy,float sz,Color color){
  const float a=e.yaw*RAD,c=std::cos(a),s=std::sin(a),k=e.size;
@@ -255,50 +280,102 @@ void part(const Mat4&vp,const Entity&e,int kind,float x,float y,float z,float sx
 }
 constexpr Color stone{.51f,.50f,.49f},mortar{.75f,.64f,.51f},oak{.32f,.20f,.13f},
  roof{.55f,.22f,.18f},gold{.82f,.62f,.33f},dark{.19f,.23f,.29f},glass{.82f,.65f,.33f};
-void building(const Mat4&vp,const Entity&e){
- const bool forge=e.type==1,auction=e.type==2;
+template<class Part>
+void forEachStaticPart(int type,Part&&part){
+ if(type<=2){
+ const bool forge=type==1,auction=type==2;
  Color base=forge?stone:(auction?Color{.79f,.70f,.56f}:mortar);
  Color roofColor=forge?Color{.27f,.31f,.37f}:(auction?Color{.30f,.25f,.40f}:roof);
- part(vp,e,0,0,.18f,0,6,.36f,5,stone);
- part(vp,e,0,0,1.75f,0,5.7f,3.05f,4.75f,base);
- part(vp,e,1,0,3.25f,0,6.5f,2.25f,5.4f,roofColor);
- part(vp,e,0,0,1.03f,2.41f,1.36f,2.06f,.12f,oak);
- part(vp,e,0,.40f,1.06f,2.49f,.10f,.12f,.13f,gold);
- part(vp,e,0,0,3.1f,2.50f,5.92f,.19f,.22f,oak);
+ part(0,0,.18f,0,6,.36f,5,stone);
+ part(0,0,1.75f,0,5.7f,3.05f,4.75f,base);
+ part(1,0,3.25f,0,6.5f,2.25f,5.4f,roofColor);
+ part(0,0,1.03f,2.41f,1.36f,2.06f,.12f,oak);
+ part(0,.40f,1.06f,2.49f,.10f,.12f,.13f,gold);
+ part(0,0,3.1f,2.50f,5.92f,.19f,.22f,oak);
  for(float x:{-1.83f,1.83f}){
-  part(vp,e,0,x,1.7f,2.47f,.19f,3.12f,.25f,oak);
-  part(vp,e,0,x,2.1f,2.56f,.87f,.86f,.1f,glass);
-  part(vp,e,0,x,2.1f,2.63f,.10f,.91f,.12f,oak);
-  part(vp,e,0,x,2.56f,2.63f,1.06f,.12f,.15f,oak);
+  part(0,x,1.7f,2.47f,.19f,3.12f,.25f,oak);
+  part(0,x,2.1f,2.56f,.87f,.86f,.1f,glass);
+  part(0,x,2.1f,2.63f,.10f,.91f,.12f,oak);
+  part(0,x,2.56f,2.63f,1.06f,.12f,.15f,oak);
  }
  if(forge){
-  part(vp,e,0,1.8f,4.36f,-.85f,1.12f,2.9f,1.1f,dark);
-  part(vp,e,0,1.8f,5.86f,-.85f,1.36f,.22f,1.3f,stone);
+  part(0,1.8f,4.36f,-.85f,1.12f,2.9f,1.1f,dark);
+  part(0,1.8f,5.86f,-.85f,1.36f,.22f,1.3f,stone);
  } else if(auction){
   for(float x:{-2.45f,2.45f}){
-    part(vp,e,2,x,1.61f,2.62f,.47f,3.0f,.47f,stone);
-    part(vp,e,0,x,3.13f,2.62f,.72f,.24f,.72f,gold);
+    part(2,x,1.61f,2.62f,.47f,3.0f,.47f,stone);
+    part(0,x,3.13f,2.62f,.72f,.24f,.72f,gold);
   }
-  part(vp,e,0,0,2.8f,2.63f,1.52f,.42f,.16f,gold);
+  part(0,0,2.8f,2.63f,1.52f,.42f,.16f,gold);
  } else {
-  part(vp,e,0,0,2.55f,2.83f,2.3f,.18f,.9f,oak);
-  part(vp,e,0,-1.9f,4.3f,-.9f,.7f,2.0f,.75f,stone);
+  part(0,0,2.55f,2.83f,2.3f,.18f,.9f,oak);
+  part(0,-1.9f,4.3f,-.9f,.7f,2.0f,.75f,stone);
+ }
+  return;
+ }
+ if(type==3){
+   part(2,0,1.4f,0,.18f,2.8f,.18f,dark);
+   part(0,0,2.94f,0,.62f,.72f,.6f,gold);
+   part(1,0,3.34f,0,.86f,.58f,.82f,dark);
+ }else if(type==4){
+   part(2,0,.27f,0,3.1f,.58f,3.1f,stone);
+   part(2,0,.63f,0,2.55f,.09f,2.55f,{.25f,.52f,.66f});
+   part(2,0,1.0f,0,.86f,.88f,.86f,stone);
+ }else if(type==5){
+   part(2,0,1.45f,0,.62f,2.9f,.62f,oak);
+   part(2,0,3.55f,0,2.2f,2.5f,2.2f,{.20f,.39f,.27f});
  }
 }
-// 1024 x 1024 world: only draw nearby 64-meter chunks (on-demand).
-// This is a flat terrain prototype; decorative buildings are separate entities.
-void drawWorld(const Mat4&vp){
- const float maxDistance=230.f;
- // Iterate only chunks near the camera, regardless of total world dimensions.
- // A 16 km map therefore uses the same draw-call budget as a 1 km map.
- const int extent=gWorldSize/static_cast<int>(WORLD_TILE)/2;
- const int centerX=static_cast<int>(std::floor(gTarget.x/WORLD_TILE));
- const int centerZ=static_cast<int>(std::floor(gTarget.z/WORLD_TILE));
- const int reach=static_cast<int>(std::ceil(maxDistance/WORLD_TILE))+1;
- for(int tz=std::max(-extent,centerZ-reach);tz<=std::min(extent-1,centerZ+reach);tz++)
- for(int tx=std::max(-extent,centerX-reach);tx<=std::min(extent-1,centerX+reach);tx++){
+void bakeStaticMesh(int type){
+ Asset baked;
+ // Build once on GL-context creation. Later only transform one mesh per entity.
+ forEachStaticPart(type,[&](int kind,float x,float y,float z,float sx,float sy,float sz,Color col){
+  const std::vector<float> source=geometry(kind);
+  baked.vertices.reserve(baked.vertices.size()+source.size()/6*9);
+  for(size_t i=0;i+5<source.size();i+=6){
+   baked.vertices.insert(baked.vertices.end(),{
+      x+source[i]*sx,y+source[i+1]*sy,z+source[i+2]*sz,
+      source[i+3]*sx,source[i+4]*sy,source[i+5]*sz,
+      col.r,col.g,col.b
+   });
+  }
+ });
+ uploadAsset(baked);
+ gStaticMeshes[type]=baked.gpu;
+}
+void drawStatic(const Mat4&vp,const Entity&e){
+ if(e.type<0||e.type>=6)return;
+ const Mesh&m=gStaticMeshes[e.type];
+ if(m.count<=0)return;
+ const Mat4 model=mul(mul(translate({e.x,0,e.z}),rotateY(e.yaw*RAD)),
+  scale({e.size,e.size,e.size}));
+ const Mat4 mvp=mul(vp,model);
+ glUniformMatrix4fv(gShader.locMvp,1,GL_FALSE,mvp.m);
+ glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
+ glUniform3f(gShader.locColor,1.f,1.f,1.f);
+ glUniform1f(gShader.locLight,e.id==gSelected?1.f:0.f);
+ glBindVertexArray(m.vao);
+ glDrawArrays(GL_TRIANGLES,0,m.count);
+ ++gDrawCalls;gTriangles+=m.count/3;
+}
+
+// Low-power flat terrain. Combine nearby 64m squares into one vertex buffer.
+// Rebuild when the camera crosses a tile border (or world size changes), not per frame.
+// 11x11 tiles maximum; only 2 triangles/tile, one draw call for all terrain.
+void appendTerrainVertex(std::vector<float>&data,float x,float z,Color color){
+ data.insert(data.end(),{x,-.14f,z,0.f,1.f,0.f,color.r,color.g,color.b});
+}
+void updateTerrain(){
+ const int gx=static_cast<int>(std::floor(gTarget.x/WORLD_TILE));
+ const int gz=static_cast<int>(std::floor(gTarget.z/WORLD_TILE));
+ if(gTerrain.gridX==gx&&gTerrain.gridZ==gz&&gTerrain.worldSize==gWorldSize)return;
+ std::vector<float> vertices;
+ vertices.reserve(11*11*6*9);
+ const int half=gWorldSize/static_cast<int>(WORLD_TILE)/2;
+ int tiles=0;
+ for(int tz=std::max(-half,gz-5);tz<=std::min(half-1,gz+5);tz++)
+ for(int tx=std::max(-half,gx-5);tx<=std::min(half-1,gx+5);tx++){
   const float x=(tx+.5f)*WORLD_TILE,z=(tz+.5f)*WORLD_TILE;
-  if(std::abs(x-gTarget.x)>maxDistance || std::abs(z-gTarget.z)>maxDistance)continue;
   const float dxForest=x-256.f,dzForest=z;
   const float dxRuins=x+256.f,dzRuins=z+64.f;
   const float dxCrypt=x-16.f,dzCrypt=z+256.f;
@@ -309,7 +386,33 @@ void drawWorld(const Mat4&vp){
   else if(dxCrypt*dxCrypt+dzCrypt*dzCrypt<170.f*170.f)c={.23f,.24f,.29f};
   else if(dxWild*dxWild+dzWild*dzWild<160.f*160.f)c={.36f,.32f,.20f};
   if((tx+tz)%3==0){c.r*=.96f;c.g*=.96f;c.b*=.96f;}
-  draw(vp,0,{x,-.28f,z},{WORLD_TILE+.15f,.28f,WORLD_TILE+.15f},0,c);
+  const float loX=x-WORLD_TILE*.5f,hiX=x+WORLD_TILE*.5f;
+  const float loZ=z-WORLD_TILE*.5f,hiZ=z+WORLD_TILE*.5f;
+  appendTerrainVertex(vertices,loX,loZ,c);
+  appendTerrainVertex(vertices,hiX,loZ,c);
+  appendTerrainVertex(vertices,hiX,hiZ,c);
+  appendTerrainVertex(vertices,loX,loZ,c);
+  appendTerrainVertex(vertices,hiX,hiZ,c);
+  appendTerrainVertex(vertices,loX,hiZ,c);
+  ++tiles;
+ }
+ gTerrain.vertices=static_cast<GLsizei>(vertices.size()/9);
+ gTerrain.tiles=tiles;
+ glBindBuffer(GL_ARRAY_BUFFER,gTerrain.buffer);
+ glBufferData(GL_ARRAY_BUFFER,static_cast<GLsizeiptr>(vertices.size()*sizeof(float)),vertices.data(),GL_DYNAMIC_DRAW);
+ gTerrain.gridX=gx;gTerrain.gridZ=gz;gTerrain.worldSize=gWorldSize;
+}
+void drawWorld(const Mat4&vp){
+ updateTerrain();
+ if(gTerrain.vertices>0){
+  const Mat4 model=identity();
+  glUniformMatrix4fv(gShader.locMvp,1,GL_FALSE,vp.m);
+  glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
+  glUniform3f(gShader.locColor,1,1,1);
+  glUniform1f(gShader.locLight,0);
+  glBindVertexArray(gTerrain.vao);
+  glDrawArrays(GL_TRIANGLES,0,gTerrain.vertices);
+  ++gDrawCalls;gTriangles+=gTerrain.vertices/3;
  }
  if(gDemoRoads&&std::abs(gTarget.x)<150.f&&std::abs(gTarget.z)<150.f){
   draw(vp,0,{0,-.025f,2},{27,.12f,23},0,{.44f,.44f,.44f});
@@ -337,26 +440,19 @@ bool blocked(float x,float z,int type){
  }
  return false;
 }
+bool staticInView(const Mat4&vp,const Entity&e){
+ if(std::abs(e.x-gTarget.x)>230.f||std::abs(e.z-gTarget.z)>230.f)return false;
+ const Vec4 clip=apply(vp,{e.x,2.8f*e.size,e.z,1.f});
+ const float radius=(e.type<=2?7.5f:(e.type==5?4.5f:3.5f))*e.size;
+ if(clip.w < -radius)return false;
+ if(clip.w <=radius)return true; // Keep very close objects visible.
+ const float padX=radius*vp.m[0]*1.6f;
+ const float padY=radius*vp.m[5]*1.6f;
+ return std::abs(clip.x)<=clip.w+padX&&std::abs(clip.y)<=clip.w+padY;
+}
 void drawEntity(const Mat4&vp,const Entity&e){
- if(e.type==6){drawImported(vp,e);return;}
- switch(e.type){
- case 0:case 1:case 2:building(vp,e);break;
- case 3:
-  part(vp,e,2,0,1.4f,0,.18f,2.8f,.18f,dark);
-  part(vp,e,0,0,2.94f,0,.62f,.72f,.6f,gold);
-  part(vp,e,1,0,3.34f,0,.86f,.58f,.82f,dark);
-  break;
- case 4:
-  part(vp,e,2,0,.27f,0,3.1f,.58f,3.1f,stone);
-  part(vp,e,2,0,.63f,0,2.55f,.09f,2.55f,{.25f,.52f,.66f});
-  part(vp,e,2,0,1.0f,0,.86f,.88f,.86f,stone);
-  break;
- case 5:
-  part(vp,e,2,0,1.45f,0,.62f,2.9f,.62f,oak);
-  part(vp,e,2,0,3.55f,0,2.2f,2.5f,2.2f,{.20f,.39f,.27f});
-  break;
- default:break;
- }
+ if(e.type==6){drawImported(vp,e);return;} // Imported GLBs have unknown bounds.
+ if(staticInView(vp,e))drawStatic(vp,e);
 }
 int add(int type,float x,float z,float yaw,float size){
  if(type<0||type>5||gEntities.size()>=MAX_ENTITIES)return 0;
@@ -402,6 +498,7 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDraw(JNIEnv*,jcl
  glViewport(0,0,gWidth,gHeight);
  glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
  glUseProgram(gShader.program);
+ gDrawCalls=0;gTriangles=0;
  Mat4 vp=viewProjection();
  drawWorld(vp);
  for(const auto&e:gEntities){
@@ -424,6 +521,11 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeFocusLocation(JN
  if(index<0 || index>=static_cast<jint>(sizeof(LOCATIONS)/sizeof(LOCATIONS[0])))return;
  gTarget={LOCATIONS[index].x,1.2f,LOCATIONS[index].z};
  gDistance=index==0?35.f:68.f;
+}
+JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeRenderStats(JNIEnv*env,jclass){
+ std::ostringstream out;
+ out<<"Рендер: "<<gDrawCalls<<" draw calls / "<<gTriangles<<" треугольников · земля "<<gTerrain.tiles<<" участков";
+ return env->NewStringUTF(out.str().c_str());
 }
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeGetWorldSize(JNIEnv*,jclass){return gWorldSize;}
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeSetWorldSize(JNIEnv*,jclass,jint newSize){

@@ -1,6 +1,8 @@
 package game.oe.editor;
 
 import android.app.Activity;
+import android.util.AtomicFile;
+import android.os.SystemClock;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.net.Uri;
@@ -39,6 +41,7 @@ public class EditorActivity extends Activity {
     private static native void nativeInit();
     private static native void nativeResize(int width, int height);
     private static native void nativeDraw();
+    private static native String nativeRenderStats();
     private static native void nativeOrbit(float dx, float dy, float zoom);
     private static native void nativePan(float dx, float dy);
     private static native void nativeFocusLocation(int index);
@@ -73,6 +76,8 @@ public class EditorActivity extends Activity {
     private EditorSurface surface;
     private TextView selectionText;
     private TextView statusText;
+    private TextView renderStatsText;
+    private volatile long statsUpdatedAt=0;
     private volatile boolean importing = false;
     private volatile int placingKind = -1;
     private volatile String placingGlb = null;
@@ -142,7 +147,7 @@ public class EditorActivity extends Activity {
         top.setOrientation(LinearLayout.VERTICAL);
 
         TextView title = new TextView(this);
-        title.setText("OE  /  ORVETRA ENGINE     •     NATIVE ANDROID 0.6 · EDITOR");
+        title.setText("OE  /  ORVETRA ENGINE     •     NATIVE ANDROID 0.6.2 · LOW POWER TEST");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         title.setTextSize(13);
@@ -214,6 +219,12 @@ public class EditorActivity extends Activity {
         statusText.setTextColor(Color.rgb(167, 177, 189));
         statusText.setTextSize(10);
         inspector.addView(statusText);
+
+        renderStatsText = new TextView(this);
+        renderStatsText.setText("Рендер: данные появятся после первого кадра");
+        renderStatsText.setTextColor(Color.rgb(125, 195, 151));
+        renderStatsText.setTextSize(10);
+        inspector.addView(renderStatsText);
         FrameLayout.LayoutParams ip = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
         root.addView(inspector, ip);
 
@@ -337,18 +348,23 @@ public class EditorActivity extends Activity {
         });
     }
     private File saveFile() { return new File(getFilesDir(), "oe_scene_v1.json"); }
+    // AtomicFile preserves the last valid scene if Android stops the app during a write.
     private void saveScene() {
         surface.queueEvent(() -> {
-            String json = nativeSceneSnapshot();
-            try (FileOutputStream stream = new FileOutputStream(saveFile())) {
+            String json=nativeSceneSnapshot();
+            AtomicFile atomic=new AtomicFile(saveFile());
+            FileOutputStream stream=null;
+            try {
+                stream=atomic.startWrite();
                 stream.write(json.getBytes(StandardCharsets.UTF_8));
-                message("Сцена сохранена в памяти планшета");
-            } catch (Exception e) {
-                message("Ошибка сохранения: " + e.getMessage());
+                atomic.finishWrite(stream);
+                message("Сцена сохранена безопасно");
+            } catch(Exception e) {
+                if(stream!=null)atomic.failWrite(stream);
+                message("Ошибка сохранения: "+e.getMessage());
             }
         });
     }
-
     private File modelDir() throws Exception {
         File dir = new File(getFilesDir(), "models");
         if (!dir.exists() && !dir.mkdirs()) throw new Exception("Нет доступа к папке моделей");
@@ -415,9 +431,16 @@ public class EditorActivity extends Activity {
         new Thread(() -> {
             try {
                 File file=saveFile();
-                if(!file.exists())throw new Exception("Сначала сохрани сцену");
-                if(file.length()>200000L)throw new Exception("Файл сцены слишком большой");
-                JSONObject document=new JSONObject(new String(Files.readAllBytes(file.toPath()),StandardCharsets.UTF_8));
+                ByteArrayOutputStream jsonBytes=new ByteArrayOutputStream();
+                try(InputStream in=new AtomicFile(file).openRead()){
+                    byte[] buffer=new byte[4096];
+                    int count;
+                    while((count=in.read(buffer))!=-1){
+                        if(jsonBytes.size()+count>200000)throw new Exception("Файл сцены слишком большой");
+                        jsonBytes.write(buffer,0,count);
+                    }
+                }catch(java.io.FileNotFoundException missing){throw new Exception("Сначала сохрани сцену");}
+                JSONObject document=new JSONObject(new String(jsonBytes.toByteArray(),StandardCharsets.UTF_8));
                 if(document.optInt("version",-1)!=1)throw new Exception("Неверная версия сцены");
                 final boolean demoRoads=document.optBoolean("demoRoads", false);
                 final int worldSize=document.optInt("worldSize",1024);
@@ -504,6 +527,19 @@ public class EditorActivity extends Activity {
     private final class EditorSurface extends GLSurfaceView {
         private float lastX, lastY, downX, downY, lastPinch, lastMidX, lastMidY;
         private boolean multiTouch = false;
+        // The SurfaceView is full-size; only the underlying GLES buffer is reduced.
+        private static final float RENDER_SCALE=.75f;
+        private volatile int renderPixelWidth=1,renderPixelHeight=1;
+        private long lastInteractionFrame=0; // Accessed only on GL thread.
+        private void interactiveRender() {
+            long now=SystemClock.uptimeMillis();
+            if(now-lastInteractionFrame>=33){
+                lastInteractionFrame=now;
+                requestRender();
+            }
+        }
+        private float surfaceX(float x){return x*renderPixelWidth/Math.max(1,getWidth());}
+        private float surfaceY(float y){return y*renderPixelHeight/Math.max(1,getHeight());}
         EditorSurface() {
             super(EditorActivity.this);
             setEGLContextClientVersion(3);
@@ -515,14 +551,31 @@ public class EditorActivity extends Activity {
                     refreshSelected();
                 }
                 @Override public void onSurfaceChanged(javax.microedition.khronos.opengles.GL10 gl, int w, int h) {
+                    renderPixelWidth=w;
+                    renderPixelHeight=h;
                     nativeResize(w, h);
                 }
                 @Override public void onDrawFrame(javax.microedition.khronos.opengles.GL10 gl) {
                     nativeDraw();
+                    // Low-rate diagnostics only. No continuous rendering or FPS loop.
+                    long now=SystemClock.uptimeMillis();
+                    if(now-statsUpdatedAt>=900){
+                        statsUpdatedAt=now;
+                        final String stats=nativeRenderStats()+" · 3D 75%";
+                        ui(() -> {if(renderStatsText!=null)renderStatsText.setText(stats);});
+                    }
                 }
             });
             // Critical for low-power tablets: zero unnecessary redraws while idle.
             setRenderMode(GLSurfaceView.RENDERMODE_WHEN_DIRTY);
+        }
+        @Override protected void onSizeChanged(int w,int h,int oldW,int oldH){
+            super.onSizeChanged(w,h,oldW,oldH);
+            if(w>0&&h>0){
+                // Android scales the lower-resolution EGL surface to the view.
+                getHolder().setFixedSize(Math.max(1,Math.round(w*RENDER_SCALE)),
+                                         Math.max(1,Math.round(h*RENDER_SCALE)));
+            }
         }
         private float pinch(MotionEvent e) {
             return (float)Math.hypot(e.getX(0)-e.getX(1),e.getY(0)-e.getY(1));
@@ -550,12 +603,12 @@ public class EditorActivity extends Activity {
                     final float dxMid=midX-lastMidX,dyMid=midY-lastMidY;
                     final float zoom=(lastPinch>1 && p>1)?Math.max(.7f,Math.min(1.3f,lastPinch/p)):1f;
                     if(zoom!=1f||dxMid!=0||dyMid!=0)
-                        queueEvent(() -> {nativePan(dxMid,dyMid);nativeOrbit(0,0,zoom);requestRender();});
+                        queueEvent(() -> {nativePan(dxMid,dyMid);nativeOrbit(0,0,zoom);interactiveRender();});
                     lastPinch=p;lastMidX=midX;lastMidY=midY;
                 } else if(!multiTouch) {
                     float x=e.getX(),y=e.getY();
                     final float dx=x-lastX,dy=y-lastY;
-                    if(dx!=0||dy!=0)queueEvent(() -> {nativeOrbit(dx,dy,1);requestRender();});
+                    if(dx!=0||dy!=0)queueEvent(() -> {nativeOrbit(dx,dy,1);interactiveRender();});
                     lastX=x;lastY=y;
                 }
                 return true;
@@ -563,7 +616,7 @@ public class EditorActivity extends Activity {
             if(action==MotionEvent.ACTION_POINTER_UP) {multiTouch=true;lastPinch=0;return true;}
             if(action==MotionEvent.ACTION_UP) {
                 if(!multiTouch && Math.hypot(e.getX()-downX,e.getY()-downY)<dp(8)) {
-                    final float x=e.getX(),y=e.getY();
+                    final float x=surfaceX(e.getX()),y=surfaceY(e.getY());
                     final int kind=placingKind;
                     final String asset=placingGlb;
                     if(kind>=0) {
@@ -579,6 +632,13 @@ public class EditorActivity extends Activity {
                     } else {
                         queueEvent(() -> {nativeSelect(nativePick(x,y));requestRender();refreshSelected();});
                     }
+                } else if(!multiTouch) {
+                    // Always display the last movement even when redraws are capped.
+                    final float dx=e.getX()-lastX,dy=e.getY()-lastY;
+                    if(dx!=0||dy!=0)queueEvent(() -> {nativeOrbit(dx,dy,1);requestRender();});
+                    else queueEvent(this::requestRender);
+                } else {
+                    queueEvent(this::requestRender);
                 }
                 multiTouch=false;
                 return true;

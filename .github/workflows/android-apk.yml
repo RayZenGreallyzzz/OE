@@ -28,8 +28,10 @@ jobs:
       - name: Prepare Android SDK
         run: |
           echo "ANDROID_HOME=$ANDROID_HOME"
-          (yes || true) | sdkmanager --licenses > /dev/null || true
-          sdkmanager --install 'platforms;android-35' 'build-tools;35.0.0' 'ndk;26.3.11579264' 'cmake;3.22.1'
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | head -n 1)"
+          if [ -z "$SDKMANAGER" ]; then echo "Android SDK command line tools missing"; exit 1; fi
+          (yes || true) | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" --install 'platforms;android-35' 'build-tools;35.0.0' 'ndk;26.3.11579264' 'cmake;3.22.1'
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'

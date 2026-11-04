@@ -147,7 +147,7 @@ public class EditorActivity extends Activity {
         top.setOrientation(LinearLayout.VERTICAL);
 
         TextView title = new TextView(this);
-        title.setText("OE  /  ORVETRA ENGINE     •     NATIVE ANDROID 0.6.1 · STABILITY TEST");
+        title.setText("OE  /  ORVETRA ENGINE     •     NATIVE ANDROID 0.6.2 · LOW POWER TEST");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         title.setTextSize(13);
@@ -527,6 +527,19 @@ public class EditorActivity extends Activity {
     private final class EditorSurface extends GLSurfaceView {
         private float lastX, lastY, downX, downY, lastPinch, lastMidX, lastMidY;
         private boolean multiTouch = false;
+        // The SurfaceView is full-size; only the underlying GLES buffer is reduced.
+        private static final float RENDER_SCALE=.75f;
+        private volatile int renderPixelWidth=1,renderPixelHeight=1;
+        private long lastInteractionFrame=0; // Accessed only on GL thread.
+        private void interactiveRender() {
+            long now=SystemClock.uptimeMillis();
+            if(now-lastInteractionFrame>=33){
+                lastInteractionFrame=now;
+                requestRender();
+            }
+        }
+        private float surfaceX(float x){return x*renderPixelWidth/Math.max(1,getWidth());}
+        private float surfaceY(float y){return y*renderPixelHeight/Math.max(1,getHeight());}
         EditorSurface() {
             super(EditorActivity.this);
             setEGLContextClientVersion(3);
@@ -538,6 +551,8 @@ public class EditorActivity extends Activity {
                     refreshSelected();
                 }
                 @Override public void onSurfaceChanged(javax.microedition.khronos.opengles.GL10 gl, int w, int h) {
+                    renderPixelWidth=w;
+                    renderPixelHeight=h;
                     nativeResize(w, h);
                 }
                 @Override public void onDrawFrame(javax.microedition.khronos.opengles.GL10 gl) {
@@ -546,13 +561,21 @@ public class EditorActivity extends Activity {
                     long now=SystemClock.uptimeMillis();
                     if(now-statsUpdatedAt>=900){
                         statsUpdatedAt=now;
-                        final String stats=nativeRenderStats();
+                        final String stats=nativeRenderStats()+" · 3D 75%";
                         ui(() -> {if(renderStatsText!=null)renderStatsText.setText(stats);});
                     }
                 }
             });
             // Critical for low-power tablets: zero unnecessary redraws while idle.
             setRenderMode(GLSurfaceView.RENDERMODE_WHEN_DIRTY);
+        }
+        @Override protected void onSizeChanged(int w,int h,int oldW,int oldH){
+            super.onSizeChanged(w,h,oldW,oldH);
+            if(w>0&&h>0){
+                // Android scales the lower-resolution EGL surface to the view.
+                getHolder().setFixedSize(Math.max(1,Math.round(w*RENDER_SCALE)),
+                                         Math.max(1,Math.round(h*RENDER_SCALE)));
+            }
         }
         private float pinch(MotionEvent e) {
             return (float)Math.hypot(e.getX(0)-e.getX(1),e.getY(0)-e.getY(1));
@@ -580,12 +603,12 @@ public class EditorActivity extends Activity {
                     final float dxMid=midX-lastMidX,dyMid=midY-lastMidY;
                     final float zoom=(lastPinch>1 && p>1)?Math.max(.7f,Math.min(1.3f,lastPinch/p)):1f;
                     if(zoom!=1f||dxMid!=0||dyMid!=0)
-                        queueEvent(() -> {nativePan(dxMid,dyMid);nativeOrbit(0,0,zoom);requestRender();});
+                        queueEvent(() -> {nativePan(dxMid,dyMid);nativeOrbit(0,0,zoom);interactiveRender();});
                     lastPinch=p;lastMidX=midX;lastMidY=midY;
                 } else if(!multiTouch) {
                     float x=e.getX(),y=e.getY();
                     final float dx=x-lastX,dy=y-lastY;
-                    if(dx!=0||dy!=0)queueEvent(() -> {nativeOrbit(dx,dy,1);requestRender();});
+                    if(dx!=0||dy!=0)queueEvent(() -> {nativeOrbit(dx,dy,1);interactiveRender();});
                     lastX=x;lastY=y;
                 }
                 return true;
@@ -593,7 +616,7 @@ public class EditorActivity extends Activity {
             if(action==MotionEvent.ACTION_POINTER_UP) {multiTouch=true;lastPinch=0;return true;}
             if(action==MotionEvent.ACTION_UP) {
                 if(!multiTouch && Math.hypot(e.getX()-downX,e.getY()-downY)<dp(8)) {
-                    final float x=e.getX(),y=e.getY();
+                    final float x=surfaceX(e.getX()),y=surfaceY(e.getY());
                     final int kind=placingKind;
                     final String asset=placingGlb;
                     if(kind>=0) {
@@ -609,6 +632,13 @@ public class EditorActivity extends Activity {
                     } else {
                         queueEvent(() -> {nativeSelect(nativePick(x,y));requestRender();refreshSelected();});
                     }
+                } else if(!multiTouch) {
+                    // Always display the last movement even when redraws are capped.
+                    final float dx=e.getX()-lastX,dy=e.getY()-lastY;
+                    if(dx!=0||dy!=0)queueEvent(() -> {nativeOrbit(dx,dy,1);requestRender();});
+                    else queueEvent(this::requestRender);
+                } else {
+                    queueEvent(this::requestRender);
                 }
                 multiTouch=false;
                 return true;

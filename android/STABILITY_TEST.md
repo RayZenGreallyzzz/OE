@@ -1,9 +1,13 @@
-# OE 0.6.1 Stability Test (separate Android app)
+# OE 0.6.2 Low Power Test (separate Android app)
 
 This is an isolated comparison build from OE 0.6, **not a replacement for the working OE app**. It has a separate Android package `game.oe.editor.stability` and label **OE STABILITY TEST**. It does not share private scene data with the main app.
 
-Changes:
+Changes in 0.6.1 and 0.6.2:
 
+- Six procedural object types baked into six shared 3D meshes at GL initialization; **one draw call per placed decorative object** instead of one for each building component.
+- Conservative camera-frustum culling for built-in objects; imported GLB models retain the current distance cutoff because their real bounds are unknown.
+- Render surface at **75% linear resolution** (56% of full screen pixels). Android scales it to the full editor area; touch picking uses corrected coordinates. Deliberate tradeoff: slightly softer 3D image.
+- Touch camera redraw capped to about **30 Hz**; no always-on rendering, and the last gesture update is always drawn.
 - Flat terrain around the camera is batched into **one** GLES3 draw call, instead of tens of separate tile draw calls. The same 64-meter zone colors are retained; no distant map is preloaded. Terrain GPU data is cached and refreshed only when moving to another 64-meter cell or changing world size.
 - The visible ground is made of flat quads, not the previous small cube blocks; this intentionally simplifies geometry. The road overlay and existing procedural structures remain.
 - Render statistics (draw calls, triangles, terrain tiles) appear in the editor; these count CPU-issued draw calls and geometry, **not electrical buzzing or real GPU power**.

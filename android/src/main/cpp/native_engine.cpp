@@ -26,7 +26,11 @@ struct Shader {
  GLuint program=0;
  GLint locMvp=-1, locModel=-1, locColor=-1, locLight=-1;
 };
-struct Asset { Mesh gpu; std::vector<float> vertices; };
+struct Asset {
+ Mesh gpu;
+ std::vector<float> vertices; // Retained for GPU context recreation.
+ float centerY=0.f, radius=0.f; // Conservative normalized object-space sphere.
+};
 static Mesh gMeshes[3];
 static Mesh gStaticMeshes[6]; // Every decorative object is a single combined draw.
 void bakeStaticMesh(int type);
@@ -260,6 +264,40 @@ void draw(const Mat4&vp,int kind,Vec3 position,Vec3 dimensions,float yaw,Color c
  glBindVertexArray(mesh.vao);glDrawArrays(GL_TRIANGLES,0,mesh.count);
  ++gDrawCalls;gTriangles+=mesh.count/3;
 }
+struct Frustum {
+ // Normalized inward-looking clip planes in world space.
+ std::array<std::array<float,4>,6> planes{};
+};
+Frustum makeFrustum(const Mat4&vp){
+ Frustum frustum;
+ int index=0;
+ for(int axis=0;axis<3;axis++)for(int side=-1;side<=1;side+=2){
+  auto &plane=frustum.planes[index++];
+  for(int col=0;col<4;col++)
+   plane[col]=vp.m[col*4+3]+static_cast<float>(side)*vp.m[col*4+axis];
+  const float n=std::sqrt(plane[0]*plane[0]+plane[1]*plane[1]+plane[2]*plane[2]);
+  if(n>1e-8f)for(float &v:plane)v/=n;
+ }
+ return frustum;
+}
+bool visibleSphere(const Frustum&frustum,Vec3 center,float radius){
+ for(const auto &p:frustum.planes){
+  const float signedDistance=p[0]*center.x+p[1]*center.y+p[2]*center.z+p[3];
+  if(signedDistance < -radius)return false;
+ }
+ return true;
+}
+bool importedInView(const Frustum&frustum,const Entity&e){
+ const auto it=gAssets.find(e.asset);
+ if(it==gAssets.end()||it->second.gpu.count<=0)return false;
+ const Asset &asset=it->second;
+ const float radius=asset.radius*e.size;
+ const Vec3 center{e.x,asset.centerY*e.size,e.z};
+ const Vec3 delta=sub(center,cameraEye());
+ const float maxDistance=230.f+radius;
+ if(dot(delta,delta)>maxDistance*maxDistance)return false;
+ return visibleSphere(frustum,center,radius);
+}
 void drawImported(const Mat4&vp,const Entity&e){
  auto it=gAssets.find(e.asset);
  if(it==gAssets.end()||it->second.gpu.count==0)return;
@@ -450,8 +488,11 @@ bool staticInView(const Mat4&vp,const Entity&e){
  const float padY=radius*vp.m[5]*1.6f;
  return std::abs(clip.x)<=clip.w+padX&&std::abs(clip.y)<=clip.w+padY;
 }
-void drawEntity(const Mat4&vp,const Entity&e){
- if(e.type==6){drawImported(vp,e);return;} // Imported GLBs have unknown bounds.
+void drawEntity(const Mat4&vp,const Frustum&frustum,const Entity&e){
+ if(e.type==6){
+  if(importedInView(frustum,e))drawImported(vp,e);
+  return;
+ }
  if(staticInView(vp,e))drawStatic(vp,e);
 }
 int add(int type,float x,float z,float yaw,float size){
@@ -500,10 +541,9 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDraw(JNIEnv*,jcl
  glUseProgram(gShader.program);
  gDrawCalls=0;gTriangles=0;
  Mat4 vp=viewProjection();
+ const Frustum frustum=makeFrustum(vp);
  drawWorld(vp);
- for(const auto&e:gEntities){
-   if(std::abs(e.x-gTarget.x)<=230.f && std::abs(e.z-gTarget.z)<=230.f)drawEntity(vp,e);
- }
+ for(const auto&e:gEntities)drawEntity(vp,frustum,e);
  glBindVertexArray(0);
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeOrbit(JNIEnv*,jclass,jfloat dx,jfloat dy,jfloat zoom){
@@ -667,27 +707,125 @@ JNIEXPORT jintArray JNICALL Java_game_oe_editor_EditorActivity_nativeIds(JNIEnv*
  if(!ids.empty())env->SetIntArrayRegion(arr,0,(jsize)ids.size(),ids.data());
  return arr;
 }
-JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsset(JNIEnv*env,jclass,jstring key,jfloatArray data){
- if(!key||!data)return JNI_FALSE;
+// All JNI resource operations run on GLSurfaceView's GL thread.
+JNIEXPORT jobjectArray JNICALL Java_game_oe_editor_EditorActivity_nativeLoadedAssetKeys(JNIEnv*env,jclass){
+ jclass klass=env->FindClass("java/lang/String");
+ int loaded=0;
+ for(const auto&kv:gAssets)if(kv.second.gpu.count>0)loaded++;
+ jobjectArray keys=env->NewObjectArray(loaded,klass,nullptr);
+ int i=0;
+ for(const auto&kv:gAssets)if(kv.second.gpu.count>0){
+  jstring key=env->NewStringUTF(kv.first.c_str());
+  env->SetObjectArrayElement(keys,i++,key);
+  env->DeleteLocalRef(key);
+ }
+ return keys;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeCanRegisterMore(JNIEnv*,jclass,jint count){
+ return count>=0 && static_cast<size_t>(count)<=MAX_ASSETS-gAssets.size()?JNI_TRUE:JNI_FALSE;
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDiscardUnusedAsset(JNIEnv*env,jclass,jstring key){
+ if(!key)return;
+ const char*raw=env->GetStringUTFChars(key,nullptr);
+ if(!raw)return;
+ std::string asset(raw);env->ReleaseStringUTFChars(key,raw);
+ for(const auto&e:gEntities)if(e.type==6&&e.asset==asset)return;
+ auto it=gAssets.find(asset);
+ if(it==gAssets.end())return;
+ if(it->second.gpu.vao)glDeleteVertexArrays(1,&it->second.gpu.vao);
+ if(it->second.gpu.buffer)glDeleteBuffers(1,&it->second.gpu.buffer);
+ gAssets.erase(it);
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsset(
+ JNIEnv*env,jclass,jstring key,jfloatArray data,jfloat centerY,jfloat radius){
+ if(!key||!data||!std::isfinite(centerY)||!std::isfinite(radius)||
+    radius<.05f||radius>100.f||centerY<0.f||centerY>100.f)return JNI_FALSE;
  const char*raw=env->GetStringUTFChars(key,nullptr);
  if(!raw)return JNI_FALSE;
  std::string assetKey(raw);env->ReleaseStringUTFChars(key,raw);
- if(assetKey.size()!=31||assetKey.compare(0,3,"oe_")!=0||assetKey.substr(assetKey.size()-4)!=".glb")return JNI_FALSE;
- for(size_t i=3;i<assetKey.size()-4;i++)if(!((assetKey[i]>='0'&&assetKey[i]<='9')||(assetKey[i]>='a'&&assetKey[i]<='f')))return JNI_FALSE;
+ if(assetKey.size()!=31||assetKey.compare(0,3,"oe_")!=0||
+    assetKey.substr(assetKey.size()-4)!=".glb")return JNI_FALSE;
+ for(size_t i=3;i<assetKey.size()-4;i++)
+  if(!((assetKey[i]>='0'&&assetKey[i]<='9')||(assetKey[i]>='a'&&assetKey[i]<='f')))
+   return JNI_FALSE;
+ auto existing=gAssets.find(assetKey);
+ // A content-addressed key is immutable; never re-upload the same model.
+ if(existing!=gAssets.end()&&existing->second.gpu.count>0)return JNI_TRUE;
  jsize count=env->GetArrayLength(data);
  if(count<=0||count>MAX_IMPORTED_TRIANGLES*27||count%27!=0)return JNI_FALSE;
- if(gAssets.find(assetKey)==gAssets.end()&&gAssets.size()>=MAX_ASSETS)return JNI_FALSE;
+ if(existing==gAssets.end()&&gAssets.size()>=MAX_ASSETS)return JNI_FALSE;
  jfloat*ptr=env->GetFloatArrayElements(data,nullptr);
  if(!ptr)return JNI_FALSE;
  bool valid=true;
  for(jsize i=0;i<count;i++)if(!std::isfinite(ptr[i])||std::abs(ptr[i])>10000){valid=false;break;}
  if(!valid){env->ReleaseFloatArrayElements(data,ptr,JNI_ABORT);return JNI_FALSE;}
- Asset&a=gAssets[assetKey];
- if(a.gpu.vao)glDeleteVertexArrays(1,&a.gpu.vao);
- if(a.gpu.buffer)glDeleteBuffers(1,&a.gpu.buffer);
- a.vertices.assign(ptr,ptr+count);
+ Asset prepared;
+ prepared.centerY=centerY;prepared.radius=radius;
+ prepared.vertices.assign(ptr,ptr+count);
  env->ReleaseFloatArrayElements(data,ptr,JNI_ABORT);
- a.gpu={};uploadAsset(a);
+ // Keep the previous GPU asset intact until replacement is ready.
+ while(glGetError()!=GL_NO_ERROR){} // Drain earlier unrelated GL errors.
+ uploadAsset(prepared);
+ const GLenum error=glGetError();
+ if(error!=GL_NO_ERROR||!prepared.gpu.vao||!prepared.gpu.buffer||prepared.gpu.count<=0){
+  if(prepared.gpu.vao)glDeleteVertexArrays(1,&prepared.gpu.vao);
+  if(prepared.gpu.buffer)glDeleteBuffers(1,&prepared.gpu.buffer);
+  __android_log_print(ANDROID_LOG_ERROR,"OE","GLB GPU upload failed: GL 0x%x",error);
+  return JNI_FALSE;
+ }
+ if(existing!=gAssets.end()){
+  if(existing->second.gpu.vao)glDeleteVertexArrays(1,&existing->second.gpu.vao);
+  if(existing->second.gpu.buffer)glDeleteBuffers(1,&existing->second.gpu.buffer);
+  existing->second=std::move(prepared);
+ }else gAssets.emplace(assetKey,std::move(prepared));
+ return JNI_TRUE;
+}
+// Replace a scene only if EVERY model and entity is valid. No scene mutation
+// occurs until all checks finish: failed imports cannot erase the open world.
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene(
+ JNIEnv*env,jclass,jint size,jboolean demo,jintArray kinds,jfloatArray transforms,
+ jobjectArray modelKeys){
+ if(!allowedWorldSize(size)||!kinds||!transforms||!modelKeys)return JNI_FALSE;
+ const jsize n=env->GetArrayLength(kinds);
+ if(n<0||n>MAX_ENTITIES||env->GetArrayLength(transforms)!=n*4||
+    env->GetArrayLength(modelKeys)!=n)return JNI_FALSE;
+ std::array<jint,MAX_ENTITIES> types{};
+ std::array<jfloat,MAX_ENTITIES*4> matrix{};
+ if(n){
+  env->GetIntArrayRegion(kinds,0,n,types.data());
+  env->GetFloatArrayRegion(transforms,0,n*4,matrix.data());
+  if(env->ExceptionCheck())return JNI_FALSE;
+ }
+ std::vector<Entity> staged;
+ staged.reserve(static_cast<size_t>(n));
+ const float half=static_cast<float>(size)*.5f;
+ for(jsize i=0;i<n;i++){
+  const int type=types[i];
+  const float x=matrix[i*4],z=matrix[i*4+1],yaw=matrix[i*4+2],scale=matrix[i*4+3];
+  if(type<0||type>6||!std::isfinite(x)||!std::isfinite(z)||
+    !std::isfinite(yaw)||!std::isfinite(scale)||
+    std::abs(x)>half||std::abs(z)>half||std::abs(yaw)>36000||
+    scale<.2f||scale>8.f)return JNI_FALSE;
+  std::string key;
+  if(type==6){
+   jstring rawKey=static_cast<jstring>(env->GetObjectArrayElement(modelKeys,i));
+   if(!rawKey||env->ExceptionCheck())return JNI_FALSE;
+   const char*raw=env->GetStringUTFChars(rawKey,nullptr);
+   if(!raw){env->DeleteLocalRef(rawKey);return JNI_FALSE;}
+   key=raw;
+   env->ReleaseStringUTFChars(rawKey,raw);
+   env->DeleteLocalRef(rawKey);
+   auto asset=gAssets.find(key);
+   if(asset==gAssets.end()||asset->second.gpu.count<=0)return JNI_FALSE;
+  }
+  staged.push_back({static_cast<int>(i)+1,type,x,z,yaw,scale,key});
+ }
+ gEntities.swap(staged);
+ gWorldSize=size;gDemoRoads=demo==JNI_TRUE;
+ gNextId=static_cast<int>(n)+1;gSelected=0;
+ gTarget={0,1.2f,1.3f};gDistance=28.f;
+ gSceneInitialized=true;
+ gUndo.clear();gRedo.clear();
  return JNI_TRUE;
 }
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeAddImportedPlaced(JNIEnv*env,jclass,jstring key,jfloat x,jfloat z,jfloat yaw,jfloat size){

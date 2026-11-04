@@ -36,6 +36,13 @@ static std::vector<Entity> gEntities;
 static int gNextId=1, gSelected=0, gWidth=1, gHeight=1;
 static float gYaw=.55f, gPitch=.45f, gDistance=28.f;
 static Vec3 gTarget{0,1.2f,1.3f};
+static bool gSceneInitialized=false, gDemoRoads=false;
+constexpr float WORLD_HALF=512.0f, WORLD_TILE=64.0f;
+struct Location {float x,z; const char* name;};
+static constexpr Location LOCATIONS[]={
+ {0,0,"Город"}, {256,0,"Волшебный лес"},
+ {-256,-64,"Древние руины"}, {16,-256,"Катакомбы"}, {32,256,"Дикие земли"}
+};
 
 float clampf(float v,float a,float b){return std::max(a,std::min(b,v));}
 Vec3 sub(Vec3 a,Vec3 b){return {a.x-b.x,a.y-b.y,a.z-b.z};}
@@ -53,7 +60,7 @@ Mat4 translate(Vec3 v){auto m=identity();m.m[12]=v.x;m.m[13]=v.y;m.m[14]=v.z;ret
 Mat4 scale(Vec3 v){Mat4 m;m.m[0]=v.x;m.m[5]=v.y;m.m[10]=v.z;m.m[15]=1;return m;}
 Mat4 rotateY(float a){Mat4 m=identity();float c=std::cos(a),s=std::sin(a);m.m[0]=c;m.m[8]=s;m.m[2]=-s;m.m[10]=c;return m;}
 Mat4 perspective(float aspect){
- float f=1/std::tan(PI/6), near=.1f, far=140.f;Mat4 m;
+ float f=1/std::tan(PI/6), near=.1f, far=560.f;Mat4 m;
  m.m[0]=f/aspect;m.m[5]=f;
  m.m[10]=(far+near)/(near-far);m.m[11]=-1;
  m.m[14]=2*far*near/(near-far);return m;
@@ -237,6 +244,51 @@ void building(const Mat4&vp,const Entity&e){
   part(vp,e,0,-1.9f,4.3f,-.9f,.7f,2.0f,.75f,stone);
  }
 }
+// 1024 x 1024 world: only draw nearby 64-meter chunks (on-demand).
+// This is a flat terrain prototype; decorative buildings are separate entities.
+void drawWorld(const Mat4&vp){
+ const float maxDistance=230.f;
+ for(int tz=-8;tz<8;tz++)for(int tx=-8;tx<8;tx++){
+  const float x=(tx+.5f)*WORLD_TILE,z=(tz+.5f)*WORLD_TILE;
+  if(std::abs(x-gTarget.x)>maxDistance || std::abs(z-gTarget.z)>maxDistance)continue;
+  const float dxForest=x-256.f,dzForest=z;
+  const float dxRuins=x+256.f,dzRuins=z+64.f;
+  const float dxCrypt=x-16.f,dzCrypt=z+256.f;
+  const float dxWild=x-32.f,dzWild=z-256.f;
+  Color c{.18f,.29f,.23f};
+  if(dxForest*dxForest+dzForest*dzForest<170.f*170.f)c={.12f,.30f,.18f};
+  else if(dxRuins*dxRuins+dzRuins*dzRuins<164.f*164.f)c={.33f,.30f,.25f};
+  else if(dxCrypt*dxCrypt+dzCrypt*dzCrypt<170.f*170.f)c={.23f,.24f,.29f};
+  else if(dxWild*dxWild+dzWild*dzWild<160.f*160.f)c={.36f,.32f,.20f};
+  if((tx+tz)%3==0){c.r*=.96f;c.g*=.96f;c.b*=.96f;}
+  draw(vp,0,{x,-.28f,z},{WORLD_TILE+.15f,.28f,WORLD_TILE+.15f},0,c);
+ }
+ if(gDemoRoads&&std::abs(gTarget.x)<150.f&&std::abs(gTarget.z)<150.f){
+  draw(vp,0,{0,-.025f,2},{27,.12f,23},0,{.44f,.44f,.44f});
+  draw(vp,0,{0,-.015f,16},{8,.13f,22},0,{.53f,.51f,.48f});
+ }
+}
+bool groundPoint(float px,float py,float &x,float &z){
+ const Vec3 eye=cameraEye(),forward=unit(sub(gTarget,eye));
+ const Vec3 right=unit(cross(forward,{0,1,0})),up=cross(right,forward);
+ const float half=std::tan(PI/6.f),aspect=float(gWidth)/float(std::max(gHeight,1));
+ const float u=(px*2.f/gWidth-1.f)*half*aspect,v=(1.f-py*2.f/gHeight)*half;
+ Vec3 ray=unit({forward.x+right.x*u+up.x*v,forward.y+right.y*u+up.y*v,forward.z+right.z*u+up.z*v});
+ if(ray.y>-.0001f)return false;
+ float t=-eye.y/ray.y;
+ if(t<=0||t>1500.f)return false;
+ x=eye.x+ray.x*t;z=eye.z+ray.z*t;
+ return x>=-WORLD_HALF&&x<=WORLD_HALF&&z>=-WORLD_HALF&&z<=WORLD_HALF;
+}
+bool blocked(float x,float z,int type){
+ const float radius=(type==0||type==1||type==2||type==6)?6.3f:1.5f;
+ for(const Entity&e:gEntities){
+  float er=(e.type==0||e.type==1||e.type==2||e.type==6)?6.3f*e.size:1.5f*e.size;
+  float dx=e.x-x,dz=e.z-z;
+  if(dx*dx+dz*dz<(radius+er)*(radius+er))return true;
+ }
+ return false;
+}
 void drawEntity(const Mat4&vp,const Entity&e){
  if(e.type==6){drawImported(vp,e);return;}
  switch(e.type){
@@ -264,6 +316,8 @@ int add(int type,float x,float z,float yaw,float size){
 }
 void reset(bool demo){
  gEntities.clear();gNextId=1;gSelected=0;
+ gSceneInitialized=true;gDemoRoads=demo;
+ gTarget={0,1.2f,1.3f};gDistance=28.f;
  if(demo){
   add(0,-8,-5,0,1);
   add(1,0,-9,0,1);
@@ -285,7 +339,7 @@ const char* nameFor(int type){
 
 extern "C" {
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeInit(JNIEnv*,jclass){
- setupGL();if(gEntities.empty()&&gNextId==1)reset(true);
+ setupGL();if(!gSceneInitialized)reset(true);
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeResize(JNIEnv*,jclass,jint w,jint h){
  gWidth=std::max(1,int(w));gHeight=std::max(1,int(h));
@@ -296,16 +350,27 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDraw(JNIEnv*,jcl
  glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
  glUseProgram(gShader.program);
  Mat4 vp=viewProjection();
- draw(vp,0,{0,-.38f,0},{90,.6f,90},0,{.19f,.29f,.25f});
- draw(vp,0,{0,-.025f,2},{27,.12f,23},0,{.44f,.44f,.44f});
- draw(vp,0,{0,-.015f,16},{8,.13f,22},0,{.53f,.51f,.48f});
- for(const auto&e:gEntities)drawEntity(vp,e);
+ drawWorld(vp);
+ for(const auto&e:gEntities){
+   if(std::abs(e.x-gTarget.x)<=230.f && std::abs(e.z-gTarget.z)<=230.f)drawEntity(vp,e);
+ }
  glBindVertexArray(0);
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeOrbit(JNIEnv*,jclass,jfloat dx,jfloat dy,jfloat zoom){
  gYaw-=dx*.006f;
  gPitch=clampf(gPitch+dy*.006f,-1.16f,1.25f);
- gDistance=clampf(gDistance*clampf(zoom,.6f,1.5f),5,85);
+ gDistance=clampf(gDistance*clampf(zoom,.6f,1.5f),5,210);
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativePan(JNIEnv*,jclass,jfloat dx,jfloat dy){
+ const float speed=gDistance*.0035f;
+ const float c=std::cos(gYaw),s=std::sin(gYaw);
+ gTarget.x=clampf(gTarget.x+(-dx*c+dy*s)*speed,-WORLD_HALF+4,WORLD_HALF-4);
+ gTarget.z=clampf(gTarget.z+(dx*s+dy*c)*speed,-WORLD_HALF+4,WORLD_HALF-4);
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeFocusLocation(JNIEnv*,jclass,jint index){
+ if(index<0 || index>=static_cast<jint>(sizeof(LOCATIONS)/sizeof(LOCATIONS[0])))return;
+ gTarget={LOCATIONS[index].x,1.2f,LOCATIONS[index].z};
+ gDistance=index==0?35.f:68.f;
 }
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePick(JNIEnv*,jclass,jfloat x,jfloat y){
  const Mat4 vp=viewProjection();
@@ -330,8 +395,33 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePick(JNIEnv*,jcl
  return found;
 }
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeAdd(JNIEnv*,jclass,jint type){
- const size_t count=gEntities.size();
- return add(type,((int(count)%3)-1)*7.f,9.f+float(count/3)*7.f,0,1);
+ if(type<0||type>5)return 0;
+ float x=gTarget.x,z=gTarget.z;
+ for(int radius=0;radius<=160;radius+=12){
+  for(int angle=0;angle<8;angle++){
+   float a=2.f*PI*angle/8.f;
+   float xx=x+std::sin(a)*radius,zz=z+std::cos(a)*radius;
+   if(xx>=-WORLD_HALF&&xx<=WORLD_HALF&&zz>=-WORLD_HALF&&zz<=WORLD_HALF&&!blocked(xx,zz,type))
+      return add(type,xx,zz,0,1);
+  }
+ }
+ return 0;
+}
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePlaceAtScreen(JNIEnv*,jclass,jint type,jfloat px,jfloat py){
+ if(type<0||type>5)return 0;
+ float x,z;
+ if(!groundPoint(px,py,x,z)||blocked(x,z,type))return 0;
+ return add(type,x,z,0,1);
+}
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePlaceImportedAtScreen(JNIEnv*env,jclass,jstring key,jfloat px,jfloat py){
+ if(!key)return 0;
+ float x,z;
+ if(!groundPoint(px,py,x,z)||blocked(x,z,6))return 0;
+ const char*raw=env->GetStringUTFChars(key,nullptr);
+ if(!raw)return 0;
+ std::string asset(raw);env->ReleaseStringUTFChars(key,raw);
+ if(gAssets.find(asset)==gAssets.end()||gEntities.size()>=MAX_ENTITIES)return 0;
+ int id=gNextId++;gEntities.push_back({id,6,x,z,0,1,asset});gSelected=id;return id;
 }
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeAddPlaced(JNIEnv*,jclass,jint type,jfloat x,jfloat z,jfloat yaw,jfloat size){
  if(!std::isfinite(x)||!std::isfinite(z)||!std::isfinite(yaw)||!std::isfinite(size) ||
@@ -340,6 +430,14 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeAddPlaced(JNIEnv
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeSelect(JNIEnv*,jclass,jint id){
  gSelected=0;for(const auto&e:gEntities)if(e.id==id){gSelected=id;break;}
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeDeleteSelected(JNIEnv*,jclass){
+ auto it=std::find_if(gEntities.begin(),gEntities.end(),[](const Entity&e){return e.id==gSelected;});
+ if(it==gEntities.end())return JNI_FALSE;
+ gEntities.erase(it);gSelected=0;return JNI_TRUE;
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeSetDemoRoads(JNIEnv*,jclass,jboolean enabled){
+ gDemoRoads=(enabled==JNI_TRUE);
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeNudge(JNIEnv*,jclass,jfloat x,jfloat z){
  if(Entity*e=selected()){e->x=clampf(e->x+x,-300,300);e->z=clampf(e->z+z,-300,300);}
@@ -357,7 +455,7 @@ JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSelectedInfo(
  return env->NewStringUTF(out.str().c_str());
 }
 JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSceneSnapshot(JNIEnv*env,jclass){
- std::ostringstream out;out<<std::fixed<<std::setprecision(4)<<"{\"version\":1,\"items\":[";
+ std::ostringstream out;out<<std::fixed<<std::setprecision(4)<<"{\"version\":1,\"demoRoads\":"<<(gDemoRoads?"true":"false")<<",\"items\":[";
  for(size_t i=0;i<gEntities.size();i++){
   const auto&e=gEntities[i];if(i)out<<",";
   out<<"{\"type\":"<<e.type<<",\"x\":"<<e.x<<",\"z\":"<<e.z

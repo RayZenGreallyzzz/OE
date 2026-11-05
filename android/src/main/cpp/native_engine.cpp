@@ -26,11 +26,21 @@ struct Color {float r,g,b;};
 struct Shader {
  GLuint program=0;
  GLint locMvp=-1, locModel=-1, locColor=-1, locLight=-1;
+ GLint locTexture=-1,locTextured=-1;
 };
+struct TextureResource {
+ GLuint id=0;
+ int width=0,height=0,format=0; // 0 RGBA8, 1 ETC2 RGB, 2 ETC2 RGBA
+ std::vector<unsigned char> bytes; // Retained to restore an EGL context.
+};
+struct AssetBatch {int first=0,count=0,texture=-1;};
 struct Asset {
  Mesh gpu;
+ int vertexStride=9;
  std::vector<float> vertices; // Retained for GPU context recreation.
- float centerY=0.f, radius=0.f; // Conservative normalized object-space sphere.
+ std::vector<AssetBatch> batches;
+ std::vector<TextureResource> textures;
+ float centerY=0.f, radius=0.f;
 };
 static Mesh gMeshes[3];
 static Mesh gStaticMeshes[17]; // Every decorative object is a single combined draw.
@@ -44,6 +54,13 @@ struct TerrainGpu {
 static TerrainGpu gTerrain;
 static int gDrawCalls=0,gTriangles=0;
 static std::unordered_map<std::string,Asset> gAssets;
+static constexpr size_t MAX_TEXTURE_CACHE_BYTES=96u*1024u*1024u;
+size_t textureCacheBytes(){
+ size_t bytes=0;
+ for(const auto&item:gAssets)for(const auto&tex:item.second.textures)
+  bytes+=tex.bytes.size();
+ return bytes;
+}
 static constexpr int MAX_ASSETS=12;
 static constexpr int MAX_IMPORTED_TRIANGLES=90000;
 static Shader gShader;
@@ -187,16 +204,53 @@ void uploadAsset(Asset&asset){
  const auto &v=asset.vertices;
  if(v.empty())return;
  Mesh &m=asset.gpu;
- m.count=static_cast<GLsizei>(v.size()/9);
+ m.count=static_cast<GLsizei>(v.size()/static_cast<size_t>(asset.vertexStride));
  glGenVertexArrays(1,&m.vao);glBindVertexArray(m.vao);
  glGenBuffers(1,&m.buffer);glBindBuffer(GL_ARRAY_BUFFER,m.buffer);
  glBufferData(GL_ARRAY_BUFFER,static_cast<GLsizeiptr>(v.size()*sizeof(float)),v.data(),GL_STATIC_DRAW);
- const GLsizei stride=9*sizeof(float);
+ const GLsizei stride=static_cast<GLsizei>(asset.vertexStride*sizeof(float));
  for(int attrib=0;attrib<3;attrib++){
-   glEnableVertexAttribArray(attrib);
-   glVertexAttribPointer(attrib,3,GL_FLOAT,GL_FALSE,stride,reinterpret_cast<void*>(static_cast<uintptr_t>(attrib*3*sizeof(float))));
+  glEnableVertexAttribArray(attrib);
+  glVertexAttribPointer(attrib,3,GL_FLOAT,GL_FALSE,stride,
+   reinterpret_cast<void*>(static_cast<uintptr_t>(attrib*3*sizeof(float))));
  }
+ if(asset.vertexStride==11){
+  glEnableVertexAttribArray(3);
+  glVertexAttribPointer(3,2,GL_FLOAT,GL_FALSE,stride,
+   reinterpret_cast<void*>(static_cast<uintptr_t>(9*sizeof(float))));
+ }else glDisableVertexAttribArray(3);
  glBindVertexArray(0);
+}
+bool uploadTextures(Asset&asset){
+ for(auto&tex:asset.textures){
+  tex.id=0;
+  glGenTextures(1,&tex.id);
+  if(!tex.id)return false;
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D,tex.id);
+  glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_REPEAT);
+  glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_REPEAT);
+  glPixelStorei(GL_UNPACK_ALIGNMENT,1);
+  if(tex.format==0){
+   glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,tex.width,tex.height,0,GL_RGBA,
+    GL_UNSIGNED_BYTE,tex.bytes.data());
+  }else{
+   const GLenum internal=tex.format==1?GL_COMPRESSED_RGB8_ETC2:GL_COMPRESSED_RGBA8_ETC2_EAC;
+   glCompressedTexImage2D(GL_TEXTURE_2D,0,internal,tex.width,tex.height,0,
+     static_cast<GLsizei>(tex.bytes.size()),tex.bytes.data());
+  }
+  glPixelStorei(GL_UNPACK_ALIGNMENT,4);
+  if(glGetError()!=GL_NO_ERROR)return false;
+ }
+ glBindTexture(GL_TEXTURE_2D,0);
+ return true;
+}
+void releaseAssetGpu(Asset&asset){
+ for(auto&tex:asset.textures)if(tex.id)glDeleteTextures(1,&tex.id);
+ if(asset.gpu.vao)glDeleteVertexArrays(1,&asset.gpu.vao);
+ if(asset.gpu.buffer)glDeleteBuffers(1,&asset.gpu.buffer);
 }
 GLuint shader(GLenum kind,const char*src){
  GLuint s=glCreateShader(kind);glShaderSource(s,1,&src,nullptr);glCompileShader(s);

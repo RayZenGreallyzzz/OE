@@ -475,9 +475,10 @@ public class EditorActivity extends Activity {
             final String scene=nativeSceneSnapshot();
             new Thread(() -> {
                 try{
-                    OutputStream stream=getContentResolver().openOutputStream(uri,"w");
-                    if(stream==null)throw new Exception("Нет доступа к файлу");
-                    ProjectArchive.exportProject(scene,modelDir(),stream);
+                    try(OutputStream stream=getContentResolver().openOutputStream(uri,"w")){
+                        if(stream==null)throw new Exception("Нет доступа к файлу");
+                        ProjectArchive.exportProject(scene,modelDir(),stream);
+                    }
                     message("Проект экспортирован со всеми используемыми GLB");
                 }catch(Exception e){
                     message("Ошибка экспорта: "+e.getMessage());
@@ -491,9 +492,11 @@ public class EditorActivity extends Activity {
         message("Проверяю архив проекта и модели…");
         new Thread(() -> {
             try{
-                InputStream stream=getContentResolver().openInputStream(uri);
-                if(stream==null)throw new Exception("Нет доступа к архиву");
-                ProjectArchive.StagedProject staged=ProjectArchive.importProject(stream,getCacheDir());
+                ProjectArchive.StagedProject staged;
+                try(InputStream stream=getContentResolver().openInputStream(uri)){
+                    if(stream==null)throw new Exception("Нет доступа к архиву");
+                    staged=ProjectArchive.importProject(stream,getCacheDir());
+                }
                 surface.queueEvent(() -> {
                     final HashSet<String> cached=new HashSet<>(Arrays.asList(nativeLoadedAssetKeys()));
                     new Thread(() -> readAndPrepareScene(cached,staged.sceneFile,staged.modelDir,staged.root),

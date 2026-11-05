@@ -516,12 +516,38 @@ bool groundPoint(float px,float py,float &x,float &z){
  const Vec3 right=unit(cross(forward,{0,1,0})),up=cross(right,forward);
  const float half=std::tan(PI/6.f),aspect=float(gWidth)/float(std::max(gHeight,1));
  const float u=(px*2.f/gWidth-1.f)*half*aspect,v=(1.f-py*2.f/gHeight)*half;
- Vec3 ray=unit({forward.x+right.x*u+up.x*v,forward.y+right.y*u+up.y*v,forward.z+right.z*u+up.z*v});
- if(ray.y>-.0001f)return false;
- float t=-eye.y/ray.y;
- if(t<=0||t>1500.f)return false;
- x=eye.x+ray.x*t;z=eye.z+ray.z*t;
- return x>=-worldHalf()&&x<=worldHalf()&&z>=-worldHalf()&&z<=worldHalf();
+ Vec3 ray=unit({forward.x+right.x*u+up.x*v,forward.y+right.y*u+up.y*v,
+                 forward.z+right.z*u+up.z*v});
+ if(gBrushes.empty()){
+  if(ray.y>-.0001f)return false;
+  const float t=-eye.y/ray.y;
+  if(t<=0||t>1500.f)return false;
+  x=eye.x+ray.x*t;z=eye.z+ray.z*t;
+  return x>=-worldHalf()&&x<=worldHalf()&&z>=-worldHalf()&&z<=worldHalf();
+ }
+ // Ray-heightfield intersection: select the VISIBLE hillside, not flat y=0
+ // behind it. Only runs on touch; no continuous GPU/CPU work.
+ float lo=0.f;
+ float previous=eye.y-terrainHeightAt(eye.x,eye.z);
+ if(previous<0)return false;
+ for(int i=1;i<=190;i++){
+  const float hi=i*8.f;
+  const float pxHit=eye.x+ray.x*hi,pzHit=eye.z+ray.z*hi;
+  const float cur=eye.y+ray.y*hi-terrainHeightAt(pxHit,pzHit);
+  if(cur<=0&&previous>=0){
+   float low=lo,high=hi;
+   for(int j=0;j<12;j++){
+    const float mid=(low+high)*.5f;
+    const float my=eye.y+ray.y*mid;
+    if(my-terrainHeightAt(eye.x+ray.x*mid,eye.z+ray.z*mid)>0.f)low=mid;
+    else high=mid;
+   }
+   x=eye.x+ray.x*high;z=eye.z+ray.z*high;
+   return x>=-worldHalf()&&x<=worldHalf()&&z>=-worldHalf()&&z<=worldHalf();
+  }
+  lo=hi;previous=cur;
+ }
+ return false;
 }
 bool blocked(float x,float z,int type){
  const float radius=(type==0||type==1||type==2||type==6)?6.3f:1.5f;

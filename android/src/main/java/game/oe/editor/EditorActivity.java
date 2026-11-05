@@ -1009,18 +1009,20 @@ public class EditorActivity extends Activity {
                 } else if(!multiTouch) {
                     float x=e.getX(),y=e.getY();
                     final float dx=x-lastX,dy=y-lastY;
-                    final int axis=touchedGizmoAxis;
                     if(dx!=0||dy!=0){
-                        if(axis>=0&&placingKind==-1&&terrainMode==0){
-                            // A single history snapshot for the full gesture.
-                            // Incremental edits are performed on the GL thread.
-                            final float sx=surfaceX(dx),sy=surfaceY(dy);
-                            queueEvent(()->{
-                                if(!gizmoEditStarted)gizmoEditStarted=nativeGizmoBegin(axis);
+                        final float sx=surfaceX(dx),sy=surfaceY(dy);
+                        final boolean movedEnough=Math.hypot(x-downX,y-downY)>dp(5);
+                        // All input decisions happen on the GLES event queue:
+                        // axis hit-test on DOWN is guaranteed to run before MOVE.
+                        queueEvent(()->{
+                            final int axis=touchedGizmoAxis;
+                            if(axis>=0&&placingKind==-1&&terrainMode==0){
+                                if(!gizmoEditStarted&&movedEnough)
+                                    gizmoEditStarted=nativeGizmoBegin(axis);
                                 if(gizmoEditStarted)nativeGizmoDrag(axis,sx,sy);
-                                interactiveRender();
-                            });
-                        }else queueEvent(()->{nativeOrbit(dx,dy,1);interactiveRender();});
+                            }else nativeOrbit(dx,dy,1);
+                            interactiveRender();
+                        });
                     }
                     lastX=x;lastY=y;
                 }
@@ -1028,47 +1030,47 @@ public class EditorActivity extends Activity {
             }
             if(action==MotionEvent.ACTION_POINTER_UP) {multiTouch=true;lastPinch=0;return true;}
             if(action==MotionEvent.ACTION_UP) {
-                if(!multiTouch&&touchedGizmoAxis>=0){
-                    touchedGizmoAxis=-1;
+                if(!multiTouch){
+                    // Decide after the queued DOWN hit-test; don't accidentally
+                    // pick another entity when tapping a gizmo handle.
+                    final float upX=e.getX(),upY=e.getY();
+                    final float px=surfaceX(upX),py=surfaceY(upY);
+                    final boolean tap=Math.hypot(upX-downX,upY-downY)<dp(8);
+                    final int kind=placingKind,brush=terrainMode;
+                    final String asset=placingGlb;
                     queueEvent(()->{
-                        nativeGizmoEnd();gizmoEditStarted=false;
-                        requestRender();refreshSelected();
+                        if(touchedGizmoAxis>=0){
+                            nativeGizmoEnd();gizmoEditStarted=false;
+                            touchedGizmoAxis=-1;
+                            requestRender();refreshSelected();
+                            return;
+                        }
+                        if(tap){
+                            if(brush!=0){
+                                int count=nativeApplyTerrainBrushAtScreen(px,py,terrainRadius,
+                                    brush*terrainStrength);
+                                if(count>0)message("Рельеф изменён · "+count+"/64");
+                                else message("Не удалось изменить землю: край карты или лимит 64 кисти");
+                            }else if(kind>=0){
+                                int id=kind==6?nativePlaceImportedAtScreen(asset,px,py):
+                                    nativePlaceAtScreen(kind,px,py);
+                                if(id>0){
+                                    placingKind=-1;placingGlb=null;
+                                    ui(()->statusText.setText("Объект размещён · выбери его для 3D-манипулятора"));
+                                }else message("Место занято или вне карты");
+                            }else nativeSelect(nativePick(px,py));
+                            refreshSelected();
+                        }else{
+                            final float dx=upX-lastX,dy=upY-lastY;
+                            if(dx!=0||dy!=0)nativeOrbit(dx,dy,1);
+                        }
+                        requestRender();touchedGizmoAxis=-1;
                     });
+                    multiTouch=false;
                     return true;
                 }
-                if(!multiTouch && Math.hypot(e.getX()-downX,e.getY()-downY)<dp(8)) {
-                    final float x=surfaceX(e.getX()),y=surfaceY(e.getY());
-                    final int kind=placingKind;
-                    final String asset=placingGlb;
-                    final int brush=terrainMode;
-                    if(brush!=0){
-                        queueEvent(() -> {
-                            int count=nativeApplyTerrainBrushAtScreen(x,y,terrainRadius,brush*terrainStrength);
-                            if(count>0)message("Рельеф изменён · "+count+"/64 · Сохранить проект");
-                            else message("Не удалось изменить землю: точка вне карты или лимит 64 мазка");
-                            requestRender();
-                        });
-                    }else if(kind>=0) {
-                        queueEvent(() -> {
-                            int id=kind==6?nativePlaceImportedAtScreen(asset,x,y):nativePlaceAtScreen(kind,x,y);
-                            if(id>0){
-                                placingKind=-1;placingGlb=null;
-                                ui(() -> statusText.setText("Объект размещён · для следующего используй + в панели."));
-                                message("Объект добавлен на карту");
-                            } else message("Место занято или вне карты — коснись свободного участка");
-                            requestRender();refreshSelected();
-                        });
-                    } else {
-                        queueEvent(() -> {nativeSelect(nativePick(x,y));requestRender();refreshSelected();});
-                    }
-                } else if(!multiTouch) {
-                    // Always display the last movement even when redraws are capped.
-                    final float dx=e.getX()-lastX,dy=e.getY()-lastY;
-                    if(dx!=0||dy!=0)queueEvent(() -> {nativeOrbit(dx,dy,1);requestRender();});
-                    else queueEvent(this::requestRender);
-                } else {
-                    queueEvent(this::requestRender);
-                }
+                // Two-finger gesture already processed during movement.
+                queueEvent(this::requestRender);
                 multiTouch=false;touchedGizmoAxis=-1;
                 queueEvent(()->{nativeGizmoEnd();gizmoEditStarted=false;});
                 return true;

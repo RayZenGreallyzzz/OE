@@ -769,7 +769,7 @@ int gizmoHit(float px,float py){
   if(t<.22f||t>1.30f)continue;
   const float nx=bx+t*dx-px,ny=by+t*dy-py;
   const float distance=std::sqrt(nx*nx+ny*ny);
-  const float target=std::max(14.f,gWidth*.012f); // scales with tablet viewport
+  const float target=std::max(22.f,gWidth*.025f); // scales with tablet viewport
   if(distance<target&&distance<nearest){nearest=distance;hit=axis;}
  }
  return hit;

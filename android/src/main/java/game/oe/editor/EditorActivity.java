@@ -75,7 +75,8 @@ public class EditorActivity extends Activity {
     private static native void nativeClearHistory();
     private static native int nativeDuplicateSelected();
     private static native boolean nativeRegisterAsset(String key, float[] vertices, float centerY,
-            float radius, int[] draws, byte[][] images, int[] imageInfo);
+            float radius, int[] draws, byte[][] images, int[] imageInfo,
+            boolean preserveRig);
     private static native String[] nativeLoadedAssetKeys();
     private static native boolean nativeCanRegisterMore(int newUniqueAssets);
     private static native void nativeDiscardUnusedAsset(String key);
@@ -858,7 +859,7 @@ public class EditorActivity extends Activity {
                                 surface.queueEvent(() -> {
                                     boolean success=nativeRegisterAsset(key,model.vertices,
                                             model.boundCenterY,model.boundRadius,
-                                            model.draws,model.imageData,model.imageInfo);
+                                            model.draws,model.imageData,model.imageInfo,model.previewOmitsRig);
                                     importing=false;
                                     if(success){
                                         surface.requestRender();
@@ -1096,7 +1097,7 @@ public class EditorActivity extends Activity {
                         GlbReader.Result mesh=entry.getValue();
                         if(!nativeRegisterAsset(entry.getKey(),mesh.vertices,
                                 mesh.boundCenterY,mesh.boundRadius,
-                                mesh.draws,mesh.imageData,mesh.imageInfo))
+                                mesh.draws,mesh.imageData,mesh.imageInfo,mesh.previewOmitsRig))
                             throw new Exception("Ошибка загрузки GPU: "+entry.getKey());
                         uploaded.add(entry.getKey());
                     }

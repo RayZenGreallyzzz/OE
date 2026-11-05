@@ -495,6 +495,17 @@ public final class GlbReader {
         JSONArray animations=gltf.optJSONArray("animations"),textures=gltf.optJSONArray("textures");
         boolean rigged=(skins!=null&&skins.length()>0)||
             (animations!=null&&animations.length()>0);
+        // Morph target position/normal deltas are NOT part of the static
+        // renderer; don't simplify them as though they were plain meshes.
+        JSONArray meshes=gltf.optJSONArray("meshes");
+        if(meshes!=null)for(int mi=0;mi<meshes.length();mi++){
+            JSONArray primitives=meshes.getJSONObject(mi).optJSONArray("primitives");
+            if(primitives==null)continue;
+            for(int pi=0;pi<primitives.length();pi++){
+                JSONArray targets=primitives.getJSONObject(pi).optJSONArray("targets");
+                if(targets!=null&&targets.length()>0)rigged=true;
+            }
+        }
         TextureReader.Image[] decoded=new TextureReader.Image[usedTextures.size()];
         int memoryUsed=0;
         for(Map.Entry<Integer,Integer> item:usedTextures.entrySet()){

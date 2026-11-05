@@ -1,5 +1,6 @@
 // OE Native 0.2. GLES 3.0/C++ scene and renderer; no Godot dependency.
 #include <jni.h>
+#include "vendor/meshoptimizer/meshoptimizer.h"
 #include <GLES3/gl3.h>
 #include <android/log.h>
 #include <algorithm>
@@ -638,6 +639,41 @@ const char* nameFor(int type){
 } // namespace
 
 extern "C" {
+// Offline Meshopt decoder — only bounded, validated bufferViews are accepted.
+// This reconstructs decoded GLB views in memory. The original GLB is immutable.
+JNIEXPORT jbyteArray JNICALL Java_game_oe_editor_GlbReader_nativeDecodeMeshopt(
+ JNIEnv*env,jclass,jbyteArray encoded,jint count,jint stride,jint mode,jint filter){
+ if(!encoded||count<=0||stride<=0||stride>256||mode<0||mode>2||filter<0||filter>4)
+  return nullptr;
+ const jsize length=env->GetArrayLength(encoded);
+ const size_t bytes=static_cast<size_t>(count)*static_cast<size_t>(stride);
+ if(length<=0||length>24*1024*1024||bytes>32*1024*1024||
+    (mode==0&&(stride%4!=0))||
+    (mode==1&&(count%3!=0||!(stride==2||stride==4)))||
+    (mode==2&&!(stride==2||stride==4))||
+    (mode!=0&&filter!=0)||
+    (filter==1&&!(stride==4||stride==8))||
+    (filter==2&&stride!=8)||
+    (filter==3&&stride%4!=0)||
+    (filter==4&&!(stride==4||stride==8)))return nullptr;
+ std::vector<unsigned char> source(static_cast<size_t>(length)),output(bytes);
+ env->GetByteArrayRegion(encoded,0,length,reinterpret_cast<jbyte*>(source.data()));
+ if(env->ExceptionCheck())return nullptr;
+ int result=mode==0?
+    meshopt_decodeVertexBuffer(output.data(),count,stride,source.data(),source.size()):
+    (mode==1?meshopt_decodeIndexBuffer(output.data(),count,stride,source.data(),source.size()):
+             meshopt_decodeIndexSequence(output.data(),count,stride,source.data(),source.size()));
+ if(result!=0)return nullptr;
+ if(filter==1)meshopt_decodeFilterOct(output.data(),count,stride);
+ else if(filter==2)meshopt_decodeFilterQuat(output.data(),count,stride);
+ else if(filter==3)meshopt_decodeFilterExp(output.data(),count,stride);
+ else if(filter==4)meshopt_decodeFilterColor(output.data(),count,stride);
+ jbyteArray decoded=env->NewByteArray(static_cast<jsize>(bytes));
+ if(!decoded)return nullptr;
+ env->SetByteArrayRegion(decoded,0,static_cast<jsize>(bytes),
+                         reinterpret_cast<const jbyte*>(output.data()));
+ return decoded;
+}
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeInit(JNIEnv*,jclass){
  setupGL();if(!gSceneInitialized)reset(true);
 }

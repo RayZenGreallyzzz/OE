@@ -92,6 +92,7 @@ final class TextureReader {
         need(width>0&&height>0&&width<=limit&&height<=limit&&
             depth==0&&layers==0&&faces==1&&levels>=1&&levels<=16,
             "KTX2: поддерживаются только 2D-текстуры до "+limit+" px");
+        need(src.length>=80+24*levels,"Не хватает индекса уровней KTX2");
         need(scheme==0&&vkFormat!=0,
             "KTX2 BasisU/ETC1S/UASTC ещё требует отдельный транскодер");
         int format,bytesPerBlock;
@@ -106,7 +107,7 @@ final class TextureReader {
         long expected=bytesPerBlock==0?(long)width*height*4:
             (long)((width+3)/4)*((height+3)/4)*bytesPerBlock;
         long offset=u64(b,80),length=u64(b,88),unpacked=u64(b,96);
-        need(offset>=104&&length==expected&&unpacked==expected&&
+        need(offset>=80+24*levels&&length==expected&&unpacked==expected&&
             length<=MAX_SOURCE_BYTES&&offset<=src.length&&length<=src.length-offset,
             "Некорректные границы уровня KTX2");
         return new Image(Arrays.copyOfRange(src,(int)offset,(int)(offset+length)),

@@ -395,7 +395,7 @@ public class EditorActivity extends Activity {
             addPaletteOption("+ Камни",()->enterPlaceMode(7,null));
             addPaletteOption("+ Куст",()->enterPlaceMode(8,null));
             addPaletteOption("+ Лавка",()->enterPlaceMode(9,null));
-            addPaletteOption("Импорт GLB модели",this::pickGlb);
+            addPaletteOption("Импорт 3D: GLB / glTF / VOX",this::pickGlb);
         }else if("Рельеф".equals(category)){
             addPaletteOption("⛰ Поднять гору",()->enterTerrainMode(1));
             addPaletteOption("⛰ Опустить землю",()->enterTerrainMode(-1));
@@ -409,7 +409,7 @@ public class EditorActivity extends Activity {
             addPaletteOption("🖌 Покрасить землю",this::activateTerrainPainting);
             addPaletteOption("📏 Радиус кисти земли",this::choosePaintRadius);
             addPaletteOption("✕ Завершить покраску",this::cancelPlace);
-            addPaletteOption("Импорт GLB с материалами",this::pickGlb);
+            addPaletteOption("Импорт модели: GLB / glTF / VOX",this::pickGlb);
             addPaletteOption("Качество GLB 1024 / 2048 px",this::chooseTextureLimit);
             addPaletteOption("Форматы и ограничения",()->new AlertDialog.Builder(this)
                 .setTitle("Текстуры OE")
@@ -740,6 +740,12 @@ public class EditorActivity extends Activity {
         if (!dir.exists() && !dir.mkdirs()) throw new Exception("Нет доступа к папке моделей");
         return dir;
     }
+    private File originalDir() throws Exception {
+        File dir=new File(getFilesDir(),"originals");
+        if(!dir.exists()&&!dir.mkdirs())
+            throw new Exception("Не создать каталог оригиналов 3D");
+        return dir;
+    }
     private byte[] limitedRead(InputStream input) throws Exception {
         try (InputStream stream = input; ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             byte[] buf = new byte[8192];
@@ -985,22 +991,45 @@ public class EditorActivity extends Activity {
         final Uri uri=intent.getData();
         if(importing)return;
         importing=true;
-        message("Читаю модель GLB…");
+        message("Распознаю GLB / glTF / VOX…");
         new Thread(() -> {
             try {
                 InputStream stream=getContentResolver().openInputStream(uri);
                 if(stream==null)throw new Exception("Не удалось открыть файл");
-                byte[] bytes=limitedRead(stream);
+                byte[] original=limitedRead(stream);
+                UniversalModelReader.Converted converted=UniversalModelReader.convert(original);
+                byte[] bytes=converted.glb;
                 final String key=GlbReader.key(bytes);
+                // Canonical GLB is the renderer/project asset. The exact original
+                // VOX/glTF bytes are stored separately and exported in .oezip.
                 File destination=new File(modelDir(),key);
-                if(!destination.exists())Files.write(destination.toPath(),bytes);
+                if(!destination.exists()){
+                    File partial=new File(modelDir(),key+".part");
+                    try{
+                        Files.write(partial.toPath(),bytes);
+                        Files.move(partial.toPath(),destination.toPath(),
+                            StandardCopyOption.REPLACE_EXISTING);
+                    }finally{Files.deleteIfExists(partial.toPath());}
+                }
+                if(!"glb".equals(converted.originalType)){
+                    String originalName=key.substring(0,key.length()-4)+"."+converted.originalType;
+                    File savedOriginal=new File(originalDir(),originalName);
+                    if(!savedOriginal.exists()){
+                        File partial=new File(originalDir(),originalName+".part");
+                        try{
+                            Files.write(partial.toPath(),original);
+                            Files.move(partial.toPath(),savedOriginal.toPath(),
+                                StandardCopyOption.REPLACE_EXISTING);
+                        }finally{Files.deleteIfExists(partial.toPath());}
+                    }
+                }
                 // GPU asset lookup MUST run on the GL thread; do not decode a
                 // large file again when the content-addressed resource exists.
                 surface.queueEvent(() -> {
                     if(Arrays.asList(nativeLoadedAssetKeys()).contains(key)){
                         importing=false;
                         ui(() -> enterPlaceMode(6,key));
-                        message("GLB уже загружена — использую модель из памяти");
+                        message("Модель уже загружена — использую меш из памяти");
                     }else{
                         new Thread(() -> {
                             try{
@@ -1019,20 +1048,20 @@ public class EditorActivity extends Activity {
                                             if(model.previewOmitsTextures)notice+=" · текстуры пока не отображаются";
                                             final String alert=notice;
                                             ui(() -> statusText.setText(alert));
-                                            message("GLB импортирован. "+notice);
-                                        }else message("GLB прочитан: "+model.triangles+" треугольников. Коснись карты.");
-                                    }else message("Не удалось загрузить GLB: память, лимит или GPU");
+                                            message("Модель импортирована. "+notice);
+                                        }else message("Модель готова: "+model.triangles+" треугольников. Коснись карты.");
+                                    }else message("Не удалось загрузить модель: память, лимит или GPU");
                                 });
                             }catch(Exception e){
                                 importing=false;
-                                message("Ошибка GLB: "+e.getMessage());
+                                message("Ошибка импорта 3D: "+e.getMessage());
                             }
                         },"oe-glb-decode").start();
                     }
                 });
             }catch(Exception e){
                 importing=false;
-                message("Ошибка GLB: "+e.getMessage());
+                message("Ошибка импорта 3D: "+e.getMessage());
             }
         },"oe-glb-import").start();
     }

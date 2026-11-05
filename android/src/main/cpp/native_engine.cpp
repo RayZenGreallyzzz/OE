@@ -20,7 +20,7 @@ struct Vec3 {float x, y, z;};
 struct Vec4 {float x, y, z, w;};
 struct Mat4 {float m[16]{};};
 struct Mesh {GLuint vao=0, buffer=0; GLsizei count=0;};
-struct Entity {int id=0, type=0; float x=0, z=0, yaw=0, size=1; std::string asset;};
+struct Entity {int id=0, type=0; float x=0, z=0, yaw=0, size=1; std::string asset; float y=0.f;};
 struct Color {float r,g,b;};
 struct Shader {
  GLuint program=0;
@@ -38,7 +38,7 @@ void bakeStaticMesh(int type);
 struct TerrainGpu {
  GLuint vao=0, buffer=0;
  GLsizei vertices=0;
- int gridX=2147483647,gridZ=2147483647,worldSize=0,tiles=0;
+ int gridX=2147483647,gridZ=2147483647,worldSize=0,tiles=0,revision=-1;
 };
 static TerrainGpu gTerrain;
 static int gDrawCalls=0,gTriangles=0;
@@ -53,6 +53,20 @@ static Vec3 gTarget{0,1.2f,1.3f};
 static bool gSceneInitialized=false, gDemoRoads=false;
 constexpr float WORLD_TILE=64.0f;
 static int gWorldSize=1024; // Set in app to 1024/2048/4096/8192/16384 meters.
+struct TerrainBrush {float x,z,radius,strength;};
+static std::vector<TerrainBrush> gBrushes;
+static int gTerrainRevision=0;
+static constexpr size_t MAX_TERRAIN_BRUSHES=64;
+float terrainHeightAt(float x,float z){
+ float h=0;
+ for(const auto&b:gBrushes){
+  const float dx=x-b.x,dz=z-b.z,d2=dx*dx+dz*dz;
+  if(d2>=b.radius*b.radius)continue;
+  const float t=1.f-std::sqrt(d2)/b.radius;
+  h+=b.strength*t*t*(3.f-2.f*t);
+ }
+ return std::max(-24.f,std::min(140.f,h));
+}
 // Bounded snapshots keep undo predictable on RAM-constrained Android devices.
 struct SceneSnapshot {
  std::vector<Entity> entities;
@@ -60,14 +74,16 @@ struct SceneSnapshot {
  bool demoRoads=false;
  Vec3 target{0,1.2f,1.3f};
  float cameraDistance=28.f;
+ std::vector<TerrainBrush> terrain;
 };
 static std::vector<SceneSnapshot> gUndo,gRedo;
 static bool gSuspendHistory=false;
 static constexpr size_t HISTORY_LIMIT=40;
-SceneSnapshot captureScene(){return {gEntities,gNextId,gSelected,gWorldSize,gDemoRoads,gTarget,gDistance};}
+SceneSnapshot captureScene(){return {gEntities,gNextId,gSelected,gWorldSize,gDemoRoads,gTarget,gDistance,gBrushes};}
 void restoreScene(const SceneSnapshot&s){
  gEntities=s.entities;gNextId=s.nextId;gSelected=s.selected;gWorldSize=s.worldSize;
- gDemoRoads=s.demoRoads;gTarget=s.target;gDistance=s.cameraDistance;gSceneInitialized=true;
+ gDemoRoads=s.demoRoads;gTarget=s.target;gDistance=s.cameraDistance;
+ gBrushes=s.terrain;gTerrainRevision++;gSceneInitialized=true;
 }
 void pushBounded(std::vector<SceneSnapshot>&stack,SceneSnapshot value){
  if(stack.size()>=HISTORY_LIMIT)stack.erase(stack.begin());
@@ -292,7 +308,7 @@ bool importedInView(const Frustum&frustum,const Entity&e){
  if(it==gAssets.end()||it->second.gpu.count<=0)return false;
  const Asset &asset=it->second;
  const float radius=asset.radius*e.size;
- const Vec3 center{e.x,asset.centerY*e.size,e.z};
+ const Vec3 center{e.x,e.y+asset.centerY*e.size,e.z};
  const Vec3 delta=sub(center,cameraEye());
  const float maxDistance=230.f+radius;
  if(dot(delta,delta)>maxDistance*maxDistance)return false;
@@ -301,7 +317,7 @@ bool importedInView(const Frustum&frustum,const Entity&e){
 void drawImported(const Mat4&vp,const Entity&e){
  auto it=gAssets.find(e.asset);
  if(it==gAssets.end()||it->second.gpu.count==0)return;
- const Mat4 model=mul(mul(translate({e.x,0,e.z}),rotateY(e.yaw*RAD)),scale({e.size,e.size,e.size}));
+ const Mat4 model=mul(mul(translate({e.x,e.y,e.z}),rotateY(e.yaw*RAD)),scale({e.size,e.size,e.size}));
  const Mat4 mvp=mul(vp,model);
  glUniformMatrix4fv(gShader.locMvp,1,GL_FALSE,mvp.m);
  glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
@@ -397,7 +413,7 @@ void drawStatic(const Mat4&vp,const Entity&e){
  if(e.type<0||e.type>=10||e.type==6)return;
  const Mesh&m=gStaticMeshes[e.type];
  if(m.count<=0)return;
- const Mat4 model=mul(mul(translate({e.x,0,e.z}),rotateY(e.yaw*RAD)),
+ const Mat4 model=mul(mul(translate({e.x,e.y,e.z}),rotateY(e.yaw*RAD)),
   scale({e.size,e.size,e.size}));
  const Mat4 mvp=mul(vp,model);
  glUniformMatrix4fv(gShader.locMvp,1,GL_FALSE,mvp.m);
@@ -412,45 +428,71 @@ void drawStatic(const Mat4&vp,const Entity&e){
 // Low-power flat terrain. Combine nearby 64m squares into one vertex buffer.
 // Rebuild when the camera crosses a tile border (or world size changes), not per frame.
 // 11x11 tiles maximum; only 2 triangles/tile, one draw call for all terrain.
-void appendTerrainVertex(std::vector<float>&data,float x,float z,Color color){
- data.insert(data.end(),{x,-.14f,z,0.f,1.f,0.f,color.r,color.g,color.b});
+// Surface remains a single cached GLES buffer. Fine 8m tessellation is used
+// ONLY on 64m tiles intersecting a deformation stroke; other tiles stay two tris.
+void appendTerrainVertex(std::vector<float>&data,float x,float z,Color base,bool detailed){
+ const float h=terrainHeightAt(x,z);
+ Vec3 n{0,1,0};
+ if(detailed){
+  const float dx=(terrainHeightAt(x+1,z)-terrainHeightAt(x-1,z))*.5f;
+  const float dz=(terrainHeightAt(x,z+1)-terrainHeightAt(x,z-1))*.5f;
+  n=unit({-dx,1.f,-dz});
+ }
+ Color c=base;
+ if(h>12.f){const float t=clampf((h-12.f)/36.f,0.f,1.f);
+   c={base.r*(1-t)+.42f*t,base.g*(1-t)+.42f*t,base.b*(1-t)+.40f*t};}
+ data.insert(data.end(),{x,h-.14f,z,n.x,n.y,n.z,c.r,c.g,c.b});
+}
+void terrainTriangle(std::vector<float>&v,float x0,float z0,float x1,float z1,
+ float x2,float z2,Color c,bool detail){
+ appendTerrainVertex(v,x0,z0,c,detail);
+ appendTerrainVertex(v,x1,z1,c,detail);
+ appendTerrainVertex(v,x2,z2,c,detail);
 }
 void updateTerrain(){
  const int gx=static_cast<int>(std::floor(gTarget.x/WORLD_TILE));
  const int gz=static_cast<int>(std::floor(gTarget.z/WORLD_TILE));
- if(gTerrain.gridX==gx&&gTerrain.gridZ==gz&&gTerrain.worldSize==gWorldSize)return;
+ if(gTerrain.gridX==gx&&gTerrain.gridZ==gz&&gTerrain.worldSize==gWorldSize&&
+    gTerrain.revision==gTerrainRevision)return;
  std::vector<float> vertices;
- vertices.reserve(11*11*6*9);
+ vertices.reserve(20000);
  const int half=gWorldSize/static_cast<int>(WORLD_TILE)/2;
  int tiles=0;
  for(int tz=std::max(-half,gz-5);tz<=std::min(half-1,gz+5);tz++)
  for(int tx=std::max(-half,gx-5);tx<=std::min(half-1,gx+5);tx++){
   const float x=(tx+.5f)*WORLD_TILE,z=(tz+.5f)*WORLD_TILE;
-  const float dxForest=x-256.f,dzForest=z;
-  const float dxRuins=x+256.f,dzRuins=z+64.f;
-  const float dxCrypt=x-16.f,dzCrypt=z+256.f;
-  const float dxWild=x-32.f,dzWild=z-256.f;
+  const float dxForest=x-256.f,dzForest=z,dxRuins=x+256.f,dzRuins=z+64.f;
+  const float dxCrypt=x-16.f,dzCrypt=z+256.f,dxWild=x-32.f,dzWild=z-256.f;
   Color c{.18f,.29f,.23f};
   if(dxForest*dxForest+dzForest*dzForest<170.f*170.f)c={.12f,.30f,.18f};
   else if(dxRuins*dxRuins+dzRuins*dzRuins<164.f*164.f)c={.33f,.30f,.25f};
   else if(dxCrypt*dxCrypt+dzCrypt*dzCrypt<170.f*170.f)c={.23f,.24f,.29f};
   else if(dxWild*dxWild+dzWild*dzWild<160.f*160.f)c={.36f,.32f,.20f};
   if((tx+tz)%3==0){c.r*=.96f;c.g*=.96f;c.b*=.96f;}
-  const float loX=x-WORLD_TILE*.5f,hiX=x+WORLD_TILE*.5f;
-  const float loZ=z-WORLD_TILE*.5f,hiZ=z+WORLD_TILE*.5f;
-  appendTerrainVertex(vertices,loX,loZ,c);
-  appendTerrainVertex(vertices,hiX,loZ,c);
-  appendTerrainVertex(vertices,hiX,hiZ,c);
-  appendTerrainVertex(vertices,loX,loZ,c);
-  appendTerrainVertex(vertices,hiX,hiZ,c);
-  appendTerrainVertex(vertices,loX,hiZ,c);
+  bool detail=false;
+  const float loX=x-WORLD_TILE*.5f,loZ=z-WORLD_TILE*.5f;
+  for(const auto&b:gBrushes){
+    const float closestX=clampf(b.x,loX,loX+WORLD_TILE);
+    const float closestZ=clampf(b.z,loZ,loZ+WORLD_TILE);
+    const float dx=b.x-closestX,dz=b.z-closestZ;
+    if(dx*dx+dz*dz<b.radius*b.radius){detail=true;break;}
+  }
+  const int divisions=detail?8:1;
+  const float step=WORLD_TILE/divisions;
+  for(int iz=0;iz<divisions;iz++)for(int ix=0;ix<divisions;ix++){
+    const float x0=loX+ix*step,x1=x0+step,z0=loZ+iz*step,z1=z0+step;
+    terrainTriangle(vertices,x0,z0,x1,z0,x1,z1,c,detail);
+    terrainTriangle(vertices,x0,z0,x1,z1,x0,z1,c,detail);
+  }
   ++tiles;
  }
  gTerrain.vertices=static_cast<GLsizei>(vertices.size()/9);
  gTerrain.tiles=tiles;
  glBindBuffer(GL_ARRAY_BUFFER,gTerrain.buffer);
- glBufferData(GL_ARRAY_BUFFER,static_cast<GLsizeiptr>(vertices.size()*sizeof(float)),vertices.data(),GL_DYNAMIC_DRAW);
+ glBufferData(GL_ARRAY_BUFFER,static_cast<GLsizeiptr>(vertices.size()*sizeof(float)),
+              vertices.data(),GL_DYNAMIC_DRAW);
  gTerrain.gridX=gx;gTerrain.gridZ=gz;gTerrain.worldSize=gWorldSize;
+ gTerrain.revision=gTerrainRevision;
 }
 void drawWorld(const Mat4&vp){
  updateTerrain();
@@ -492,7 +534,7 @@ bool blocked(float x,float z,int type){
 }
 bool staticInView(const Mat4&vp,const Entity&e){
  if(std::abs(e.x-gTarget.x)>230.f||std::abs(e.z-gTarget.z)>230.f)return false;
- const Vec4 clip=apply(vp,{e.x,2.8f*e.size,e.z,1.f});
+ const Vec4 clip=apply(vp,{e.x,e.y+2.8f*e.size,e.z,1.f});
  const float radius=(e.type<=2?7.5f:(e.type==5?4.5f:3.5f))*e.size;
  if(clip.w < -radius)return false;
  if(clip.w <=radius)return true; // Keep very close objects visible.
@@ -510,13 +552,13 @@ void drawEntity(const Mat4&vp,const Frustum&frustum,const Entity&e){
 int add(int type,float x,float z,float yaw,float size){
  if(type<0||type>9||type==6||gEntities.size()>=MAX_ENTITIES)return 0;
  recordEdit();
- int id=gNextId++;gEntities.push_back({id,type,x,z,yaw,size,""});gSelected=id;return id;
+ int id=gNextId++;gEntities.push_back({id,type,x,z,yaw,size,"",terrainHeightAt(x,z)});gSelected=id;return id;
 }
 void reset(bool demo){
  recordEdit(); // demo generation is a single undoable change
  const bool wasMuted=gSuspendHistory;
  gSuspendHistory=true;
- gEntities.clear();gNextId=1;gSelected=0;
+ gEntities.clear();gBrushes.clear();gTerrainRevision++;gNextId=1;gSelected=0;
  gSceneInitialized=true;gDemoRoads=demo;
  gTarget={0,1.2f,1.3f};gDistance=28.f;
  if(demo){
@@ -607,7 +649,7 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePick(JNIEnv*,jcl
   int visible=0;
   for(float xx:{-range,range})for(float zz:{-range,range})for(float yy:{0.f,h}){
     float a=e.yaw*RAD,k=e.size,c=std::cos(a),s=std::sin(a);
-    Vec4 q=apply(vp,{e.x+(c*xx+s*zz)*k,yy*k,e.z+(c*zz-s*xx)*k,1});
+    Vec4 q=apply(vp,{e.x+(c*xx+s*zz)*k,e.y+yy*k,e.z+(c*zz-s*xx)*k,1});
     if(q.w<.1f)continue;visible++;
     float sx=(q.x/q.w*.5f+.5f)*gWidth, sy=(.5f-q.y/q.w*.5f)*gHeight;
     left=std::min(left,sx);right=std::max(right,sx);
@@ -647,7 +689,7 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePlaceImportedAtS
  std::string asset(raw);env->ReleaseStringUTFChars(key,raw);
  if(gAssets.find(asset)==gAssets.end()||gEntities.size()>=MAX_ENTITIES)return 0;
  recordEdit();
- int id=gNextId++;gEntities.push_back({id,6,x,z,0,1,asset});gSelected=id;return id;
+ int id=gNextId++;gEntities.push_back({id,6,x,z,0,1,asset,terrainHeightAt(x,z)});gSelected=id;return id;
 }
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeAddPlaced(JNIEnv*,jclass,jint type,jfloat x,jfloat z,jfloat yaw,jfloat size){
  if(type<0||type>9||type==6 || !std::isfinite(x)||!std::isfinite(z)||!std::isfinite(yaw)||!std::isfinite(size) ||
@@ -690,7 +732,7 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeScale(JNIEnv*,jc
 JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSelectedInfo(JNIEnv*env,jclass){
  Entity*e=selected();if(!e)return env->NewStringUTF("Выбери здание касанием или через список «Объекты»");
  std::ostringstream out;out<<nameFor(e->type)<<" #" <<e->id<<"  |  X "<<std::fixed<<std::setprecision(1)
- <<e->x<<"  Z "<<e->z<<"  ↻ "<<e->yaw<<"°  Размер "<<e->size;
+ <<e->x<<"  Z "<<e->z<<"  Y "<<e->y<<"  ↻ "<<e->yaw<<"°  Размер "<<e->size;
  return env->NewStringUTF(out.str().c_str());
 }
 JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSceneSnapshot(JNIEnv*env,jclass){
@@ -698,9 +740,14 @@ JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSceneSnapshot
  for(size_t i=0;i<gEntities.size();i++){
   const auto&e=gEntities[i];if(i)out<<",";
   out<<"{\"type\":"<<e.type<<",\"x\":"<<e.x<<",\"z\":"<<e.z
-     <<",\"yaw\":"<<e.yaw<<",\"size\":"<<e.size;
+     <<",\"yaw\":"<<e.yaw<<",\"size\":"<<e.size<<",\"y\":"<<e.y;
   if(e.type==6)out<<",\"asset\":\""<<e.asset<<"\"";
   out<<"}";
+ }
+ out<<"],\"terrain\":[";
+ for(size_t i=0;i<gBrushes.size();i++){
+  const auto&b=gBrushes[i];if(i)out<<",";
+  out<<"["<<b.x<<","<<b.z<<","<<b.radius<<","<<b.strength<<"]";
  }
  out<<"]}";return env->NewStringUTF(out.str().c_str());
 }
@@ -851,7 +898,7 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeAddImportedPlace
  std::abs(x)>worldHalf()||std::abs(z)>worldHalf()||std::abs(yaw)>36000||size<.2f||size>8)return 0;
  recordEdit();
  int id=gNextId++;
- gEntities.push_back({id,6,x,z,yaw,size,asset});
+ gEntities.push_back({id,6,x,z,yaw,size,asset,terrainHeightAt(x,z)});
  gSelected=id;return id;
 }
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeUndo(JNIEnv*,jclass){

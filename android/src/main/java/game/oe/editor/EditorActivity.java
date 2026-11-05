@@ -1212,7 +1212,7 @@ public class EditorActivity extends Activity {
                 final float px=surfaceX(downX),py=surfaceY(downY);
                 queueEvent(() -> {
                     nativeGizmoEnd();gizmoEditStarted=false;
-                    if(placingKind==-1&&terrainMode==0)
+                    if(placingKind==-1&&terrainMode==0&&!paintTerrainMode)
                         touchedGizmoAxis=nativeGizmoHit(px,py);
                 });
                 return true;
@@ -1248,7 +1248,7 @@ public class EditorActivity extends Activity {
                         // axis hit-test on DOWN is guaranteed to run before MOVE.
                         queueEvent(()->{
                             final int axis=touchedGizmoAxis;
-                            if(axis>=0&&placingKind==-1&&terrainMode==0){
+                            if(axis>=0&&placingKind==-1&&terrainMode==0&&!paintTerrainMode){
                                 if(!gizmoEditStarted&&movedEnough)
                                     gizmoEditStarted=nativeGizmoBegin(axis);
                                 if(gizmoEditStarted)nativeGizmoDrag(axis,sx,sy);
@@ -1269,6 +1269,8 @@ public class EditorActivity extends Activity {
                     final float px=surfaceX(upX),py=surfaceY(upY);
                     final boolean tap=Math.hypot(upX-downX,upY-downY)<dp(8);
                     final int kind=placingKind,brush=terrainMode;
+                    final boolean paint=paintTerrainMode;
+                    final String paintingKey=activePaintKey;
                     final String asset=placingGlb;
                     queueEvent(()->{
                         if(touchedGizmoAxis>=0){
@@ -1278,7 +1280,11 @@ public class EditorActivity extends Activity {
                             return;
                         }
                         if(tap){
-                            if(brush!=0){
+                            if(paint){
+                                int strokes=nativePaintTerrainAtScreen(px,py,paintRadius,paintingKey);
+                                if(strokes>0)message("Земля окрашена · мазок "+strokes+"/48");
+                                else message("Не получилось покрасить: нет текстуры или лимит 48 кистей");
+                            }else if(brush!=0){
                                 int count=nativeApplyTerrainBrushAtScreen(px,py,terrainRadius,
                                     brush*terrainStrength);
                                 if(count>0)message("Рельеф изменён · "+count+"/64");

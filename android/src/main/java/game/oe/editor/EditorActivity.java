@@ -195,7 +195,7 @@ public class EditorActivity extends Activity {
         top.setPadding(dp(5),dp(2),dp(5),dp(2));
         top.setBackgroundColor(Color.argb(220,14,21,32));
         TextView title=new TextView(this);
-        title.setText("OE 0.6.7  /  ORVETRA ENGINE");
+        title.setText("OE 0.6.8  /  ORVETRA ENGINE");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
         title.setTextSize(12);

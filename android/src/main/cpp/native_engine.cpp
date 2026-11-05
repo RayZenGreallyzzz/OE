@@ -450,22 +450,25 @@ void drawImported(const Mat4&vp,const Entity&e){
  glUniform3f(gShader.locColor,1,1,1);
  glUniform1f(gShader.locLight,e.id==gSelected?1.f:0.f);
  const Asset &asset=it->second;
+ const TextureResource*overridePaint=paintTexture(e.paint);
  glBindVertexArray(asset.gpu.vao);
  if(asset.batches.empty()){
   glUniform1f(gShader.locTextured,0.f);
   glDrawArrays(GL_TRIANGLES,0,asset.gpu.count);
   ++gDrawCalls;gTriangles+=asset.gpu.count/3;
  }else for(const auto&batch:asset.batches){
-  if(batch.texture>=0&&static_cast<size_t>(batch.texture)<asset.textures.size()&&
+  if(overridePaint&&overridePaint->id){bindPaint(overridePaint);}
+  else if(batch.texture>=0&&static_cast<size_t>(batch.texture)<asset.textures.size()&&
      asset.textures[batch.texture].id){
    glActiveTexture(GL_TEXTURE0);
    glBindTexture(GL_TEXTURE_2D,asset.textures[batch.texture].id);
    glUniform1f(gShader.locTextured,1.f);
-  }else glUniform1f(gShader.locTextured,0.f);
+   glUniform1f(gShader.locPaintOverride,0.f);
+  }else bindPaint(nullptr);
   glDrawArrays(GL_TRIANGLES,batch.first,batch.count);
   ++gDrawCalls;gTriangles+=batch.count/3;
  }
- glUniform1f(gShader.locTextured,0.f);
+ bindPaint(nullptr);
  glBindTexture(GL_TEXTURE_2D,0);
 }
 void part(const Mat4&vp,const Entity&e,int kind,float x,float y,float z,float sx,float sy,float sz,Color color){
@@ -561,20 +564,38 @@ void forEachStaticPart(int type,Part&&part){
 }
 void bakeStaticMesh(int type){
  Asset baked;
+ baked.vertexStride=11;
  // Build once on GL-context creation. Later only transform one mesh per entity.
  forEachStaticPart(type,[&](int kind,float x,float y,float z,float sx,float sy,float sz,Color col){
   const std::vector<float> source=geometry(kind);
-  baked.vertices.reserve(baked.vertices.size()+source.size()/6*9);
+  baked.vertices.reserve(baked.vertices.size()+source.size()/6*11);
   for(size_t i=0;i+5<source.size();i+=6){
+   const float px=x+source[i]*sx,py=y+source[i+1]*sy,pz=z+source[i+2]*sz;
+   const float nx=source[i+3],ny=source[i+4],nz=source[i+5];
+   // Planar mapping: wall sides use height, floor faces use XZ.
+   const float u=(std::abs(nx)>.6f?pz:px)*.5f;
+   const float v=(std::abs(ny)>.6f?pz:py)*.5f;
    baked.vertices.insert(baked.vertices.end(),{
-      x+source[i]*sx,y+source[i+1]*sy,z+source[i+2]*sz,
-      source[i+3]*sx,source[i+4]*sy,source[i+5]*sz,
-      col.r,col.g,col.b
+      px,py,pz,nx*sx,ny*sy,nz*sz,col.r,col.g,col.b,u,v
    });
   }
  });
  uploadAsset(baked);
  gStaticMeshes[type]=baked.gpu;
+}
+const TextureResource*paintTexture(const std::string&key){
+ auto it=gPaintTextures.find(key);
+ return it==gPaintTextures.end()?nullptr:&it->second;
+}
+void bindPaint(const TextureResource*paint){
+ if(paint&&paint->id){
+  glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,paint->id);
+  glUniform1f(gShader.locTextured,1.f);
+  glUniform1f(gShader.locPaintOverride,1.f);
+ }else{
+  glUniform1f(gShader.locTextured,0.f);
+  glUniform1f(gShader.locPaintOverride,0.f);
+ }
 }
 void drawStatic(const Mat4&vp,const Entity&e){
  if(e.type<0||e.type>=17||e.type==6)return;
@@ -587,10 +608,11 @@ void drawStatic(const Mat4&vp,const Entity&e){
  glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
  glUniform3f(gShader.locColor,1.f,1.f,1.f);
  glUniform1f(gShader.locLight,e.id==gSelected?1.f:0.f);
- glUniform1f(gShader.locTextured,0.f);
+ bindPaint(paintTexture(e.paint));
  glBindVertexArray(m.vao);
  glDrawArrays(GL_TRIANGLES,0,m.count);
  ++gDrawCalls;gTriangles+=m.count/3;
+ bindPaint(nullptr);glBindTexture(GL_TEXTURE_2D,0);
 }
 
 // Low-power flat terrain. Combine nearby 64m squares into one vertex buffer.

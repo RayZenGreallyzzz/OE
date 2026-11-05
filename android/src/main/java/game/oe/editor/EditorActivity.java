@@ -451,6 +451,65 @@ public class EditorActivity extends Activity {
             return out.toByteArray();
         }
     }
+    private void exportProject(){
+        if(importing){message("Дождись завершения операции");return;}
+        Intent intent=new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/zip");
+        intent.putExtra(Intent.EXTRA_TITLE,"ORVETHRA-World.oezip");
+        try{startActivityForResult(intent,SAVE_PROJECT);}
+        catch(Exception e){message("Нельзя открыть файловый менеджер: "+e.getMessage());}
+    }
+    private void pickProject(){
+        if(importing){message("Дождись завершения операции");return;}
+        Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*"); // .oezip, .zip and supported document providers.
+        try{startActivityForResult(intent,PICK_PROJECT);}
+        catch(Exception e){message("Нельзя открыть файловый менеджер: "+e.getMessage());}
+    }
+    private void exportToUri(Uri uri){
+        if(importing)return;
+        importing=true;
+        surface.queueEvent(() -> {
+            final String scene=nativeSceneSnapshot();
+            new Thread(() -> {
+                try{
+                    OutputStream stream=getContentResolver().openOutputStream(uri,"w");
+                    if(stream==null)throw new Exception("Нет доступа к файлу");
+                    ProjectArchive.exportProject(scene,modelDir(),stream);
+                    message("Проект экспортирован со всеми используемыми GLB");
+                }catch(Exception e){
+                    message("Ошибка экспорта: "+e.getMessage());
+                }finally{importing=false;}
+            },"oe-project-export").start();
+        });
+    }
+    private void importFromUri(Uri uri){
+        if(importing)return;
+        importing=true;
+        message("Проверяю архив проекта и модели…");
+        new Thread(() -> {
+            try{
+                InputStream stream=getContentResolver().openInputStream(uri);
+                if(stream==null)throw new Exception("Нет доступа к архиву");
+                ProjectArchive.StagedProject staged=ProjectArchive.importProject(stream,getCacheDir());
+                surface.queueEvent(() -> {
+                    final HashSet<String> cached=new HashSet<>(Arrays.asList(nativeLoadedAssetKeys()));
+                    new Thread(() -> readAndPrepareScene(cached,staged.sceneFile,staged.modelDir,staged.root),
+                        "oe-project-validate").start();
+                });
+            }catch(Exception e){
+                importing=false;
+                message("Проект НЕ импортирован: "+e.getMessage());
+            }
+        },"oe-project-import").start();
+    }
+    private void finishProjectLoad(File stagingRoot){
+        importing=false;
+        if(stagingRoot!=null)new Thread(() -> ProjectArchive.removeTree(stagingRoot),
+                "oe-project-cleanup").start();
+    }
     private void pickGlb() {
         if(importing) { message("Импорт или загрузка уже выполняется"); return; }
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -461,6 +520,13 @@ public class EditorActivity extends Activity {
     }
     @Override protected void onActivityResult(int requestCode,int resultCode,Intent intent) {
         super.onActivityResult(requestCode,resultCode,intent);
+        if(requestCode==SAVE_PROJECT||requestCode==PICK_PROJECT){
+            if(resultCode==RESULT_OK&&intent!=null&&intent.getData()!=null){
+                if(requestCode==SAVE_PROJECT)exportToUri(intent.getData());
+                else importFromUri(intent.getData());
+            }
+            return;
+        }
         if(requestCode!=PICK_GLB || resultCode!=RESULT_OK || intent==null || intent.getData()==null)return;
         final Uri uri=intent.getData();
         if(importing)return;
@@ -510,7 +576,7 @@ public class EditorActivity extends Activity {
     }
     private static final class SavedEntity {
         int type;
-        float x,z,yaw,size;
+        float x,z,yaw,size,y;
         String asset;
     }
     private static boolean validAsset(String name) {
@@ -523,12 +589,13 @@ public class EditorActivity extends Activity {
         // thread can skip expensive decode work for those immutable GLBs.
         surface.queueEvent(() -> {
             final HashSet<String> cached=new HashSet<>(Arrays.asList(nativeLoadedAssetKeys()));
-            new Thread(() -> readAndPrepareScene(cached),"oe-scene-load").start();
+            new Thread(() -> readAndPrepareScene(cached,null,null,null),"oe-scene-load").start();
         });
     }
-    private void readAndPrepareScene(HashSet<String> cached) {
+    private void readAndPrepareScene(HashSet<String> cached,File sourceScene,
+            File sourceModels,File stagingRoot) {
         try {
-            File file=saveFile();
+            File file=sourceScene==null?saveFile():sourceScene;
             ByteArrayOutputStream jsonBytes=new ByteArrayOutputStream();
             try(InputStream in=new AtomicFile(file).openRead()){
                 byte[] buffer=new byte[4096];
@@ -551,20 +618,39 @@ public class EditorActivity extends Activity {
             SavedEntity[] items=new SavedEntity[arr.length()];
             HashSet<String> assets=new HashSet<>();
             int[] kinds=new int[arr.length()];
-            float[] transforms=new float[arr.length()*4];
+            float[] transforms=new float[arr.length()*5];
+            JSONArray brushJson=document.optJSONArray("terrain");
+            int brushCount=brushJson==null?0:brushJson.length();
+            if(brushCount>64)throw new Exception("Слишком много изменений рельефа");
+            float[] terrainBrushes=new float[brushCount*4];
+            for(int i=0;i<brushCount;i++){
+                JSONArray brush=brushJson.getJSONArray(i);
+                if(brush.length()!=4)throw new Exception("Неверная кисть рельефа");
+                for(int j=0;j<4;j++){
+                    double v=brush.getDouble(j);
+                    if(!Double.isFinite(v))throw new Exception("Неверные координаты рельефа");
+                    terrainBrushes[i*4+j]=(float)v;
+                }
+                float bx=terrainBrushes[i*4],bz=terrainBrushes[i*4+1];
+                float radius=terrainBrushes[i*4+2],power=terrainBrushes[i*4+3];
+                if(Math.abs(bx)>worldSize/2f||Math.abs(bz)>worldSize/2f||
+                   radius<16f||radius>256f||Math.abs(power)<.001f||Math.abs(power)>60f)
+                    throw new Exception("Изменение рельефа за границами карты");
+            }
             String[] modelKeys=new String[arr.length()];
             for(int i=0;i<items.length;i++){
                 JSONObject object=arr.getJSONObject(i);
                 SavedEntity e=new SavedEntity();
                 e.type=object.getInt("type");
                 double x=object.getDouble("x"),z=object.getDouble("z");
-                double yaw=object.getDouble("yaw"),size=object.getDouble("size");
-                if(e.type<0||e.type>6||!Double.isFinite(x)||!Double.isFinite(z)||
-                    !Double.isFinite(yaw)||!Double.isFinite(size)||
+                double yaw=object.getDouble("yaw"),size=object.getDouble("size"),
+                        y=object.optDouble("y",0.0);
+                if(e.type<0||e.type>9||!Double.isFinite(x)||!Double.isFinite(z)||
+                    !Double.isFinite(yaw)||!Double.isFinite(size)||!Double.isFinite(y)||
                     Math.abs(z)>worldSize/2.0||Math.abs(x)>worldSize/2.0||
-                    Math.abs(yaw)>36000||size<.2||size>8)
+                    Math.abs(yaw)>36000||size<.2||size>8||y<-24||y>160)
                     throw new Exception("Неверный объект "+i);
-                e.x=(float)x;e.z=(float)z;e.yaw=(float)yaw;e.size=(float)size;
+                e.x=(float)x;e.z=(float)z;e.yaw=(float)yaw;e.size=(float)size;e.y=(float)y;
                 if(e.type==6){
                     e.asset=object.getString("asset");
                     if(!validAsset(e.asset))throw new Exception("Неверная ссылка модели");
@@ -572,10 +658,11 @@ public class EditorActivity extends Activity {
                 }
                 items[i]=e;
                 kinds[i]=e.type;
-                transforms[i*4]=e.x;
-                transforms[i*4+1]=e.z;
-                transforms[i*4+2]=e.yaw;
-                transforms[i*4+3]=e.size;
+                transforms[i*5]=e.x;
+                transforms[i*5+1]=e.z;
+                transforms[i*5+2]=e.yaw;
+                transforms[i*5+3]=e.size;
+                transforms[i*5+4]=e.y;
                 modelKeys[i]=e.asset;
             }
             if(assets.size()>MAX_ASSETS)throw new Exception("Слишком много разных GLB-моделей");
@@ -583,7 +670,7 @@ public class EditorActivity extends Activity {
             // Verify that each GLB still has a file on disk, but decode only
             // resources not already resident in the renderer.
             for(String asset:assets){
-                File model=new File(modelDir(),asset);
+                File model=new File(sourceModels==null?modelDir():sourceModels,asset);
                 if(!model.isFile()||model.length()<=0||
                    model.length()>GlbReader.MAX_BYTES)
                     throw new Exception("Модель отсутствует или слишком большая: "+asset);
@@ -592,6 +679,27 @@ public class EditorActivity extends Activity {
                 if(!GlbReader.key(bytes).equals(asset))
                     throw new Exception("Модель повреждена: "+asset);
                 missing.put(asset,GlbReader.decode(bytes));
+            }
+            // Install verified model files from the staged archive without
+            // deleting or overwriting the active project's files.
+            if(sourceModels!=null){
+                File targetDir=modelDir();
+                for(String asset:assets){
+                    File destination=new File(targetDir,asset);
+                    if(destination.exists()){
+                        if(!asset.equals(GlbReader.key(Files.readAllBytes(destination.toPath()))))
+                            throw new Exception("Повреждена установленная модель: "+asset);
+                    }else{
+                        File source=new File(sourceModels,asset);
+                        File partial=new File(targetDir,asset+".part");
+                        Files.copy(source.toPath(),partial.toPath(),StandardCopyOption.REPLACE_EXISTING);
+                        try{
+                            Files.move(partial.toPath(),destination.toPath());
+                        }finally{
+                            Files.deleteIfExists(partial.toPath());
+                        }
+                    }
+                }
             }
             surface.queueEvent(() -> {
                 ArrayList<String> uploaded=new ArrayList<>();
@@ -606,7 +714,7 @@ public class EditorActivity extends Activity {
                             throw new Exception("Ошибка загрузки GPU: "+entry.getKey());
                         uploaded.add(entry.getKey());
                     }
-                    if(!nativeReplaceScene(worldSize,demoRoads,kinds,transforms,modelKeys))
+                    if(!nativeReplaceScene(worldSize,demoRoads,kinds,transforms,modelKeys,terrainBrushes))
                         throw new Exception("Сцена не прошла полную проверку в движке");
                     committed=true;
                     surface.requestRender();
@@ -622,11 +730,11 @@ public class EditorActivity extends Activity {
                         for(String asset:uploaded)
                             if(!asset.equals(placingGlb))nativeDiscardUnusedAsset(asset);
                     }
-                    importing=false;
+                    finishProjectLoad(stagingRoot);
                 }
             });
         }catch(Exception e){
-            importing=false;
+            finishProjectLoad(stagingRoot);
             message("Сцена НЕ изменена: "+e.getMessage());
         }
     }

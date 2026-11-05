@@ -66,6 +66,9 @@ static constexpr int MAX_IMPORTED_TRIANGLES=90000;
 static Shader gShader;
 static std::vector<Entity> gEntities;
 static int gNextId=1, gSelected=0, gWidth=1, gHeight=1;
+static int gGizmoMode=0; // 0=move,1=yaw,2=scale
+static bool gGizmoActive=false;
+static int gGizmoActiveId=0;
 static float gYaw=.55f, gPitch=.45f, gDistance=28.f;
 static Vec3 gTarget{0,1.2f,1.3f};
 static bool gSceneInitialized=false, gDemoRoads=false;
@@ -727,6 +730,72 @@ const char* nameFor(int type){
  const char* names[]={"Таверна","Кузница","Аукционный дом","Фонарь","Фонтан","Дерево","Модель GLB","Камни","Куст","Лавка","Стена","Пол","Крыша","Дверная рама","Окно","Колонна","Лестница"};
  return type>=0&&type<17?names[type]:"Объект";
 }
+
+// Touch-friendly axis gizmo; drawn using existing simple meshes (no new shaders
+// or animation loop). X=red, Y=green, Z=blue. Rotation only changes yaw.
+Vec3 gizmoBase(const Entity&e){
+ return {e.x,e.y+clampf(e.size*1.45f,.7f,3.0f),e.z};
+}
+float gizmoLength(){return clampf(gDistance*.095f,2.0f,13.f);}
+Vec3 gizmoEndpoint(const Entity&e,int axis){
+ Vec3 p=gizmoBase(e);
+ const float len=gizmoLength();
+ if(axis==0)p.x+=len;
+ if(axis==1)p.y+=len;
+ if(axis==2)p.z+=len;
+ return p;
+}
+bool gizmoProject(Vec3 p,float&px,float&py){
+ const Vec4 q=apply(viewProjection(),{p.x,p.y,p.z,1.f});
+ if(q.w<=.1f)return false;
+ px=(q.x/q.w*.5f+.5f)*gWidth;
+ py=(.5f-q.y/q.w*.5f)*gHeight;
+ return std::isfinite(px)&&std::isfinite(py);
+}
+int gizmoHit(float px,float py){
+ if(gGizmoMode<0||!selected()||!std::isfinite(px)||!std::isfinite(py))return -1;
+ const Entity&e=*selected();
+ float bx,by;
+ if(!gizmoProject(gizmoBase(e),bx,by))return -1;
+ int hit=-1;
+ float nearest=1e8f;
+ for(int axis=0;axis<3;axis++){
+  if(gGizmoMode==1&&axis!=1)continue;
+  float ex,ey;
+  if(!gizmoProject(gizmoEndpoint(e,axis),ex,ey))continue;
+  const float dx=ex-bx,dy=ey-by,len2=dx*dx+dy*dy;
+  if(len2<625.f)continue;
+  const float t=((px-bx)*dx+(py-by)*dy)/len2;
+  if(t<.22f||t>1.30f)continue;
+  const float nx=bx+t*dx-px,ny=by+t*dy-py;
+  const float distance=std::sqrt(nx*nx+ny*ny);
+  const float target=std::max(22.f,gWidth*.025f); // scales with tablet viewport
+  if(distance<target&&distance<nearest){nearest=distance;hit=axis;}
+ }
+ return hit;
+}
+void drawGizmo(const Mat4&vp){
+ const Entity*e=selected();
+ if(!e)return;
+ const Vec3 origin=gizmoBase(*e);
+ const float len=gizmoLength(),thin=clampf(gDistance*.0035f,.07f,.48f);
+ const bool depth=glIsEnabled(GL_DEPTH_TEST);
+ glDisable(GL_DEPTH_TEST); // selected handles always touchable
+ const Color axisColor[3]={{.96f,.26f,.29f},{.31f,.90f,.45f},{.27f,.57f,1.f}};
+ for(int axis=0;axis<3;axis++){
+  if(gGizmoMode==1&&axis!=1)continue;
+  Vec3 midpoint=origin,dimensions{thin,thin,thin};
+  if(axis==0){midpoint.x+=len*.5f;dimensions.x=len;}
+  if(axis==1){midpoint.y+=len*.5f;dimensions.y=len;}
+  if(axis==2){midpoint.z+=len*.5f;dimensions.z=len;}
+  draw(vp,0,midpoint,dimensions,0,axisColor[axis]);
+  const Vec3 tip=gizmoEndpoint(*e,axis);
+  const float cap=thin*(gGizmoMode==2?3.4f:2.4f);
+  draw(vp,0,tip,{cap,cap,cap},0,axisColor[axis]);
+ }
+ if(depth)glEnable(GL_DEPTH_TEST);
+}
+
 } // namespace
 
 extern "C" {
@@ -781,7 +850,48 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDraw(JNIEnv*,jcl
  const Frustum frustum=makeFrustum(vp);
  drawWorld(vp);
  for(const auto&e:gEntities)drawEntity(vp,frustum,e);
+ drawGizmo(vp);
  glBindVertexArray(0);
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeSetGizmoMode(
+ JNIEnv*,jclass,jint mode){
+ if(mode>=0&&mode<=2){gGizmoMode=mode;gGizmoActive=false;}
+}
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeGizmoHit(
+ JNIEnv*,jclass,jfloat px,jfloat py){return gizmoHit(px,py);}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeGizmoBegin(
+ JNIEnv*,jclass,jint axis){
+ if(!selected()||axis<0||axis>2||(gGizmoMode==1&&axis!=1))
+  return JNI_FALSE;
+ recordEdit();gGizmoActive=true;gGizmoActiveId=gSelected;
+ return JNI_TRUE;
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeGizmoDrag(
+ JNIEnv*,jclass,jint axis,jfloat dx,jfloat dy){
+ if(!gGizmoActive||gGizmoActiveId!=gSelected||!std::isfinite(dx)||!std::isfinite(dy)||
+    std::abs(dx)>1000.f||std::abs(dy)>1000.f||axis<0||axis>2)return;
+ Entity*e=selected();if(!e)return;
+ const Vec3 origin=gizmoBase(*e),tip=gizmoEndpoint(*e,axis);
+ float bx,by,ex,ey;
+ if(!gizmoProject(origin,bx,by)||!gizmoProject(tip,ex,ey))return;
+ const float ux=ex-bx,uy=ey-by,length=std::sqrt(ux*ux+uy*uy);
+ if(length<25.f)return;
+ const float pixels=(dx*ux+dy*uy)/length;
+ if(gGizmoMode==0){
+  const float amount=clampf(pixels/length*gizmoLength(),-1.5f,1.5f);
+  if(axis==0)e->x=clampf(e->x+amount,-worldHalf(),worldHalf());
+  if(axis==1)e->y=clampf(e->y+amount,-24.f,160.f);
+  if(axis==2)e->z=clampf(e->z+amount,-worldHalf(),worldHalf());
+ }else if(gGizmoMode==1&&axis==1){
+  e->yaw=std::fmod(e->yaw+clampf(pixels*.55f,-20.f,20.f)+360.f,360.f);
+ }else if(gGizmoMode==2){
+  const float factor=std::exp(clampf(pixels*.009f,-.20f,.20f));
+  float *value=axis==0?&e->sx:(axis==1?&e->sy:&e->sz);
+  *value=clampf(*value*factor,.10f,8.f);
+ }
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeGizmoEnd(JNIEnv*,jclass){
+ gGizmoActive=false;gGizmoActiveId=0;
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeOrbit(JNIEnv*,jclass,jfloat dx,jfloat dy,jfloat zoom){
  gYaw-=dx*.006f;
@@ -881,7 +991,7 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeAddPlaced(JNIEnv
  return add(type,x,z,yaw,size);
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeSelect(JNIEnv*,jclass,jint id){
- gSelected=0;for(const auto&e:gEntities)if(e.id==id){gSelected=id;break;}
+ gGizmoActive=false;gSelected=0;for(const auto&e:gEntities)if(e.id==id){gSelected=id;break;}
 }
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeDeleteSelected(JNIEnv*,jclass){
  auto it=std::find_if(gEntities.begin(),gEntities.end(),[](const Entity&e){return e.id==gSelected;});

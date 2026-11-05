@@ -85,6 +85,11 @@ public class EditorActivity extends Activity {
     private static native void nativeSnapSelectedToGround();
     private static native int nativeApplyTerrainBrushAtScreen(float x,float y,float radius,float amount);
     private static native int nativeTerrainBrushCount();
+    private static native void nativeSetGizmoMode(int mode);
+    private static native int nativeGizmoHit(float x,float y);
+    private static native boolean nativeGizmoBegin(int axis);
+    private static native void nativeGizmoDrag(int axis,float dx,float dy);
+    private static native void nativeGizmoEnd();
     private static native int nativeAddImportedPlaced(String key, float x, float z, float yaw, float size);
     private static final int PICK_GLB = 702, PICK_PROJECT=703, SAVE_PROJECT=704;
     private static final int MAX_ASSETS = 12;
@@ -93,6 +98,9 @@ public class EditorActivity extends Activity {
     private TextView selectionText;
     private TextView statusText;
     private TextView renderStatsText;
+    private LinearLayout toolDrawer, paletteItems, inspectorPanel, advancedInspector;
+    private boolean drawerOpen=false;
+    private volatile int gizmoMode=0;
     private volatile long statsUpdatedAt=0;
     private volatile boolean importing = false;
     private volatile int placingKind = -1;
@@ -122,7 +130,11 @@ public class EditorActivity extends Activity {
     }
     private void refreshSelected() {
         String info = nativeSelectedInfo();
-        ui(() -> selectionText.setText(info));
+        final boolean hasSelection=!info.startsWith("Выбери");
+        ui(() -> {
+            if(selectionText!=null)selectionText.setText(info);
+            if(inspectorPanel!=null)inspectorPanel.setVisibility(hasSelection?View.VISIBLE:View.GONE);
+        });
     }
     private Button button(String title, Runnable action) {
         Button b = new Button(this);
@@ -157,132 +169,224 @@ public class EditorActivity extends Activity {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         getWindow().setStatusBarColor(Color.rgb(14, 19, 27));
         getWindow().setNavigationBarColor(Color.rgb(14, 19, 27));
+        // Keep navigation gestures usable while giving the scene the entire display.
+        getWindow().getDecorView().setSystemUiVisibility(
+            View.SYSTEM_UI_FLAG_LAYOUT_STABLE|View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN|
+            View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION|View.SYSTEM_UI_FLAG_FULLSCREEN|
+            View.SYSTEM_UI_FLAG_HIDE_NAVIGATION|View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
 
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.rgb(13, 19, 30));
         surface = new EditorSurface();
         root.addView(surface, new FrameLayout.LayoutParams(-1, -1));
 
-        LinearLayout top = new LinearLayout(this);
-        top.setPadding(dp(5), dp(5), dp(5), dp(5));
-        top.setBackgroundColor(Color.argb(240, 17, 24, 34));
-        top.setOrientation(LinearLayout.VERTICAL);
-
-        TextView title = new TextView(this);
-        title.setText("OE  /  ORVETRA ENGINE     •     NATIVE ANDROID 0.6.6 · TEXTURES TEST");
+        // All controls are OVERLAYS. The full-screen 3D surface is never
+        // resized/covered by a permanent bottom editor panel.
+        LinearLayout top = row();
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        top.setPadding(dp(5),dp(2),dp(5),dp(2));
+        top.setBackgroundColor(Color.argb(220,14,21,32));
+        TextView title=new TextView(this);
+        title.setText("OE 0.6.7  /  ORVETRA ENGINE");
         title.setTextColor(gold);
-        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        title.setTextSize(13);
-        title.setPadding(dp(7), dp(2), 0, dp(4));
-        top.addView(title);
+        title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
+        title.setTextSize(12);
+        title.setGravity(Gravity.CENTER_VERTICAL);
+        title.setPadding(dp(8),0,dp(5),0);
+        top.addView(title,new LinearLayout.LayoutParams(0,dp(45),1f));
+        Button menu=button("☰ Каталог",()->toggleDrawer(!drawerOpen));
+        top.addView(menu,new LinearLayout.LayoutParams(dp(110),dp(43)));
+        Button save=button("💾 Сохранить",this::saveScene);
+        top.addView(save,new LinearLayout.LayoutParams(dp(112),dp(43)));
+        Button undo=button("↶",this::undoAction);
+        top.addView(undo,new LinearLayout.LayoutParams(dp(45),dp(43)));
+        Button redo=button("↷",this::redoAction);
+        top.addView(redo,new LinearLayout.LayoutParams(dp(45),dp(43)));
+        root.addView(top,new FrameLayout.LayoutParams(-1,dp(49),Gravity.TOP));
 
-        HorizontalScrollView scroll = new HorizontalScrollView(this);
-        scroll.setHorizontalScrollBarEnabled(false);
-        LinearLayout tools = row();
-        addTool(tools, "+ Таверна", () -> enterPlaceMode(0, null));
-        addTool(tools, "+ Кузница", () -> enterPlaceMode(1, null));
-        addTool(tools, "+ Аукцион", () -> enterPlaceMode(2, null));
-        addTool(tools, "+ Фонарь", () -> enterPlaceMode(3, null));
-        addTool(tools, "+ Фонтан", () -> enterPlaceMode(4, null));
-        addTool(tools, "+ Дерево", () -> enterPlaceMode(5, null));
-        addTool(tools, "+ Камни", () -> enterPlaceMode(7, null));
-        addTool(tools, "+ Куст", () -> enterPlaceMode(8, null));
-        addTool(tools, "+ Лавка", () -> enterPlaceMode(9, null));
-        addTool(tools, "▧ Стена", () -> enterPlaceMode(10, null));
-        addTool(tools, "▤ Пол", () -> enterPlaceMode(11, null));
-        addTool(tools, "⌂ Крыша", () -> enterPlaceMode(12, null));
-        addTool(tools, "▯ Дверная рама", () -> enterPlaceMode(13, null));
-        addTool(tools, "▣ Окно", () -> enterPlaceMode(14, null));
-        addTool(tools, "▥ Колонна", () -> enterPlaceMode(15, null));
-        addTool(tools, "↗ Лестница", () -> enterPlaceMode(16, null));
-        addTool(tools, "⛰ Гора +", () -> enterTerrainMode(1));
-        addTool(tools, "⛰ Рельеф −", () -> enterTerrainMode(-1));
-        addTool(tools, "Кисть рельефа", this::chooseTerrainBrush);
-        addTool(tools, "Локации", this::showLocations);
-        addTool(tools, "Размер карты", this::showWorldSize);
-        addTool(tools, "Координаты", this::showCoordinateJump);
-        addTool(tools, "Отмена", this::cancelPlace);
-        addTool(tools, "Импорт GLB", this::pickGlb);
-        addTool(tools, "Качество текстур", this::chooseTextureLimit);
-        addTool(tools, "Экспорт проекта", this::exportProject);
-        addTool(tools, "Импорт проекта", this::pickProject);
-        addTool(tools, "Объекты", this::showObjects);
-        addTool(tools, "Сохранить", this::saveScene);
-        addTool(tools, "Загрузить", this::loadScene);
-        addTool(tools, "Новая сцена", this::askReset);
-        addTool(tools, "↶ Отменить", this::undoAction);
-        addTool(tools, "↷ Повторить", this::redoAction);
-        addTool(tools, "⧉ Копировать", this::duplicateAction);
-        scroll.addView(tools);
-        top.addView(scroll);
-        FrameLayout.LayoutParams tp = new FrameLayout.LayoutParams(-1, -2, Gravity.TOP);
-        root.addView(top, tp);
+        // Left drawer opens on demand and is vertically scrollable.
+        toolDrawer=new LinearLayout(this);
+        toolDrawer.setOrientation(LinearLayout.VERTICAL);
+        toolDrawer.setPadding(dp(7),dp(8),dp(7),dp(8));
+        toolDrawer.setBackgroundColor(Color.argb(249,18,26,38));
+        HorizontalScrollView categoryScroll=new HorizontalScrollView(this);
+        categoryScroll.setHorizontalScrollBarEnabled(false);
+        LinearLayout categoryRow=row();
+        for(String category:new String[]{"Здания","Детали","Декор","Рельеф","Текстуры","Проект"}){
+            Button tab=button(category,()->showPalette(category));
+            LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(dp(98),dp(44));
+            p.setMargins(dp(2),0,dp(2),0);categoryRow.addView(tab,p);
+        }
+        categoryScroll.addView(categoryRow);
+        toolDrawer.addView(categoryScroll,new LinearLayout.LayoutParams(-1,dp(47)));
+        android.widget.ScrollView paletteScroll=new android.widget.ScrollView(this);
+        paletteScroll.setFillViewport(false);
+        paletteItems=new LinearLayout(this);
+        paletteItems.setOrientation(LinearLayout.VERTICAL);
+        paletteScroll.addView(paletteItems);
+        toolDrawer.addView(paletteScroll,new LinearLayout.LayoutParams(-1,0,1f));
+        Button closePalette=button("✕ Закрыть каталог",()->toggleDrawer(false));
+        toolDrawer.addView(closePalette,new LinearLayout.LayoutParams(-1,dp(42)));
+        FrameLayout.LayoutParams drawerParams=new FrameLayout.LayoutParams(dp(355),dp(405),
+            Gravity.TOP|Gravity.LEFT);
+        drawerParams.topMargin=dp(50);
+        root.addView(toolDrawer,drawerParams);
+        toolDrawer.setVisibility(View.GONE);
+        showPalette("Здания");
 
-        LinearLayout inspector = new LinearLayout(this);
-        inspector.setOrientation(LinearLayout.VERTICAL);
-        inspector.setBackgroundColor(Color.argb(238, 15, 22, 32));
-        inspector.setPadding(dp(9), dp(7), dp(9), dp(7));
-
-        selectionText = new TextView(this);
-        selectionText.setText("Коснись здания, чтобы выбрать его");
+        // Tiny, context-sensitive inspector. No selection => no inspector at all.
+        inspectorPanel=new LinearLayout(this);
+        inspectorPanel.setOrientation(LinearLayout.VERTICAL);
+        inspectorPanel.setPadding(dp(7),dp(6),dp(7),dp(6));
+        inspectorPanel.setBackgroundColor(Color.argb(235,17,25,36));
+        selectionText=new TextView(this);
+        selectionText.setText("Выбери объект касанием");
         selectionText.setTextColor(gold);
-        selectionText.setTextSize(13);
-        inspector.addView(selectionText);
+        selectionText.setTextSize(11);
+        selectionText.setMaxLines(2);
+        inspectorPanel.addView(selectionText);
+        LinearLayout modes=row();
+        addControl(modes,"↔ Двигать",()->changeGizmoMode(0));
+        addControl(modes,"⟳ Повернуть",()->changeGizmoMode(1));
+        addControl(modes,"⤢ Масштаб",()->changeGizmoMode(2));
+        inspectorPanel.addView(modes);
+        LinearLayout quick=row();
+        addControl(quick,"⚙ Точно",()->{
+            boolean open=advancedInspector.getVisibility()!=View.VISIBLE;
+            advancedInspector.setVisibility(open?View.VISIBLE:View.GONE);
+        });
+        addControl(quick,"К земле",()->edit(EditorActivity::nativeSnapSelectedToGround));
+        addControl(quick,"⧉ Копия",this::duplicateAction);
+        addControl(quick,"🗑",this::askDeleteSelected);
+        inspectorPanel.addView(quick);
 
-        LinearLayout moveRow = row();
-        addControl(moveRow, "X −", () -> edit(() -> nativeNudge(-moveStep, 0)));
-        addControl(moveRow, "X +", () -> edit(() -> nativeNudge(moveStep, 0)));
-        addControl(moveRow, "Z −", () -> edit(() -> nativeNudge(0, -moveStep)));
-        addControl(moveRow, "Z +", () -> edit(() -> nativeNudge(0, moveStep)));
-        inspector.addView(moveRow);
+        advancedInspector=new LinearLayout(this);
+        advancedInspector.setOrientation(LinearLayout.VERTICAL);
+        advancedInspector.setVisibility(View.GONE);
+        LinearLayout moveRow=row();
+        addControl(moveRow,"X −",()->edit(()->nativeNudge(-moveStep,0)));
+        addControl(moveRow,"X +",()->edit(()->nativeNudge(moveStep,0)));
+        addControl(moveRow,"Z −",()->edit(()->nativeNudge(0,-moveStep)));
+        addControl(moveRow,"Z +",()->edit(()->nativeNudge(0,moveStep)));
+        advancedInspector.addView(moveRow);
+        LinearLayout heightRow=row();
+        addControl(heightRow,"Y −",()->edit(()->nativeChangeSelectedHeight(-moveStep)));
+        addControl(heightRow,"Y +",()->edit(()->nativeChangeSelectedHeight(moveStep)));
+        addControl(heightRow,"↺",()->edit(()->nativeRotate(-turnStep)));
+        addControl(heightRow,"↻",()->edit(()->nativeRotate(turnStep)));
+        advancedInspector.addView(heightRow);
+        LinearLayout scaleRow=row();
+        addControl(scaleRow,"− Размер",()->edit(()->nativeScale(1f/scaleStep)));
+        addControl(scaleRow,"+ Размер",()->edit(()->nativeScale(scaleStep)));
+        addControl(scaleRow,"Точность",this::choosePrecision);
+        advancedInspector.addView(scaleRow);
+        for(int axis=0;axis<3;axis++){
+            final int targetAxis=axis;
+            LinearLayout axisRow=row();
+            String name=axis==0?"X":axis==1?"Y":"Z";
+            addControl(axisRow,name+" − масштаб",()->edit(()->nativeScaleSelectedAxis(targetAxis,1f/scaleStep)));
+            addControl(axisRow,name+" + масштаб",()->edit(()->nativeScaleSelectedAxis(targetAxis,scaleStep)));
+            advancedInspector.addView(axisRow);
+        }
+        inspectorPanel.addView(advancedInspector);
+        FrameLayout.LayoutParams ip=new FrameLayout.LayoutParams(dp(360),-2,Gravity.BOTTOM|Gravity.RIGHT);
+        ip.setMargins(0,0,dp(8),dp(12));
+        root.addView(inspectorPanel,ip);
+        inspectorPanel.setVisibility(View.GONE);
 
-        LinearLayout otherRow = row();
-        addControl(otherRow, "↺ Поворот", () -> edit(() -> nativeRotate(-turnStep)));
-        addControl(otherRow, "Поворот ↻", () -> edit(() -> nativeRotate(turnStep)));
-        addControl(otherRow, "− Размер", () -> edit(() -> nativeScale(1f/scaleStep)));
-        addControl(otherRow, "+ Размер", () -> edit(() -> nativeScale(scaleStep)));
-        inspector.addView(otherRow);
-        LinearLayout detailRow=row();
-        addControl(detailRow,"Y −",() -> edit(() -> nativeChangeSelectedHeight(-moveStep)));
-        addControl(detailRow,"Y +",() -> edit(() -> nativeChangeSelectedHeight(moveStep)));
-        addControl(detailRow,"К земле",() -> edit(EditorActivity::nativeSnapSelectedToGround));
-        addControl(detailRow,"Точность",this::choosePrecision);
-        inspector.addView(detailRow);
-        LinearLayout axisRow=row();
-        addControl(axisRow,"X− масштаб",() -> edit(() -> nativeScaleSelectedAxis(0,1f/scaleStep)));
-        addControl(axisRow,"X+ масштаб",() -> edit(() -> nativeScaleSelectedAxis(0,scaleStep)));
-        addControl(axisRow,"Y− масштаб",() -> edit(() -> nativeScaleSelectedAxis(1,1f/scaleStep)));
-        addControl(axisRow,"Y+ масштаб",() -> edit(() -> nativeScaleSelectedAxis(1,scaleStep)));
-        addControl(axisRow,"Z− масштаб",() -> edit(() -> nativeScaleSelectedAxis(2,1f/scaleStep)));
-        addControl(axisRow,"Z+ масштаб",() -> edit(() -> nativeScaleSelectedAxis(2,scaleStep)));
-        inspector.addView(axisRow);
-
-        LinearLayout historyRow = row();
-        addControl(historyRow, "↶ Отмена", this::undoAction);
-        addControl(historyRow, "↷ Повтор", this::redoAction);
-        addControl(historyRow, "⧉ Копия", this::duplicateAction);
-        inspector.addView(historyRow);
-
-        LinearLayout editRow = row();
-        addControl(editRow, "🗑 Удалить выбранное", this::askDeleteSelected);
-        addControl(editRow, "Локации карты", this::showLocations);
-        inspector.addView(editRow);
-
-        statusText = new TextView(this);
-        statusText.setText("Размер мира: 1–16 км · 64-метровые участки. Для изменения открой «Размер карты», затем «Сохранить».");
-        statusText.setTextColor(Color.rgb(167, 177, 189));
+        LinearLayout info=new LinearLayout(this);
+        info.setOrientation(LinearLayout.VERTICAL);
+        info.setPadding(dp(7),dp(3),dp(7),dp(3));
+        info.setBackgroundColor(Color.argb(135,12,18,29));
+        statusText=new TextView(this);
+        statusText.setText("1 палец — камера · 2 пальца — панорама/зум · выбери объект для 3D-осей");
+        statusText.setTextColor(Color.rgb(193,205,217));
         statusText.setTextSize(10);
-        inspector.addView(statusText);
-
-        renderStatsText = new TextView(this);
-        renderStatsText.setText("Рендер: данные появятся после первого кадра");
-        renderStatsText.setTextColor(Color.rgb(125, 195, 151));
-        renderStatsText.setTextSize(10);
-        inspector.addView(renderStatsText);
-        FrameLayout.LayoutParams ip = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
-        root.addView(inspector, ip);
-
+        statusText.setMaxLines(2);
+        info.addView(statusText);
+        renderStatsText=new TextView(this);
+        renderStatsText.setText("Рендер: по запросу · 3D 75%");
+        renderStatsText.setTextColor(Color.rgb(127,192,154));
+        renderStatsText.setTextSize(9);
+        renderStatsText.setMaxLines(1);
+        info.addView(renderStatsText);
+        FrameLayout.LayoutParams infoParams=new FrameLayout.LayoutParams(dp(390),-2,
+            Gravity.LEFT|Gravity.BOTTOM);
+        infoParams.leftMargin=dp(6);
+        infoParams.bottomMargin=dp(12);
+        root.addView(info,infoParams);
         setContentView(root);
+    }
+    private void toggleDrawer(boolean open){
+        drawerOpen=open;
+        toolDrawer.setVisibility(open?View.VISIBLE:View.GONE);
+    }
+    private void addPaletteOption(String label,Runnable action){
+        Button b=button(label,()->{
+            action.run();
+            // Start placing directly on the exposed 3D world.
+            if(placingKind>=0||terrainMode!=0)toggleDrawer(false);
+        });
+        LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,dp(43));
+        p.setMargins(dp(4),dp(2),dp(4),dp(2));
+        paletteItems.addView(b,p);
+    }
+    private void showPalette(String category){
+        paletteItems.removeAllViews();
+        if("Здания".equals(category)){
+            addPaletteOption("+ Таверна",()->enterPlaceMode(0,null));
+            addPaletteOption("+ Кузница",()->enterPlaceMode(1,null));
+            addPaletteOption("+ Аукционный дом",()->enterPlaceMode(2,null));
+        }else if("Детали".equals(category)){
+            addPaletteOption("▧ Стена",()->enterPlaceMode(10,null));
+            addPaletteOption("▤ Пол",()->enterPlaceMode(11,null));
+            addPaletteOption("⌂ Крыша",()->enterPlaceMode(12,null));
+            addPaletteOption("▯ Дверная рама",()->enterPlaceMode(13,null));
+            addPaletteOption("▣ Окно",()->enterPlaceMode(14,null));
+            addPaletteOption("▥ Колонна",()->enterPlaceMode(15,null));
+            addPaletteOption("↗ Лестница",()->enterPlaceMode(16,null));
+        }else if("Декор".equals(category)){
+            addPaletteOption("+ Фонарь",()->enterPlaceMode(3,null));
+            addPaletteOption("+ Фонтан",()->enterPlaceMode(4,null));
+            addPaletteOption("+ Дерево",()->enterPlaceMode(5,null));
+            addPaletteOption("+ Камни",()->enterPlaceMode(7,null));
+            addPaletteOption("+ Куст",()->enterPlaceMode(8,null));
+            addPaletteOption("+ Лавка",()->enterPlaceMode(9,null));
+            addPaletteOption("Импорт GLB модели",this::pickGlb);
+        }else if("Рельеф".equals(category)){
+            addPaletteOption("⛰ Поднять гору",()->enterTerrainMode(1));
+            addPaletteOption("⛰ Опустить землю",()->enterTerrainMode(-1));
+            addPaletteOption("📐 Радиус и сила кисти",this::chooseTerrainBrush);
+            addPaletteOption("✕ Завершить изменение",this::cancelPlace);
+        }else if("Текстуры".equals(category)){
+            addPaletteOption("Импорт GLB с текстурами",this::pickGlb);
+            addPaletteOption("Качество 1024 / 2048 px",this::chooseTextureLimit);
+            addPaletteOption("Форматы и ограничения",()->new AlertDialog.Builder(this)
+                .setTitle("Текстуры OE")
+                .setMessage("Сейчас работают встроенные в GLB PNG/JPG и GPU-готовые ETC2/сырой RGBA8 KTX2. "
+                    +"Нанесение отдельного PNG на стену и покраска земли кистью пока не готовы. "
+                    +"BasisU и Draco ещё не подключены.")
+                .setPositiveButton("Понятно",null).show());
+        }else if("Проект".equals(category)){
+            addPaletteOption("💾 Сохранить локально",this::saveScene);
+            addPaletteOption("📂 Загрузить локально",this::loadScene);
+            addPaletteOption("📦 Экспорт .oezip",this::exportProject);
+            addPaletteOption("📥 Импорт .oezip",this::pickProject);
+            addPaletteOption("Объекты сцены",this::showObjects);
+            addPaletteOption("Локации карты",this::showLocations);
+            addPaletteOption("Размер карты",this::showWorldSize);
+            addPaletteOption("Перейти к координатам",this::showCoordinateJump);
+            addPaletteOption("Новая / пустая сцена",this::askReset);
+            addPaletteOption("↶ Отмена",this::undoAction);
+            addPaletteOption("↷ Повтор",this::redoAction);
+        }
+    }
+    private void changeGizmoMode(int mode){
+        gizmoMode=mode;
+        surface.queueEvent(()->{nativeSetGizmoMode(mode);surface.requestRender();});
+        statusText.setText(mode==0?"3D-оси: тяни X (красная), Y (зелёная), Z (синяя)":
+            mode==1?"3D-ось Y: тяни зелёный маркер для поворота вокруг вертикали":
+                     "3D-оси: тяни цветной маркер для изменения масштаба по выбранной оси");
     }
     private void enterPlaceMode(int kind, String asset) {
         if(importing) { message("Сначала дождись завершения импорта"); return; }
@@ -812,6 +916,8 @@ public class EditorActivity extends Activity {
     private final class EditorSurface extends GLSurfaceView {
         private float lastX, lastY, downX, downY, lastPinch, lastMidX, lastMidY;
         private boolean multiTouch = false;
+        private volatile int touchedGizmoAxis=-1;
+        private boolean gizmoEditStarted=false; // GL thread only.
         // The SurfaceView is full-size; only the underlying GLES buffer is reduced.
         private static final float RENDER_SCALE=.75f;
         private volatile int renderPixelWidth=1,renderPixelHeight=1;
@@ -870,10 +976,19 @@ public class EditorActivity extends Activity {
             int action=e.getActionMasked();
             if(action==MotionEvent.ACTION_DOWN) {
                 downX=lastX=e.getX();downY=lastY=e.getY();multiTouch=false;lastPinch=0;
+                touchedGizmoAxis=-1;
+                final float px=surfaceX(downX),py=surfaceY(downY);
+                queueEvent(() -> {
+                    nativeGizmoEnd();gizmoEditStarted=false;
+                    if(placingKind==-1&&terrainMode==0)
+                        touchedGizmoAxis=nativeGizmoHit(px,py);
+                });
                 return true;
             }
             if(action==MotionEvent.ACTION_POINTER_DOWN) {
                 multiTouch=true;
+                touchedGizmoAxis=-1;
+                queueEvent(()->{nativeGizmoEnd();gizmoEditStarted=false;});
                 if(e.getPointerCount()>=2){
                     lastPinch=pinch(e);
                     lastMidX=(e.getX(0)+e.getX(1))*.5f;
@@ -894,50 +1009,77 @@ public class EditorActivity extends Activity {
                 } else if(!multiTouch) {
                     float x=e.getX(),y=e.getY();
                     final float dx=x-lastX,dy=y-lastY;
-                    if(dx!=0||dy!=0)queueEvent(() -> {nativeOrbit(dx,dy,1);interactiveRender();});
+                    if(dx!=0||dy!=0){
+                        final float sx=surfaceX(dx),sy=surfaceY(dy);
+                        final boolean movedEnough=Math.hypot(x-downX,y-downY)>dp(5);
+                        // All input decisions happen on the GLES event queue:
+                        // axis hit-test on DOWN is guaranteed to run before MOVE.
+                        queueEvent(()->{
+                            final int axis=touchedGizmoAxis;
+                            if(axis>=0&&placingKind==-1&&terrainMode==0){
+                                if(!gizmoEditStarted&&movedEnough)
+                                    gizmoEditStarted=nativeGizmoBegin(axis);
+                                if(gizmoEditStarted)nativeGizmoDrag(axis,sx,sy);
+                            }else nativeOrbit(dx,dy,1);
+                            interactiveRender();
+                        });
+                    }
                     lastX=x;lastY=y;
                 }
                 return true;
             }
             if(action==MotionEvent.ACTION_POINTER_UP) {multiTouch=true;lastPinch=0;return true;}
             if(action==MotionEvent.ACTION_UP) {
-                if(!multiTouch && Math.hypot(e.getX()-downX,e.getY()-downY)<dp(8)) {
-                    final float x=surfaceX(e.getX()),y=surfaceY(e.getY());
-                    final int kind=placingKind;
+                if(!multiTouch){
+                    // Decide after the queued DOWN hit-test; don't accidentally
+                    // pick another entity when tapping a gizmo handle.
+                    final float upX=e.getX(),upY=e.getY();
+                    final float px=surfaceX(upX),py=surfaceY(upY);
+                    final boolean tap=Math.hypot(upX-downX,upY-downY)<dp(8);
+                    final int kind=placingKind,brush=terrainMode;
                     final String asset=placingGlb;
-                    final int brush=terrainMode;
-                    if(brush!=0){
-                        queueEvent(() -> {
-                            int count=nativeApplyTerrainBrushAtScreen(x,y,terrainRadius,brush*terrainStrength);
-                            if(count>0)message("Рельеф изменён · "+count+"/64 · Сохранить проект");
-                            else message("Не удалось изменить землю: точка вне карты или лимит 64 мазка");
-                            requestRender();
-                        });
-                    }else if(kind>=0) {
-                        queueEvent(() -> {
-                            int id=kind==6?nativePlaceImportedAtScreen(asset,x,y):nativePlaceAtScreen(kind,x,y);
-                            if(id>0){
-                                placingKind=-1;placingGlb=null;
-                                ui(() -> statusText.setText("Объект размещён · для следующего используй + в панели."));
-                                message("Объект добавлен на карту");
-                            } else message("Место занято или вне карты — коснись свободного участка");
+                    queueEvent(()->{
+                        if(touchedGizmoAxis>=0){
+                            nativeGizmoEnd();gizmoEditStarted=false;
+                            touchedGizmoAxis=-1;
                             requestRender();refreshSelected();
-                        });
-                    } else {
-                        queueEvent(() -> {nativeSelect(nativePick(x,y));requestRender();refreshSelected();});
-                    }
-                } else if(!multiTouch) {
-                    // Always display the last movement even when redraws are capped.
-                    final float dx=e.getX()-lastX,dy=e.getY()-lastY;
-                    if(dx!=0||dy!=0)queueEvent(() -> {nativeOrbit(dx,dy,1);requestRender();});
-                    else queueEvent(this::requestRender);
-                } else {
-                    queueEvent(this::requestRender);
+                            return;
+                        }
+                        if(tap){
+                            if(brush!=0){
+                                int count=nativeApplyTerrainBrushAtScreen(px,py,terrainRadius,
+                                    brush*terrainStrength);
+                                if(count>0)message("Рельеф изменён · "+count+"/64");
+                                else message("Не удалось изменить землю: край карты или лимит 64 кисти");
+                            }else if(kind>=0){
+                                int id=kind==6?nativePlaceImportedAtScreen(asset,px,py):
+                                    nativePlaceAtScreen(kind,px,py);
+                                if(id>0){
+                                    placingKind=-1;placingGlb=null;
+                                    ui(()->statusText.setText("Объект размещён · выбери его для 3D-манипулятора"));
+                                }else message("Место занято или вне карты");
+                            }else nativeSelect(nativePick(px,py));
+                            refreshSelected();
+                        }else{
+                            final float dx=upX-lastX,dy=upY-lastY;
+                            if(dx!=0||dy!=0)nativeOrbit(dx,dy,1);
+                        }
+                        requestRender();touchedGizmoAxis=-1;
+                    });
+                    multiTouch=false;
+                    return true;
                 }
-                multiTouch=false;
+                // Two-finger gesture already processed during movement.
+                queueEvent(this::requestRender);
+                multiTouch=false;touchedGizmoAxis=-1;
+                queueEvent(()->{nativeGizmoEnd();gizmoEditStarted=false;});
                 return true;
             }
-            if(action==MotionEvent.ACTION_CANCEL) {multiTouch=false;return true;}
+            if(action==MotionEvent.ACTION_CANCEL) {
+                multiTouch=false;touchedGizmoAxis=-1;
+                queueEvent(()->{nativeGizmoEnd();gizmoEditStarted=false;});
+                return true;
+            }
             return true;
         }
     }

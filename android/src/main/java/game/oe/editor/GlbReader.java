@@ -27,9 +27,15 @@ public final class GlbReader {
     public static final class Result {
         public final float[] vertices; // [pos.xyz, normal.xyz, color.rgb] repeated per vertex
         public final int triangles;
-        Result(float[] vertices, int triangles) {
+        // Bounds are computed after normalization (the resulting local origin
+        // is centered on X/Z and grounded at Y=0). Used for conservative culling.
+        public final float boundCenterY;
+        public final float boundRadius;
+        Result(float[] vertices, int triangles, float boundCenterY, float boundRadius) {
             this.vertices = vertices;
             this.triangles = triangles;
+            this.boundCenterY = boundCenterY;
+            this.boundRadius = boundRadius;
         }
     }
 
@@ -255,6 +261,14 @@ public final class GlbReader {
             verts[i+1]=(verts[i+1]-minY)*normalized;
             verts[i+2]=(verts[i+2]-centerZ)*normalized;
         }
-        return new Result(verts,st.triangles);
+        // Every transformed vertex lies inside these axis-aligned bounds.
+        // The enclosing sphere can only OVER-estimate visibility, never
+        // incorrectly omit a valid triangle due to a too-small bounding box.
+        float dx=(maxX-minX)*normalized;
+        float dy=(maxY-minY)*normalized;
+        float dz=(maxZ-minZ)*normalized;
+        float sphere=(float)(.5*Math.sqrt((double)dx*dx+(double)dy*dy+(double)dz*dz));
+        require(Float.isFinite(sphere)&&sphere>=0&&sphere<100,"Неверные границы GLB");
+        return new Result(verts,st.triangles,dy*.5f,sphere+.05f);
     }
 }

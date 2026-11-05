@@ -17,12 +17,13 @@ import java.util.Set;
 /**
  * Minimal, offline glTF 2.0 GLB STATIC triangle importer.
  *
- * Supports: GLB 2; float32 or quantized POSITION; binary bufferViews
+ * Supports: GLB 2; float32 or quantized POSITION/COLOR_0; binary bufferViews
  * compressed with EXT_meshopt_compression / KHR_meshopt_compression;
  * uint8/uint16/uint32 indices, node TRS hierarchy and baseColorFactor.
  * Builds static face normals. Meshopt is decoded OFFLINE by vendored C++.
- * Draco, KTX2 textures, skinning, animation and embedded .gltf are not
- * supported by the current renderer. No original GLB is ever modified.
+ * GPU-native ETC2/RGBA8 KTX2 and embedded PNG/JPG baseColor are supported.
+ * Draco, BasisU ETC1S/UASTC, skinning and animation remain unsupported.
+ * No original source data is rewritten by this reader.
  * Defensive limits are intentional for low-memory Android tablets.
  */
 public final class GlbReader {
@@ -62,12 +63,12 @@ public final class GlbReader {
     }
 
     private static final class Access {
-        int offset, step, count, component;
+        int offset, step, count, component, components;
         boolean normalized;
         ByteBuffer data;
     }
     private static final class Job {
-        Access positions, indices, uv;
+        Access positions, indices, uv, colors;
         int triangles, textureIndex=-1;
         float[] matrix, color;
     }
@@ -192,12 +193,15 @@ public final class GlbReader {
                               component==5122||component==5123;
         require((role==1&&"VEC3".equals(type)&&validPosition)||
                 (role==2&&"VEC2".equals(type)&&validPosition)||
+                (role==3&&("VEC3".equals(type)||"VEC4".equals(type))&&validPosition)||
                 (role==0&&"SCALAR".equals(type)&&
                   (component==5121||component==5123||component==5125)),
-                "Формат вершин, UV или индексов GLB не поддерживается");
+                "Формат вершин, цвета, UV или индексов GLB не поддерживается");
         int componentBytes=component==5120||component==5121?1:
                            (component==5122||component==5123?2:4);
-        int width=role==1?componentBytes*3:(role==2?componentBytes*2:componentBytes);
+        int components=role==1||role==3?("VEC4".equals(type)?4:3):
+            (role==2?2:1);
+        int width=componentBytes*components;
         int viewIndex=obj.getInt("bufferView");
         JSONArray views=st.gltf.getJSONArray("bufferViews");
         require(viewIndex>=0 && viewIndex<views.length(),"Нет bufferView");
@@ -221,6 +225,7 @@ public final class GlbReader {
                 "Повреждённый accessor GLB");
         Access a=new Access();
         a.offset=off+accessorOffset;a.step=stride;a.count=count;a.component=component;
+        a.components=components;
         a.normalized=obj.optBoolean("normalized",false);a.data=data;
         return a;
     }
@@ -277,6 +282,20 @@ public final class GlbReader {
         return new float[]{Math.max(0,Math.min(1,rgba[0])),
                 Math.max(0,Math.min(1,rgba[1])),
                 Math.max(0,Math.min(1,rgba[2]))};
+    }
+    private static float[] vertexColor(Access colors,int vertex) throws Exception {
+        require(colors!=null&&vertex>=0&&vertex<colors.count,"Индекс цвета за пределами GLB");
+        int step=colors.component==5120||colors.component==5121?1:
+                (colors.component==5122||colors.component==5123?2:4);
+        int offset=colors.offset+vertex*colors.step;
+        float[] rgb=new float[3];
+        for(int i=0;i<3;i++){
+            float component=positionComponent(colors,offset+i*step);
+            require(Float.isFinite(component)&&component>=0&&component<=1.f,
+                "Некорректный COLOR_0");
+            rgb[i]=component;
+        }
+        return rgb;
     }
     private static float[] texCoord(Access uv,int vertex) throws Exception {
         require(uv!=null&&vertex>=0&&vertex<uv.count,"UV за пределами");
@@ -361,11 +380,13 @@ public final class GlbReader {
                 Access positions=accessor(st,attrs.getInt("POSITION"),1);
                 Access indices=p.has("indices")?accessor(st,p.getInt("indices"),0):null;
                 Access uv=attrs.has("TEXCOORD_0")?accessor(st,attrs.getInt("TEXCOORD_0"),2):null;
+                Access colors=attrs.has("COLOR_0")?accessor(st,attrs.getInt("COLOR_0"),3):null;
                 int count=indices==null?positions.count:indices.count;
                 int triangles=count/3;
                 if(triangles==0)continue;
                 require((long)st.triangles+triangles<=MAX_TRIANGLES,"Модель больше 90 000 треугольников");
                 Job j=new Job();j.positions=positions;j.indices=indices;j.uv=uv;
+                j.colors=colors;
                 j.triangles=triangles;j.matrix=matrix;j.color=color(st,p);
                 int materialIndex=p.optInt("material",-1);
                 JSONArray materials=st.gltf.optJSONArray("materials");
@@ -409,6 +430,9 @@ public final class GlbReader {
         }
         require(at==data.length && jsonAt>=0 && binAt>=0 && binLen>0,"GLB без JSON или BIN");
         JSONObject gltf=new JSONObject(new String(data,jsonAt,jsonLen,StandardCharsets.UTF_8).trim());
+        JSONObject meta=gltf.optJSONObject("asset");
+        require(meta!=null&&meta.optString("version","").startsWith("2."),
+            "GLB содержит неподдерживаемую версию glTF");
         JSONArray required=gltf.optJSONArray("extensionsRequired");
         if(required!=null)for(int i=0;i<required.length();i++){
             String extension=required.getString(i);
@@ -452,11 +476,12 @@ public final class GlbReader {
             draws[drawIndex++]=j.triangles*3;
             draws[drawIndex++]=slot;
             for(int t=0;t<j.triangles;t++){
-                float[][] v=new float[3][],uvs=new float[3][];
+                float[][] v=new float[3][],uvs=new float[3][],colors=new float[3][];
                 for(int k=0;k<3;k++){
                     int vertex=readIndex(st,j.indices,t*3+k);
                     v[k]=position(st,j.positions,vertex,j.matrix);
                     uvs[k]=j.uv==null?new float[]{0,0}:texCoord(j.uv,vertex);
+                    colors[k]=j.colors==null?new float[]{1,1,1}:vertexColor(j.colors,vertex);
                 }
                 float ax=v[1][0]-v[0][0],ay=v[1][1]-v[0][1],az=v[1][2]-v[0][2];
                 float bx=v[2][0]-v[0][0],by=v[2][1]-v[0][1],bz=v[2][2]-v[0][2];
@@ -471,7 +496,7 @@ public final class GlbReader {
                     maxX=Math.max(maxX,p[0]);maxY=Math.max(maxY,p[1]);maxZ=Math.max(maxZ,p[2]);
                     verts[out++]=p[0];verts[out++]=p[1];verts[out++]=p[2];
                     verts[out++]=nx;verts[out++]=ny;verts[out++]=nz;
-                    verts[out++]=j.color[0];verts[out++]=j.color[1];verts[out++]=j.color[2];
+                    for(int c=0;c<3;c++)verts[out++]=j.color[c]*colors[k][c];
                     verts[out++]=uvs[k][0];verts[out++]=uvs[k][1];
                 }
             }

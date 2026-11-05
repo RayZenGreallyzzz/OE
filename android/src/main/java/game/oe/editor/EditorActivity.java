@@ -577,7 +577,14 @@ public class EditorActivity extends Activity {
                                     if(success){
                                         surface.requestRender();
                                         ui(() -> enterPlaceMode(6,key));
-                                        message("GLB прочитан: "+model.triangles+" треугольников. Коснись карты.");
+                                        if(model.previewOmitsRig||model.previewOmitsTextures){
+                                            String notice="Статический предпросмотр GLB";
+                                            if(model.previewOmitsRig)notice+=" · кости/анимации не воспроизводятся";
+                                            if(model.previewOmitsTextures)notice+=" · текстуры пока не отображаются";
+                                            final String alert=notice;
+                                            ui(() -> statusText.setText(alert));
+                                            message("GLB импортирован. "+notice);
+                                        }else message("GLB прочитан: "+model.triangles+" треугольников. Коснись карты.");
                                     }else message("Не удалось загрузить GLB: память, лимит или GPU");
                                 });
                             }catch(Exception e){

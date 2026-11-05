@@ -39,11 +39,16 @@ public final class GlbReader {
         // is centered on X/Z and grounded at Y=0). Used for conservative culling.
         public final float boundCenterY;
         public final float boundRadius;
-        Result(float[] vertices, int triangles, float boundCenterY, float boundRadius) {
+        // Visual preview limitations: original GLB bytes are never rewritten.
+        public final boolean previewOmitsTextures, previewOmitsRig;
+        Result(float[] vertices, int triangles, float boundCenterY, float boundRadius,
+               boolean previewOmitsTextures, boolean previewOmitsRig) {
             this.vertices = vertices;
             this.triangles = triangles;
             this.boundCenterY = boundCenterY;
             this.boundRadius = boundRadius;
+            this.previewOmitsTextures=previewOmitsTextures;
+            this.previewOmitsRig=previewOmitsRig;
         }
     }
 
@@ -376,6 +381,12 @@ public final class GlbReader {
         float dz=(maxZ-minZ)*normalized;
         float sphere=(float)(.5*Math.sqrt((double)dx*dx+(double)dy*dy+(double)dz*dz));
         require(Float.isFinite(sphere)&&sphere>=0&&sphere<100,"Неверные границы GLB");
-        return new Result(verts,st.triangles,dy*.5f,sphere+.05f);
+        JSONArray images=gltf.optJSONArray("images"),skins=gltf.optJSONArray("skins");
+        JSONArray animations=gltf.optJSONArray("animations"),textures=gltf.optJSONArray("textures");
+        boolean textured=(images!=null&&images.length()>0)||
+            (textures!=null&&textures.length()>0);
+        boolean rigged=(skins!=null&&skins.length()>0)||
+            (animations!=null&&animations.length()>0);
+        return new Result(verts,st.triangles,dy*.5f,sphere+.05f,textured,rigged);
     }
 }

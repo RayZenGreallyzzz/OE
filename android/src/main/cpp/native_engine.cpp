@@ -439,6 +439,8 @@ bool importedInView(const Frustum&frustum,const Entity&e){
  if(dot(delta,delta)>maxDistance*maxDistance)return false;
  return visibleSphere(frustum,center,radius);
 }
+const TextureResource*paintTexture(const std::string&key);
+void bindPaint(const TextureResource*paint);
 void drawImported(const Mat4&vp,const Entity&e){
  auto it=gAssets.find(e.asset);
  if(it==gAssets.end()||it->second.gpu.count==0)return;
@@ -702,6 +704,57 @@ void drawWorld(const Mat4&vp){
   draw(vp,0,{0,-.015f,16},{8,.13f,22},0,{.53f,.51f,.48f});
  }
 }
+// Surface decals conform to sculpted heights. Built only on redraw and culled
+// by camera proximity. Regular terrain remains one batched GLES draw.
+void drawTerrainPaint(const Mat4&vp){
+ if(gTerrainPaint.empty()||!gPaintMesh.vao)return;
+ const int steps=10;
+ std::vector<float> verts;verts.reserve(steps*steps*6*11);
+ glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+ glDepthMask(GL_FALSE);
+ glUniform1f(gShader.locOverlay,1.f);
+ glUniform1f(gShader.locPaintOverride,1.f);
+ glUniform1f(gShader.locTextured,1.f);
+ const Mat4 model=identity();
+ glUniformMatrix4fv(gShader.locMvp,1,GL_FALSE,vp.m);
+ glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
+ glUniform3f(gShader.locColor,1.f,1.f,1.f);
+ glUniform1f(gShader.locLight,0.f);
+ glBindVertexArray(gPaintMesh.vao);
+ for(const auto&stamp:gTerrainPaint){
+  if(std::abs(stamp.x-gTarget.x)>230.f+stamp.radius||
+     std::abs(stamp.z-gTarget.z)>230.f+stamp.radius)continue;
+  const TextureResource*t=paintTexture(stamp.texture);
+  if(!t||!t->id)continue;
+  glUniform2f(gShader.locPaintCenter,stamp.x,stamp.z);
+  glUniform1f(gShader.locPaintRadius,stamp.radius);
+  glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,t->id);
+  verts.clear();
+  auto append=[&](float xx,float zz){
+   float yy=terrainHeightAt(xx,zz)+.06f;
+   verts.insert(verts.end(),{xx,yy,zz,0.f,1.f,0.f,1.f,1.f,1.f,xx/6.f,zz/6.f});
+  };
+  for(int iz=0;iz<steps;iz++)for(int ix=0;ix<steps;ix++){
+   const float x0=stamp.x-stamp.radius+2.f*stamp.radius*ix/steps;
+   const float x1=stamp.x-stamp.radius+2.f*stamp.radius*(ix+1)/steps;
+   const float z0=stamp.z-stamp.radius+2.f*stamp.radius*iz/steps;
+   const float z1=stamp.z-stamp.radius+2.f*stamp.radius*(iz+1)/steps;
+   append(x0,z0);append(x1,z0);append(x1,z1);
+   append(x0,z0);append(x1,z1);append(x0,z1);
+  }
+  glBindBuffer(GL_ARRAY_BUFFER,gPaintMesh.buffer);
+  glBufferData(GL_ARRAY_BUFFER,static_cast<GLsizeiptr>(verts.size()*sizeof(float)),
+     verts.data(),GL_DYNAMIC_DRAW);
+  glDrawArrays(GL_TRIANGLES,0,static_cast<GLsizei>(verts.size()/11));
+  ++gDrawCalls;gTriangles+=static_cast<int>(verts.size()/33);
+ }
+ glBindVertexArray(0);
+ glDepthMask(GL_TRUE);glDisable(GL_BLEND);
+ glUniform1f(gShader.locOverlay,0.f);
+ glUniform1f(gShader.locPaintOverride,0.f);
+ glUniform1f(gShader.locTextured,0.f);
+ glBindTexture(GL_TEXTURE_2D,0);
+}
 bool groundPoint(float px,float py,float &x,float &z){
  const Vec3 eye=cameraEye(),forward=unit(sub(gTarget,eye));
  const Vec3 right=unit(cross(forward,{0,1,0})),up=cross(right,forward);
@@ -904,6 +957,68 @@ JNIEXPORT jbyteArray JNICALL Java_game_oe_editor_GlbReader_nativeDecodeMeshopt(
                          reinterpret_cast<const jbyte*>(output.data()));
  return decoded;
 }
+// Only RGBA8 decoded on worker thread is accepted; source images remain files.
+bool validPaintKey(const std::string&key){
+ if(key.size()!=31||key.compare(0,3,"tx_")!=0||
+    !(key.substr(27)==".png"||key.substr(27)==".jpg"))return false;
+ for(size_t i=3;i<27;i++)if(!((key[i]>='0'&&key[i]<='9')||
+    (key[i]>='a'&&key[i]<='f')))return false;
+ return true;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterPaintTexture(
+ JNIEnv*env,jclass,jstring name,jbyteArray data,jint width,jint height){
+ if(!name||!data||width<=0||height<=0||width>1024||height>1024)return JNI_FALSE;
+ const size_t bytes=static_cast<size_t>(width)*height*4;
+ if(bytes>4u*1024u*1024u||env->GetArrayLength(data)!=static_cast<jsize>(bytes))
+  return JNI_FALSE;
+ const char*raw=env->GetStringUTFChars(name,nullptr);
+ if(!raw)return JNI_FALSE;
+ const std::string key(raw);env->ReleaseStringUTFChars(name,raw);
+ if(!validPaintKey(key))return JNI_FALSE;
+ auto present=gPaintTextures.find(key);
+ if(present!=gPaintTextures.end()&&present->second.id)return JNI_TRUE;
+ if(present==gPaintTextures.end()&&gPaintTextures.size()>=MAX_PAINT_TEXTURES)return JNI_FALSE;
+ const size_t current=paintCacheBytes()-
+  (present==gPaintTextures.end()?0:present->second.bytes.size());
+ if(current+bytes>MAX_PAINT_CACHE_BYTES)return JNI_FALSE;
+ TextureResource prepared;prepared.width=width;prepared.height=height;
+ prepared.format=0;prepared.bytes.resize(bytes);
+ env->GetByteArrayRegion(data,0,static_cast<jsize>(bytes),
+  reinterpret_cast<jbyte*>(prepared.bytes.data()));
+ if(env->ExceptionCheck())return JNI_FALSE;
+ for(int i=0;i<8&&glGetError()!=GL_NO_ERROR;i++){}
+ if(!uploadPaintTexture(prepared)||glGetError()!=GL_NO_ERROR){
+  if(prepared.id)glDeleteTextures(1,&prepared.id);
+  return JNI_FALSE;
+ }
+ if(present==gPaintTextures.end())gPaintTextures.emplace(key,std::move(prepared));
+ else {if(present->second.id)glDeleteTextures(1,&present->second.id);present->second=std::move(prepared);}
+ return JNI_TRUE;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativePaintSelected(
+ JNIEnv*env,jclass,jstring name){
+ if(!name||!selected())return JNI_FALSE;
+ const char*raw=env->GetStringUTFChars(name,nullptr);
+ if(!raw)return JNI_FALSE;
+ const std::string key(raw);env->ReleaseStringUTFChars(name,raw);
+ if(!key.empty()&&(!validPaintKey(key)||gPaintTextures.find(key)==gPaintTextures.end()))
+  return JNI_FALSE;
+ if(selected()->paint==key)return JNI_TRUE;
+ recordEdit();selected()->paint=key;return JNI_TRUE;
+}
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePaintTerrainAtScreen(
+ JNIEnv*env,jclass,jfloat px,jfloat py,jfloat radius,jstring name){
+ if(!name||!std::isfinite(radius)||radius<4.f||radius>64.f||
+    gTerrainPaint.size()>=MAX_TERRAIN_PAINT)return 0;
+ const char*raw=env->GetStringUTFChars(name,nullptr);
+ if(!raw)return 0;
+ const std::string key(raw);env->ReleaseStringUTFChars(name,raw);
+ if(!validPaintKey(key)||gPaintTextures.find(key)==gPaintTextures.end())return 0;
+ float x,z;
+ if(!groundPoint(px,py,x,z))return 0;
+ recordEdit();gTerrainPaint.push_back({x,z,radius,key});
+ return static_cast<jint>(gTerrainPaint.size());
+}
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeInit(JNIEnv*,jclass){
  setupGL();if(!gSceneInitialized)reset(true);
 }
@@ -919,6 +1034,7 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDraw(JNIEnv*,jcl
  Mat4 vp=viewProjection();
  const Frustum frustum=makeFrustum(vp);
  drawWorld(vp);
+ drawTerrainPaint(vp);
  for(const auto&e:gEntities)drawEntity(vp,frustum,e);
  drawGizmo(vp);
  glBindVertexArray(0);

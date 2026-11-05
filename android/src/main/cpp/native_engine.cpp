@@ -21,12 +21,12 @@ struct Vec3 {float x, y, z;};
 struct Vec4 {float x, y, z, w;};
 struct Mat4 {float m[16]{};};
 struct Mesh {GLuint vao=0, buffer=0; GLsizei count=0;};
-struct Entity {int id=0, type=0; float x=0, z=0, yaw=0, size=1; std::string asset; float y=0.f, sx=1.f,sy=1.f,sz=1.f;};
+struct Entity {int id=0, type=0; float x=0, z=0, yaw=0, size=1; std::string asset; float y=0.f, sx=1.f,sy=1.f,sz=1.f; std::string paint;};
 struct Color {float r,g,b;};
 struct Shader {
  GLuint program=0;
  GLint locMvp=-1, locModel=-1, locColor=-1, locLight=-1;
- GLint locTexture=-1,locTextured=-1;
+ GLint locTexture=-1,locTextured=-1,locPaintOverride=-1,locOverlay=-1,locPaintCenter=-1,locPaintRadius=-1;
 };
 struct TextureResource {
  GLuint id=0;
@@ -43,7 +43,8 @@ struct Asset {
  float centerY=0.f, radius=0.f;
 };
 static Mesh gMeshes[3];
-static Mesh gStaticMeshes[17]; // Every decorative object is a single combined draw.
+static Mesh gStaticMeshes[17];
+static Mesh gPaintMesh; // Every decorative object is a single combined draw.
 void bakeStaticMesh(int type);
 // Cached, combined flat terrain: one GLES draw call per frame instead of one per tile.
 struct TerrainGpu {
@@ -54,7 +55,12 @@ struct TerrainGpu {
 static TerrainGpu gTerrain;
 static int gDrawCalls=0,gTriangles=0;
 static std::unordered_map<std::string,Asset> gAssets;
+static std::unordered_map<std::string,TextureResource> gPaintTextures;
+static constexpr size_t MAX_PAINT_TEXTURES=8,MAX_PAINT_CACHE_BYTES=32u*1024u*1024u;
 static constexpr size_t MAX_TEXTURE_CACHE_BYTES=96u*1024u*1024u;
+size_t paintCacheBytes(){
+ size_t n=0;for(const auto&kv:gPaintTextures)n+=kv.second.bytes.size();return n;
+}
 size_t textureCacheBytes(){
  size_t bytes=0;
  for(const auto&item:gAssets)for(const auto&tex:item.second.textures)
@@ -75,6 +81,9 @@ static bool gSceneInitialized=false, gDemoRoads=false;
 constexpr float WORLD_TILE=64.0f;
 static int gWorldSize=1024; // Set in app to 1024/2048/4096/8192/16384 meters.
 struct TerrainBrush {float x,z,radius,strength;};
+struct TerrainPaint {float x,z,radius;std::string texture;};
+static std::vector<TerrainPaint> gTerrainPaint;
+static constexpr size_t MAX_TERRAIN_PAINT=48;
 static std::vector<TerrainBrush> gBrushes;
 static int gTerrainRevision=0;
 static constexpr size_t MAX_TERRAIN_BRUSHES=64;
@@ -96,15 +105,16 @@ struct SceneSnapshot {
  Vec3 target{0,1.2f,1.3f};
  float cameraDistance=28.f;
  std::vector<TerrainBrush> terrain;
+ std::vector<TerrainPaint> paints;
 };
 static std::vector<SceneSnapshot> gUndo,gRedo;
 static bool gSuspendHistory=false;
 static constexpr size_t HISTORY_LIMIT=40;
-SceneSnapshot captureScene(){return {gEntities,gNextId,gSelected,gWorldSize,gDemoRoads,gTarget,gDistance,gBrushes};}
+SceneSnapshot captureScene(){return {gEntities,gNextId,gSelected,gWorldSize,gDemoRoads,gTarget,gDistance,gBrushes,gTerrainPaint};}
 void restoreScene(const SceneSnapshot&s){
  gEntities=s.entities;gNextId=s.nextId;gSelected=s.selected;gWorldSize=s.worldSize;
  gDemoRoads=s.demoRoads;gTarget=s.target;gDistance=s.cameraDistance;
- gBrushes=s.terrain;gTerrainRevision++;gSceneInitialized=true;
+ gBrushes=s.terrain;gTerrainPaint=s.paints;gTerrainRevision++;gSceneInitialized=true;
 }
 void pushBounded(std::vector<SceneSnapshot>&stack,SceneSnapshot value){
  if(stack.size()>=HISTORY_LIMIT)stack.erase(stack.begin());
@@ -250,6 +260,11 @@ bool uploadTextures(Asset&asset){
  glBindTexture(GL_TEXTURE_2D,0);
  return true;
 }
+bool uploadPaintTexture(TextureResource&tex){
+ Asset temp;temp.textures.push_back(std::move(tex));
+ const bool ok=uploadTextures(temp);
+ tex=std::move(temp.textures[0]);return ok;
+}
 void releaseAssetGpu(Asset&asset){
  for(auto&tex:asset.textures)if(tex.id)glDeleteTextures(1,&tex.id);
  if(asset.gpu.vao)glDeleteVertexArrays(1,&asset.gpu.vao);
@@ -272,29 +287,41 @@ void setupGL(){
  out vec3 vNormal;
  out vec3 vColor;
  out vec2 vUV;
+ out vec3 vWorldPos;
  void main(){
    gl_Position=uMvp*vec4(aPos,1.0);
    vNormal=normalize(mat3(uModel)*aNormal);
    vColor=aColor;
    vUV=aUV;
+   vWorldPos=(uModel*vec4(aPos,1.0)).xyz;
  })";
  const char*frag=R"(#version 300 es
  precision mediump float;
  in vec3 vNormal;
  in vec3 vColor;
  in vec2 vUV;
+ in vec3 vWorldPos;
  uniform vec3 uColor;
  uniform sampler2D uTexture;
  uniform float uUseTexture;
  uniform float uHighlight;
+ uniform float uPaintOverride;
+ uniform float uOverlay;
+ uniform vec2 uPaintCenter;
+ uniform float uPaintRadius;
  out vec4 fragColor;
  void main(){
    float sun=max(dot(normalize(vNormal),normalize(vec3(-.55,1.,.5))),0.);
    vec4 texel=uUseTexture>.5?texture(uTexture,vUV):vec4(1.);
-   if(texel.a<.45)discard;
-   vec3 color=uColor*vColor*texel.rgb*(.52+.48*sun);
+   if(uOverlay>.5){
+     float dist=length(vWorldPos.xz-uPaintCenter)/max(uPaintRadius,.001);
+     texel.a*=1.0-smoothstep(.82,1.0,dist);
+   }
+   if(texel.a<(uOverlay>.5?.01:.45))discard;
+   vec3 tint=mix(vColor,vec3(1.),uPaintOverride);
+   vec3 color=uColor*tint*texel.rgb*(.52+.48*sun);
    color=mix(color,vec3(.99,.72,.30),uHighlight*.30);
-   fragColor=vec4(color,1.);
+   fragColor=vec4(color,texel.a);
  })";
  GLuint v=shader(GL_VERTEX_SHADER,vert),f=shader(GL_FRAGMENT_SHADER,frag);
  gShader.program=glCreateProgram();
@@ -308,9 +335,15 @@ void setupGL(){
  gShader.locLight=glGetUniformLocation(gShader.program,"uHighlight");
  gShader.locTexture=glGetUniformLocation(gShader.program,"uTexture");
  gShader.locTextured=glGetUniformLocation(gShader.program,"uUseTexture");
+ gShader.locPaintOverride=glGetUniformLocation(gShader.program,"uPaintOverride");
+ gShader.locOverlay=glGetUniformLocation(gShader.program,"uOverlay");
+ gShader.locPaintCenter=glGetUniformLocation(gShader.program,"uPaintCenter");
+ gShader.locPaintRadius=glGetUniformLocation(gShader.program,"uPaintRadius");
  glUseProgram(gShader.program);
  glUniform1i(gShader.locTexture,0);
  glUniform1f(gShader.locTextured,0.f);
+ glUniform1f(gShader.locPaintOverride,0.f);
+ glUniform1f(gShader.locOverlay,0.f);
  for(int kind=0;kind<3;kind++){
   std::vector<float> d=geometry(kind);Mesh &m=gMeshes[kind];m.count=(GLsizei)(d.size()/6);
   glGenVertexArrays(1,&m.vao);glBindVertexArray(m.vao);
@@ -327,6 +360,8 @@ void setupGL(){
   if(!uploadTextures(kv.second))
    __android_log_print(ANDROID_LOG_ERROR,"OE","Failed to restore textures after EGL context recreation");
  }
+ for(auto&kv:gPaintTextures)if(!uploadPaintTexture(kv.second))
+  __android_log_print(ANDROID_LOG_ERROR,"OE","Failed to restore custom paint texture");
  // A new OpenGL context needs new handles; never reuse IDs from the previous context.
  gTerrain={};
  glGenVertexArrays(1,&gTerrain.vao);
@@ -339,6 +374,19 @@ void setupGL(){
   glVertexAttribPointer(attrib,3,GL_FLOAT,GL_FALSE,terrainStride,
     reinterpret_cast<void*>(static_cast<uintptr_t>(attrib*3*sizeof(float))));
  }
+ glBindVertexArray(0);
+ glGenVertexArrays(1,&gPaintMesh.vao);
+ glGenBuffers(1,&gPaintMesh.buffer);
+ glBindVertexArray(gPaintMesh.vao);
+ glBindBuffer(GL_ARRAY_BUFFER,gPaintMesh.buffer);
+ for(int a=0;a<3;a++){
+  glEnableVertexAttribArray(a);
+  glVertexAttribPointer(a,3,GL_FLOAT,GL_FALSE,11*sizeof(float),
+   reinterpret_cast<void*>(static_cast<uintptr_t>(a*3*sizeof(float))));
+ }
+ glEnableVertexAttribArray(3);
+ glVertexAttribPointer(3,2,GL_FLOAT,GL_FALSE,11*sizeof(float),
+  reinterpret_cast<void*>(9*sizeof(float)));
  glBindVertexArray(0);
  glVertexAttrib3f(2,1,1,1);
  glEnable(GL_DEPTH_TEST);
@@ -709,7 +757,7 @@ void reset(bool demo){
  recordEdit(); // demo generation is a single undoable change
  const bool wasMuted=gSuspendHistory;
  gSuspendHistory=true;
- gEntities.clear();gBrushes.clear();gTerrainRevision++;gNextId=1;gSelected=0;
+ gEntities.clear();gBrushes.clear();gTerrainPaint.clear();gTerrainRevision++;gNextId=1;gSelected=0;
  gSceneInitialized=true;gDemoRoads=demo;
  gTarget={0,1.2f,1.3f};gDistance=28.f;
  if(demo){

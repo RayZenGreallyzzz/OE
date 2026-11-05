@@ -1013,13 +1013,16 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDiscardUnusedAss
  for(const auto&e:gEntities)if(e.type==6&&e.asset==asset)return;
  auto it=gAssets.find(asset);
  if(it==gAssets.end())return;
- if(it->second.gpu.vao)glDeleteVertexArrays(1,&it->second.gpu.vao);
- if(it->second.gpu.buffer)glDeleteBuffers(1,&it->second.gpu.buffer);
+ releaseAssetGpu(it->second);
  gAssets.erase(it);
 }
+// Register a full GLB atomically: interleaved 11-float vertices, material
+// draw ranges, and up to 4 embedded RGBA8/ETC2 GPU textures.
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsset(
- JNIEnv*env,jclass,jstring key,jfloatArray data,jfloat centerY,jfloat radius){
- if(!key||!data||!std::isfinite(centerY)||!std::isfinite(radius)||
+ JNIEnv*env,jclass,jstring key,jfloatArray vertices,jfloat centerY,jfloat radius,
+ jintArray batchData,jobjectArray imageData,jintArray imageInfo){
+ if(!key||!vertices||!batchData||!imageData||!imageInfo||
+    !std::isfinite(centerY)||!std::isfinite(radius)||
     radius<.05f||radius>100.f||centerY<0.f||centerY>100.f)return JNI_FALSE;
  const char*raw=env->GetStringUTFChars(key,nullptr);
  if(!raw)return JNI_FALSE;
@@ -1027,37 +1030,89 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsse
  if(assetKey.size()!=31||assetKey.compare(0,3,"oe_")!=0||
     assetKey.substr(assetKey.size()-4)!=".glb")return JNI_FALSE;
  for(size_t i=3;i<assetKey.size()-4;i++)
-  if(!((assetKey[i]>='0'&&assetKey[i]<='9')||(assetKey[i]>='a'&&assetKey[i]<='f')))
-   return JNI_FALSE;
+  if(!((assetKey[i]>='0'&&assetKey[i]<='9')||
+       (assetKey[i]>='a'&&assetKey[i]<='f')))return JNI_FALSE;
  auto existing=gAssets.find(assetKey);
- // A content-addressed key is immutable; never re-upload the same model.
+ // Content-addressed resources are immutable within the renderer.
  if(existing!=gAssets.end()&&existing->second.gpu.count>0)return JNI_TRUE;
- jsize count=env->GetArrayLength(data);
- if(count<=0||count>MAX_IMPORTED_TRIANGLES*27||count%27!=0)return JNI_FALSE;
  if(existing==gAssets.end()&&gAssets.size()>=MAX_ASSETS)return JNI_FALSE;
- jfloat*ptr=env->GetFloatArrayElements(data,nullptr);
- if(!ptr)return JNI_FALSE;
- bool valid=true;
- for(jsize i=0;i<count;i++)if(!std::isfinite(ptr[i])||std::abs(ptr[i])>10000){valid=false;break;}
- if(!valid){env->ReleaseFloatArrayElements(data,ptr,JNI_ABORT);return JNI_FALSE;}
+ const jsize valueCount=env->GetArrayLength(vertices);
+ if(valueCount<=0||valueCount>MAX_IMPORTED_TRIANGLES*33||valueCount%33!=0)
+  return JNI_FALSE;
+ const jsize vertexCount=valueCount/11;
+ const jsize batchLength=env->GetArrayLength(batchData);
+ if(batchLength<=0||batchLength>6144||batchLength%3!=0)return JNI_FALSE;
+ const jsize imageCount=env->GetArrayLength(imageData);
+ if(imageCount<0||imageCount>4||env->GetArrayLength(imageInfo)!=imageCount*3)
+  return JNI_FALSE;
  Asset prepared;
- prepared.centerY=centerY;prepared.radius=radius;
- prepared.vertices.assign(ptr,ptr+count);
- env->ReleaseFloatArrayElements(data,ptr,JNI_ABORT);
- // Keep the previous GPU asset intact until replacement is ready.
- // Bounded error drain: never block indefinitely on a lost GL context.
+ prepared.vertexStride=11;prepared.centerY=centerY;prepared.radius=radius;
+ prepared.vertices.resize(static_cast<size_t>(valueCount));
+ env->GetFloatArrayRegion(vertices,0,valueCount,prepared.vertices.data());
+ if(env->ExceptionCheck())return JNI_FALSE;
+ for(float value:prepared.vertices)
+  if(!std::isfinite(value)||std::abs(value)>10000.f)return JNI_FALSE;
+ std::vector<jint> batches(static_cast<size_t>(batchLength));
+ env->GetIntArrayRegion(batchData,0,batchLength,batches.data());
+ if(env->ExceptionCheck())return JNI_FALSE;
+ jint consumed=0;
+ for(jsize i=0;i<batchLength;i+=3){
+  const jint first=batches[i],count=batches[i+1],texture=batches[i+2];
+  if(first!=consumed||count<=0||count%3!=0||
+     count>vertexCount-consumed||texture< -1||texture>=imageCount)return JNI_FALSE;
+  prepared.batches.push_back({first,count,texture});
+  consumed+=count;
+ }
+ if(consumed!=vertexCount)return JNI_FALSE;
+ std::vector<jint> info(static_cast<size_t>(imageCount*3));
+ if(imageCount){
+  env->GetIntArrayRegion(imageInfo,0,imageCount*3,info.data());
+  if(env->ExceptionCheck())return JNI_FALSE;
+ }
+ size_t totalNew=0;
+ for(jsize i=0;i<imageCount;i++){
+  const jint width=info[3*i],height=info[3*i+1],format=info[3*i+2];
+  if(width<=0||height<=0||width>2048||height>2048||
+     format<0||format>2)return JNI_FALSE;
+  const size_t expected=format==0?static_cast<size_t>(width)*height*4:
+    static_cast<size_t>((width+3)/4)*static_cast<size_t>((height+3)/4)*
+     static_cast<size_t>(format==1?8:16);
+  jbyteArray bytes=static_cast<jbyteArray>(env->GetObjectArrayElement(imageData,i));
+  if(!bytes||env->ExceptionCheck())return JNI_FALSE;
+  const jsize length=env->GetArrayLength(bytes);
+  if(length<0||static_cast<size_t>(length)!=expected){
+   env->DeleteLocalRef(bytes);return JNI_FALSE;
+  }
+  TextureResource tex;
+  tex.width=width;tex.height=height;tex.format=format;
+  tex.bytes.resize(expected);
+  env->GetByteArrayRegion(bytes,0,length,reinterpret_cast<jbyte*>(tex.bytes.data()));
+  env->DeleteLocalRef(bytes);
+  if(env->ExceptionCheck())return JNI_FALSE;
+  totalNew+=expected;
+  if(totalNew>32u*1024u*1024u)return JNI_FALSE;
+  prepared.textures.push_back(std::move(tex));
+ }
+ const size_t oldBytes=existing==gAssets.end()?0:[&](){
+  size_t n=0;
+  for(const auto&tex:existing->second.textures)n+=tex.bytes.size();
+  return n;
+ }();
+ if(textureCacheBytes()-oldBytes+totalNew>MAX_TEXTURE_CACHE_BYTES)return JNI_FALSE;
+ // Stage GPU state without touching the old scene/asset on failures.
  for(int i=0;i<8&&glGetError()!=GL_NO_ERROR;i++){}
  uploadAsset(prepared);
+ bool texturesOk=prepared.gpu.count>0&&prepared.gpu.vao&&prepared.gpu.buffer;
+ if(texturesOk)texturesOk=uploadTextures(prepared);
  const GLenum error=glGetError();
- if(error!=GL_NO_ERROR||!prepared.gpu.vao||!prepared.gpu.buffer||prepared.gpu.count<=0){
-  if(prepared.gpu.vao)glDeleteVertexArrays(1,&prepared.gpu.vao);
-  if(prepared.gpu.buffer)glDeleteBuffers(1,&prepared.gpu.buffer);
-  __android_log_print(ANDROID_LOG_ERROR,"OE","GLB GPU upload failed: GL 0x%x",error);
+ if(!texturesOk||error!=GL_NO_ERROR){
+  releaseAssetGpu(prepared);
+  __android_log_print(ANDROID_LOG_ERROR,"OE",
+   "GLB asset or texture GPU upload failed: 0x%x",error);
   return JNI_FALSE;
  }
  if(existing!=gAssets.end()){
-  if(existing->second.gpu.vao)glDeleteVertexArrays(1,&existing->second.gpu.vao);
-  if(existing->second.gpu.buffer)glDeleteBuffers(1,&existing->second.gpu.buffer);
+  releaseAssetGpu(existing->second);
   existing->second=std::move(prepared);
  }else gAssets.emplace(assetKey,std::move(prepared));
  return JNI_TRUE;

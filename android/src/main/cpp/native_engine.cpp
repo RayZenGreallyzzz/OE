@@ -532,12 +532,30 @@ void drawImported(const Mat4&vp,const Entity&e){
  glUniform1f(gShader.locLight,e.id==gSelected?1.f:0.f);
  const Asset &asset=it->second;
  const TextureResource*overridePaint=paintTexture(e.paint);
- glBindVertexArray(asset.gpu.vao);
- if(asset.batches.empty()){
+ const Mesh*gpu=&asset.gpu;
+ const std::vector<AssetBatch>*batches=&asset.batches;
+ int tier=0;
+ if(e.id!=gSelected){
+  const Vec3 center{e.x,e.y+asset.centerY*e.size*e.sy,e.z};
+  const Vec3 difference=sub(center,cameraEye());
+  const float distance=std::sqrt(dot(difference,difference));
+  const float sizeScale=std::max(.5f,e.size*std::max({e.sx,e.sy,e.sz}));
+  // Larger objects retain LOD0 longer; no per-frame simplification.
+  const int preferred=distance>125.f*sizeScale?2:(distance>55.f*sizeScale?1:0);
+  for(int level=preferred;level>0;level--){
+   const AssetLod&candidate=asset.lods[level-1];
+   if(candidate.gpu.count>0&&candidate.gpu.vao!=0){
+    gpu=&candidate.gpu;batches=&candidate.batches;tier=level;break;
+   }
+  }
+ }
+ ++gLodDrawCounts[tier];
+ glBindVertexArray(gpu->vao);
+ if(batches->empty()){
   glUniform1f(gShader.locTextured,0.f);
-  glDrawArrays(GL_TRIANGLES,0,asset.gpu.count);
-  ++gDrawCalls;gTriangles+=asset.gpu.count/3;
- }else for(const auto&batch:asset.batches){
+  glDrawArrays(GL_TRIANGLES,0,gpu->count);
+  ++gDrawCalls;gTriangles+=gpu->count/3;
+ }else for(const auto&batch:*batches){
   if(overridePaint&&overridePaint->id){bindPaint(overridePaint);}
   else if(batch.texture>=0&&static_cast<size_t>(batch.texture)<asset.textures.size()&&
      asset.textures[batch.texture].id){
@@ -1403,7 +1421,8 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDiscardUnusedAss
 // draw ranges, and up to 4 embedded RGBA8/ETC2 GPU textures.
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsset(
  JNIEnv*env,jclass,jstring key,jfloatArray vertices,jfloat centerY,jfloat radius,
- jintArray batchData,jobjectArray imageData,jintArray imageInfo){
+ jintArray batchData,jobjectArray imageData,jintArray imageInfo,
+ jboolean preserveOriginalRig){
  if(!key||!vertices||!batchData||!imageData||!imageInfo||
     !std::isfinite(centerY)||!std::isfinite(radius)||
     radius<.05f||radius>100.f||centerY<0.f||centerY>100.f)return JNI_FALSE;
@@ -1482,9 +1501,27 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsse
   return n;
  }();
  if(textureCacheBytes()-oldBytes+totalNew>MAX_TEXTURE_CACHE_BYTES)return JNI_FALSE;
+ // Only entirely static GLBs are eligible for automatic LOD generation.
+ // Unsafe files with skins, animations or morph targets retain full geometry.
+ if(preserveOriginalRig!=JNI_TRUE){
+  buildStaticLods(prepared);
+  size_t newBytes=0;
+  for(const auto&lod:prepared.lods)newBytes+=lod.vertices.size()*sizeof(float);
+  if(lodCacheBytes()+newBytes>MAX_LOD_CACHE_BYTES)
+   for(auto&lod:prepared.lods){lod.vertices.clear();lod.batches.clear();}
+ }
  // Stage GPU state without touching the old scene/asset on failures.
  for(int i=0;i<8&&glGetError()!=GL_NO_ERROR;i++){}
  uploadAsset(prepared);
+ for(auto&lod:prepared.lods)if(!lod.vertices.empty()){
+  uploadLod(lod);
+  if(glGetError()!=GL_NO_ERROR||!lod.gpu.vao||!lod.gpu.buffer){
+   if(lod.gpu.vao)glDeleteVertexArrays(1,&lod.gpu.vao);
+   if(lod.gpu.buffer)glDeleteBuffers(1,&lod.gpu.buffer);
+   lod.gpu={};lod.vertices.clear();lod.batches.clear();
+   // Keep fully detailed LOD0 asset and continue without optional LOD.
+  }
+ }
  bool texturesOk=prepared.gpu.count>0&&prepared.gpu.vao&&prepared.gpu.buffer;
  if(texturesOk)texturesOk=uploadTextures(prepared);
  const GLenum error=glGetError();

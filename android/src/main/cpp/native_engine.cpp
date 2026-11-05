@@ -1287,6 +1287,33 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeSetDemoRoads(JNI
  if(gDemoRoads!=(enabled==JNI_TRUE))recordEdit();
  gDemoRoads=(enabled==JNI_TRUE);
 }
+// Exact-position inspector. Positions are un-snapped world coordinates;
+// quantization is limited to float32 storage / GPU precision, not a grid.
+JNIEXPORT jdoubleArray JNICALL Java_game_oe_editor_EditorActivity_nativeSelectedCoordinates(
+ JNIEnv*env,jclass){
+ Entity*e=selected();
+ if(!e)return nullptr;
+ const jdouble values[3]={static_cast<jdouble>(e->x),
+                          static_cast<jdouble>(e->y),
+                          static_cast<jdouble>(e->z)};
+ jdoubleArray coords=env->NewDoubleArray(3);
+ if(coords)env->SetDoubleArrayRegion(coords,0,3,values);
+ return coords;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeSetSelectedCoordinates(
+ JNIEnv*,jclass,jdouble x,jdouble y,jdouble z){
+ if(!std::isfinite(x)||!std::isfinite(y)||!std::isfinite(z)||
+    std::abs(x)>static_cast<double>(worldHalf())||
+    std::abs(z)>static_cast<double>(worldHalf())||y< -24.0||y>160.0)
+   return JNI_FALSE;
+ Entity*e=selected();if(!e)return JNI_FALSE;
+ const float nx=static_cast<float>(x),ny=static_cast<float>(y),
+             nz=static_cast<float>(z);
+ if(nx!=e->x||ny!=e->y||nz!=e->z){
+  recordEdit();e->x=nx;e->y=ny;e->z=nz;
+ }
+ return JNI_TRUE;
+}
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeNudge(JNIEnv*,jclass,jfloat x,jfloat z){
  if(!std::isfinite(x)||!std::isfinite(z))return;
  if(Entity*e=selected()){
@@ -1347,13 +1374,13 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeScale(JNIEnv*,jc
 }
 JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSelectedInfo(JNIEnv*env,jclass){
  Entity*e=selected();if(!e)return env->NewStringUTF("Выбери здание касанием или через список «Объекты»");
- std::ostringstream out;out<<nameFor(e->type)<<" #" <<e->id<<"  |  X "<<std::fixed<<std::setprecision(1)
+ std::ostringstream out;out<<nameFor(e->type)<<" #" <<e->id<<"  |  X "<<std::fixed<<std::setprecision(3)
  <<e->x<<"  Z "<<e->z<<"  Y "<<e->y<<"  ↻ "<<e->yaw<<"°  Размер "<<e->size
  << " XYZ "<<e->sx<<"/"<<e->sy<<"/"<<e->sz;
  return env->NewStringUTF(out.str().c_str());
 }
 JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSceneSnapshot(JNIEnv*env,jclass){
- std::ostringstream out;out<<std::fixed<<std::setprecision(4)<<"{\"version\":1,\"worldSize\":"<<gWorldSize<<",\"demoRoads\":"<<(gDemoRoads?"true":"false")<<",\"items\":[";
+ std::ostringstream out;out<<std::fixed<<std::setprecision(6)<<"{\"version\":1,\"worldSize\":"<<gWorldSize<<",\"demoRoads\":"<<(gDemoRoads?"true":"false")<<",\"items\":[";
  for(size_t i=0;i<gEntities.size();i++){
   const auto&e=gEntities[i];if(i)out<<",";
   out<<"{\"type\":"<<e.type<<",\"x\":"<<e.x<<",\"z\":"<<e.z

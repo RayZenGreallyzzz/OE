@@ -7,8 +7,8 @@ import java.nio.ByteOrder;
 import java.util.Arrays;
 
 /** Bounded offline decode for embedded GLB baseColor images.
- * Supported: PNG/JPEG -> RGBA8, KTX2 raw RGBA8 and GPU-native ETC2.
- * KTX2 BasisLZ/ETC1S/UASTC still need a transcoder and are NOT supported.
+ * Supported: PNG/JPEG -> RGBA8, KTX2 raw RGBA8, GPU-native ETC2, and
+ * Basis Universal ETC1S/UASTC LDR -> ETC2 RGBA8 with vendored offline C++.
  * This reader never writes to or mutates the source GLB.
  */
 final class TextureReader {
@@ -18,6 +18,7 @@ final class TextureReader {
     static final int DEFAULT_LIMIT=1024;
     static final int MAX_LIMIT=2048;
     static final int FORMAT_RGBA=0, FORMAT_ETC2_RGB=1, FORMAT_ETC2_RGBA=2;
+    private static native byte[] nativeTranscodeBasisKtx2(byte[] ktx2,int limit);
     static final class Image {
         final byte[] bytes;
         final int width,height,format;
@@ -93,8 +94,20 @@ final class TextureReader {
             depth==0&&layers==0&&faces==1&&levels>=1&&levels<=16,
             "KTX2: поддерживаются только 2D-текстуры до "+limit+" px");
         need(src.length>=80+24*levels,"Не хватает индекса уровней KTX2");
-        need(scheme==0&&vkFormat!=0,
-            "KTX2 BasisU/ETC1S/UASTC ещё требует отдельный транскодер");
+        if(vkFormat==0){
+            byte[] packed=nativeTranscodeBasisKtx2(src,limit);
+            need(packed!=null&&packed.length>=12,
+                "KTX2 BasisU: формат повреждён или неподдерживаемый ETC1S/UASTC");
+            ByteBuffer transcoded=ByteBuffer.wrap(packed).order(ByteOrder.LITTLE_ENDIAN);
+            int pw=transcoded.getInt(0),ph=transcoded.getInt(4),fmt=transcoded.getInt(8);
+            long size=(long)((pw+3)/4)*((ph+3)/4)*16L;
+            need(pw>0&&ph>0&&pw<=limit&&ph<=limit&&fmt==FORMAT_ETC2_RGBA&&
+                packed.length==12+size,
+                "KTX2: неверный результат BasisU транскодирования");
+            return new Image(Arrays.copyOfRange(packed,12,packed.length),pw,ph,fmt);
+        }
+        need(scheme==0,
+            "KTX2: поддерживается BasisU и несжатый ETC2/RGBA8, но не этот метод supercompression");
         int format,bytesPerBlock;
         if(vkFormat==37||vkFormat==43){
             format=FORMAT_RGBA;bytesPerBlock=0;

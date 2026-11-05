@@ -223,7 +223,7 @@ public class EditorActivity extends Activity {
         top.setPadding(dp(5),dp(2),dp(5),dp(2));
         top.setBackgroundColor(Color.argb(220,14,21,32));
         TextView title=new TextView(this);
-        title.setText("OE 0.6.12  /  UNIVERSAL IMPORT TEST");
+        title.setText("OE 0.6.13  /  BASISU KTX2 TEST");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
         title.setTextSize(12);
@@ -415,7 +415,7 @@ public class EditorActivity extends Activity {
                 .setTitle("Текстуры OE")
                 .setMessage("Можно загружать PNG/JPG до 1024px и наносить на объекты или землю. "
                     +"В GLB читаются встроенные изображения и готовые KTX2 ETC2/RGBA8. "
-                    +"Draco и BasisU/KTX2 с транскодированием пока не поддерживаются.")
+                    +"Draco пока не поддерживается. KTX2 BasisU ETC1S/UASTC LDR -> ETC2 включён в тестовом режиме.")
                 .setPositiveButton("Понятно",null).show());
         }else if("Проект".equals(category)){
             addPaletteOption("⚡ Графика и качество",this::chooseDeviceProfile);

@@ -7,8 +7,8 @@ import java.nio.ByteOrder;
 import java.util.Arrays;
 
 /** Bounded offline decode for embedded GLB baseColor images.
- * Supported: PNG/JPEG -> RGBA8, KTX2 raw RGBA8 and GPU-native ETC2.
- * KTX2 BasisLZ/ETC1S/UASTC still need a transcoder and are NOT supported.
+ * Supported: PNG/JPEG -> RGBA8, KTX2 raw RGBA8, GPU-native ETC2, and
+ * Basis Universal ETC1S/UASTC LDR -> ETC2 RGBA8 with vendored offline C++.
  * This reader never writes to or mutates the source GLB.
  */
 final class TextureReader {

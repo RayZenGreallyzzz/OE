@@ -33,6 +33,8 @@ import java.util.Map;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -76,9 +78,13 @@ public class EditorActivity extends Activity {
     private static native boolean nativeCanRegisterMore(int newUniqueAssets);
     private static native void nativeDiscardUnusedAsset(String key);
     private static native boolean nativeReplaceScene(int size, boolean demoRoads,
-            int[] kinds, float[] transforms, String[] modelKeys);
+            int[] kinds, float[] transforms, String[] modelKeys, float[] terrain);
+    private static native void nativeChangeSelectedHeight(float dy);
+    private static native void nativeSnapSelectedToGround();
+    private static native int nativeApplyTerrainBrushAtScreen(float x,float y,float radius,float amount);
+    private static native int nativeTerrainBrushCount();
     private static native int nativeAddImportedPlaced(String key, float x, float z, float yaw, float size);
-    private static final int PICK_GLB = 702;
+    private static final int PICK_GLB = 702, PICK_PROJECT=703, SAVE_PROJECT=704;
     private static final int MAX_ASSETS = 12;
 
     private EditorSurface surface;
@@ -89,6 +95,10 @@ public class EditorActivity extends Activity {
     private volatile boolean importing = false;
     private volatile int placingKind = -1;
     private volatile String placingGlb = null;
+    private volatile int terrainMode=0; // -1 lower, +1 raise
+    private volatile float terrainRadius=96f;
+    private volatile float terrainStrength=20f;
+    private volatile float moveStep=.25f,turnStep=5f,scaleStep=1.05f;
     private final int gold = Color.rgb(240, 192, 113);
     private final int text = Color.rgb(234, 228, 218);
 
@@ -156,7 +166,7 @@ public class EditorActivity extends Activity {
         top.setOrientation(LinearLayout.VERTICAL);
 
         TextView title = new TextView(this);
-        title.setText("OE  /  ORVETRA ENGINE     •     NATIVE ANDROID 0.6.3 · GLB SAFETY TEST");
+        title.setText("OE  /  ORVETRA ENGINE     •     NATIVE ANDROID 0.6.4 · WORLD TOOLS TEST");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         title.setTextSize(13);
@@ -170,11 +180,21 @@ public class EditorActivity extends Activity {
         addTool(tools, "+ Кузница", () -> enterPlaceMode(1, null));
         addTool(tools, "+ Аукцион", () -> enterPlaceMode(2, null));
         addTool(tools, "+ Фонарь", () -> enterPlaceMode(3, null));
+        addTool(tools, "+ Фонтан", () -> enterPlaceMode(4, null));
+        addTool(tools, "+ Дерево", () -> enterPlaceMode(5, null));
+        addTool(tools, "+ Камни", () -> enterPlaceMode(7, null));
+        addTool(tools, "+ Куст", () -> enterPlaceMode(8, null));
+        addTool(tools, "+ Лавка", () -> enterPlaceMode(9, null));
+        addTool(tools, "⛰ Гора +", () -> enterTerrainMode(1));
+        addTool(tools, "⛰ Рельеф −", () -> enterTerrainMode(-1));
+        addTool(tools, "Кисть рельефа", this::chooseTerrainBrush);
         addTool(tools, "Локации", this::showLocations);
         addTool(tools, "Размер карты", this::showWorldSize);
         addTool(tools, "Координаты", this::showCoordinateJump);
         addTool(tools, "Отмена", this::cancelPlace);
         addTool(tools, "Импорт GLB", this::pickGlb);
+        addTool(tools, "Экспорт проекта", this::exportProject);
+        addTool(tools, "Импорт проекта", this::pickProject);
         addTool(tools, "Объекты", this::showObjects);
         addTool(tools, "Сохранить", this::saveScene);
         addTool(tools, "Загрузить", this::loadScene);
@@ -199,18 +219,24 @@ public class EditorActivity extends Activity {
         inspector.addView(selectionText);
 
         LinearLayout moveRow = row();
-        addControl(moveRow, "X −", () -> edit(() -> nativeNudge(-1f, 0)));
-        addControl(moveRow, "X +", () -> edit(() -> nativeNudge(1f, 0)));
-        addControl(moveRow, "Z −", () -> edit(() -> nativeNudge(0, -1f)));
-        addControl(moveRow, "Z +", () -> edit(() -> nativeNudge(0, 1f)));
+        addControl(moveRow, "X −", () -> edit(() -> nativeNudge(-moveStep, 0)));
+        addControl(moveRow, "X +", () -> edit(() -> nativeNudge(moveStep, 0)));
+        addControl(moveRow, "Z −", () -> edit(() -> nativeNudge(0, -moveStep)));
+        addControl(moveRow, "Z +", () -> edit(() -> nativeNudge(0, moveStep)));
         inspector.addView(moveRow);
 
         LinearLayout otherRow = row();
-        addControl(otherRow, "↺ 15°", () -> edit(() -> nativeRotate(-15f)));
-        addControl(otherRow, "15° ↻", () -> edit(() -> nativeRotate(15f)));
-        addControl(otherRow, "− Размер", () -> edit(() -> nativeScale(.90f)));
-        addControl(otherRow, "+ Размер", () -> edit(() -> nativeScale(1.10f)));
+        addControl(otherRow, "↺ Поворот", () -> edit(() -> nativeRotate(-turnStep)));
+        addControl(otherRow, "Поворот ↻", () -> edit(() -> nativeRotate(turnStep)));
+        addControl(otherRow, "− Размер", () -> edit(() -> nativeScale(1f/scaleStep)));
+        addControl(otherRow, "+ Размер", () -> edit(() -> nativeScale(scaleStep)));
         inspector.addView(otherRow);
+        LinearLayout detailRow=row();
+        addControl(detailRow,"Y −",() -> edit(() -> nativeChangeSelectedHeight(-moveStep)));
+        addControl(detailRow,"Y +",() -> edit(() -> nativeChangeSelectedHeight(moveStep)));
+        addControl(detailRow,"К земле",() -> edit(EditorActivity::nativeSnapSelectedToGround));
+        addControl(detailRow,"Точность",this::choosePrecision);
+        inspector.addView(detailRow);
 
         LinearLayout historyRow = row();
         addControl(historyRow, "↶ Отмена", this::undoAction);
@@ -241,16 +267,50 @@ public class EditorActivity extends Activity {
     }
     private void enterPlaceMode(int kind, String asset) {
         if(importing) { message("Сначала дождись завершения импорта"); return; }
+        terrainMode=0;
         placingKind = kind;
         placingGlb = asset;
         statusText.setText("РАЗМЕЩЕНИЕ: коснись свободной земли, чтобы поставить объект. Для отмены нажми «Отмена».");
         message("Коснись места на карте для размещения");
     }
     private void cancelPlace() {
+        terrainMode=0;
         placingKind = -1;
         placingGlb = null;
         statusText.setText("Режим выбора · два пальца — перемещение; кнопки «Размер карты» и «Координаты» — большой мир.");
         message("Размещение отменено");
+    }
+    private void enterTerrainMode(int direction){
+        if(importing){message("Дождись завершения операции");return;}
+        placingKind=-1;placingGlb=null;
+        terrainMode=direction;
+        statusText.setText(direction>0?
+            "ГОРА: коснись земли. Кисть радиус "+(int)terrainRadius+" м, высота +"+(int)terrainStrength+" м. Отмена ↶ работает.":
+            "ВПАДИНА: коснись земли. Кисть радиус "+(int)terrainRadius+" м, глубина −"+(int)terrainStrength+" м.");
+        message("Коснись земли для деформации · максимум 64 мазка на карту");
+    }
+    private void chooseTerrainBrush(){
+        final String[] choices={"Небольшая · 32м / 8м","Средняя · 64м / 16м",
+            "Гора · 96м / 24м","Большая · 160м / 40м","Очень большая · 256м / 60м"};
+        final float[] radius={32,64,96,160,256},strength={8,16,24,40,60};
+        new AlertDialog.Builder(this).setTitle("Размер и высота рельефа")
+            .setItems(choices,(dialog,index)->{
+                terrainRadius=radius[index];terrainStrength=strength[index];
+                message("Кисть: радиус "+(int)terrainRadius+" м, высота "+(int)terrainStrength+" м");
+            }).show();
+    }
+    private void choosePrecision(){
+        final String[] choices={"Очень точно: 0.10 м / 5° / 5%",
+            "Точно: 0.25 м / 5° / 5%",
+            "Обычно: 0.5 м / 15° / 10%",
+            "Крупный шаг: 1 м / 15° / 10%"};
+        final float[] moves={.10f,.25f,.5f,1f};
+        new AlertDialog.Builder(this).setTitle("Шаг редактирования деталей")
+            .setItems(choices,(dialog,index)->{
+                moveStep=moves[index];turnStep=index<=1?5f:15f;
+                scaleStep=index<=1?1.05f:1.10f;
+                message("Шаг: "+moveStep+" м");
+            }).show();
     }
     private void showLocations() {
         final String[] locations = {
@@ -686,7 +746,15 @@ public class EditorActivity extends Activity {
                     final float x=surfaceX(e.getX()),y=surfaceY(e.getY());
                     final int kind=placingKind;
                     final String asset=placingGlb;
-                    if(kind>=0) {
+                    final int brush=terrainMode;
+                    if(brush!=0){
+                        queueEvent(() -> {
+                            int count=nativeApplyTerrainBrushAtScreen(x,y,terrainRadius,brush*terrainStrength);
+                            if(count>0)message("Рельеф изменён · "+count+"/64 · Сохранить проект");
+                            else message("Не удалось изменить землю: точка вне карты или лимит 64 мазка");
+                            requestRender();
+                        });
+                    }else if(kind>=0) {
                         queueEvent(() -> {
                             int id=kind==6?nativePlaceImportedAtScreen(asset,x,y):nativePlaceAtScreen(kind,x,y);
                             if(id>0){

@@ -1,11 +1,13 @@
 // OE Native 0.2. GLES 3.0/C++ scene and renderer; no Godot dependency.
 #include <jni.h>
 #include "vendor/meshoptimizer/meshoptimizer.h"
+#include "quality_profiles.h"
 #include <GLES3/gl3.h>
 #include <android/log.h>
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <chrono>
 #include <iomanip>
 #include <sstream>
 #include <string>
@@ -60,6 +62,9 @@ struct TerrainGpu {
 };
 static TerrainGpu gTerrain;
 static int gDrawCalls=0,gTriangles=0;
+static int gQualityTier=oe::Low;
+static float gSubmitCpuMs=0.f;
+const oe::QualityProfile&quality(){return oe::profile(gQualityTier);}
 static std::unordered_map<std::string,Asset> gAssets;
 static std::unordered_map<std::string,TextureResource> gPaintTextures;
 static constexpr size_t MAX_PAINT_TEXTURES=8,MAX_PAINT_CACHE_BYTES=32u*1024u*1024u;
@@ -514,7 +519,7 @@ bool importedInView(const Frustum&frustum,const Entity&e){
  const float radius=asset.radius*e.size*std::max({e.sx,e.sy,e.sz});
  const Vec3 center{e.x,e.y+asset.centerY*e.size*e.sy,e.z};
  const Vec3 delta=sub(center,cameraEye());
- const float maxDistance=230.f+radius;
+ const float maxDistance=quality().viewRangeMetres+radius;
  if(dot(delta,delta)>maxDistance*maxDistance)return false;
  return visibleSphere(frustum,center,radius);
 }
@@ -541,7 +546,8 @@ void drawImported(const Mat4&vp,const Entity&e){
   const float distance=std::sqrt(dot(difference,difference));
   const float sizeScale=std::max(.5f,e.size*std::max({e.sx,e.sy,e.sz}));
   // Larger objects retain LOD0 longer; no per-frame simplification.
-  const int preferred=distance>125.f*sizeScale?2:(distance>55.f*sizeScale?1:0);
+  const int preferred=distance>125.f*sizeScale*quality().lodDistanceFactor?2:
+   (distance>55.f*sizeScale*quality().lodDistanceFactor?1:0);
   for(int level=preferred;level>0;level--){
    const AssetLod&candidate=asset.lods[level-1];
    if(candidate.gpu.count>0&&candidate.gpu.vao!=0){
@@ -747,8 +753,9 @@ void updateTerrain(){
  vertices.reserve(20000);
  const int half=gWorldSize/static_cast<int>(WORLD_TILE)/2;
  int tiles=0;
- for(int tz=std::max(-half,gz-5);tz<=std::min(half-1,gz+5);tz++)
- for(int tx=std::max(-half,gx-5);tx<=std::min(half-1,gx+5);tx++){
+ const int radius=quality().terrainTileRadius;
+ for(int tz=std::max(-half,gz-radius);tz<=std::min(half-1,gz+radius);tz++)
+ for(int tx=std::max(-half,gx-radius);tx<=std::min(half-1,gx+radius);tx++){
   const float x=(tx+.5f)*WORLD_TILE,z=(tz+.5f)*WORLD_TILE;
   const float dxForest=x-256.f,dzForest=z,dxRuins=x+256.f,dzRuins=z+64.f;
   const float dxCrypt=x-16.f,dzCrypt=z+256.f,dxWild=x-32.f,dzWild=z-256.f;
@@ -818,11 +825,14 @@ void drawTerrainPaint(const Mat4&vp){
  glUniform3f(gShader.locColor,1.f,1.f,1.f);
  glUniform1f(gShader.locLight,0.f);
  glBindVertexArray(gPaintMesh.vao);
+ int visibleStamps=0;
  for(const auto&stamp:gTerrainPaint){
-  if(std::abs(stamp.x-gTarget.x)>230.f+stamp.radius||
-     std::abs(stamp.z-gTarget.z)>230.f+stamp.radius)continue;
+  if(std::abs(stamp.x-gTarget.x)>quality().viewRangeMetres+stamp.radius||
+     std::abs(stamp.z-gTarget.z)>quality().viewRangeMetres+stamp.radius)continue;
   const TextureResource*t=paintTexture(stamp.texture);
   if(!t||!t->id)continue;
+  if(visibleStamps>=quality().maxVisiblePaintStamps)break;
+  ++visibleStamps;
   glUniform2f(gShader.locPaintCenter,stamp.x,stamp.z);
   glUniform1f(gShader.locPaintRadius,stamp.radius);
   glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,t->id);
@@ -904,7 +914,8 @@ bool blocked(float x,float z,int type){
  return false;
 }
 bool staticInView(const Mat4&vp,const Entity&e){
- if(std::abs(e.x-gTarget.x)>230.f||std::abs(e.z-gTarget.z)>230.f)return false;
+ if(std::abs(e.x-gTarget.x)>quality().viewRangeMetres||
+    std::abs(e.z-gTarget.z)>quality().viewRangeMetres)return false;
  const Vec4 clip=apply(vp,{e.x,e.y+2.8f*e.size*e.sy,e.z,1.f});
  const float radius=(e.type<=2?7.5f:(e.type==5?4.5f:3.5f))*e.size*std::max({e.sx,e.sy,e.sz});
  if(clip.w < -radius)return false;
@@ -1124,6 +1135,7 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeResize(JNIEnv*,j
  glViewport(0,0,gWidth,gHeight);
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDraw(JNIEnv*,jclass){
+ const auto begin=std::chrono::steady_clock::now();
  glViewport(0,0,gWidth,gHeight);
  glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
  glUseProgram(gShader.program);
@@ -1136,6 +1148,8 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDraw(JNIEnv*,jcl
  for(const auto&e:gEntities)drawEntity(vp,frustum,e);
  drawGizmo(vp);
  glBindVertexArray(0);
+ const auto end=std::chrono::steady_clock::now();
+ gSubmitCpuMs=std::chrono::duration<float,std::milli>(end-begin).count();
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeSetGizmoMode(
  JNIEnv*,jclass,jint mode){
@@ -1194,10 +1208,59 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeFocusLocation(JN
  gTarget={LOCATIONS[index].x,terrainHeightAt(LOCATIONS[index].x,LOCATIONS[index].z)+1.2f,LOCATIONS[index].z};
  gDistance=index==0?35.f:68.f;
 }
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeSetQualityProfile(
+ JNIEnv*,jclass,jint tier){
+ if(!oe::validTier(tier))return JNI_FALSE;
+ if(gQualityTier!=tier){
+  gQualityTier=tier;
+  // Culling and tile range must be rebuilt even if camera stands still.
+  gTerrain.gridX=2147483647;
+ }
+ return JNI_TRUE;
+}
+JNIEXPORT jobjectArray JNICALL Java_game_oe_editor_EditorActivity_nativeGetGpuCapabilities(
+ JNIEnv*env,jclass){
+ jclass stringClass=env->FindClass("java/lang/String");
+ if(!stringClass)return nullptr;
+ jobjectArray result=env->NewObjectArray(6,stringClass,nullptr);
+ if(!result)return nullptr;
+ const auto get=[&](GLenum key)->std::string{
+  const GLubyte*raw=glGetString(key);
+  if(!raw)return "unknown";
+  std::string textValue(reinterpret_cast<const char*>(raw));
+  return textValue.substr(0,160);
+ };
+ GLint maxTexture=0,maxUnits=0;
+ glGetIntegerv(GL_MAX_TEXTURE_SIZE,&maxTexture);
+ glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS,&maxUnits);
+ bool astc=false;
+ GLint extCount=0;
+ glGetIntegerv(GL_NUM_EXTENSIONS,&extCount);
+ for(GLint i=0;i<extCount&&i<2048;i++){
+  const GLubyte*ext=glGetStringi(GL_EXTENSIONS,static_cast<GLuint>(i));
+  if(!ext)continue;
+  const std::string name(reinterpret_cast<const char*>(ext));
+  if(name=="GL_KHR_texture_compression_astc_ldr"||
+     name=="GL_OES_texture_compression_astc")astc=true;
+ }
+ const std::array<std::string,6> values={
+  get(GL_VENDOR),get(GL_RENDERER),get(GL_VERSION),
+  std::to_string(std::max(0,maxTexture)),astc?"yes":"no",
+  std::to_string(std::max(0,maxUnits))
+ };
+ for(jsize i=0;i<static_cast<jsize>(values.size());i++){
+  jstring value=env->NewStringUTF(values[static_cast<size_t>(i)].c_str());
+  if(!value)return nullptr;
+  env->SetObjectArrayElement(result,i,value);
+  env->DeleteLocalRef(value);
+ }
+ return result;
+}
 JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeRenderStats(JNIEnv*env,jclass){
  std::ostringstream out;
- out<<"Рендер: "<<gDrawCalls<<" вызовов / "<<gTriangles<<" треуг. · LOD 0/1/2 "
- <<gLodDrawCounts[0]<<"/"<<gLodDrawCounts[1]<<"/"<<gLodDrawCounts[2];
+ out<<"GPU-профиль: "<<quality().name<<" · CPU submit "<<std::fixed<<std::setprecision(2)
+ <<gSubmitCpuMs<<" мс · "<<gDrawCalls<<" draw / "<<gTriangles<<" треуг."
+ <<" · LOD "<<gLodDrawCounts[0]<<"/"<<gLodDrawCounts[1]<<"/"<<gLodDrawCounts[2];
  return env->NewStringUTF(out.str().c_str());
 }
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeGetWorldSize(JNIEnv*,jclass){return gWorldSize;}

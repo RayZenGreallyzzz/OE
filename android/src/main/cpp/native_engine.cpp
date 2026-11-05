@@ -1260,12 +1260,18 @@ JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSceneSnapshot
   out<<"{\"type\":"<<e.type<<",\"x\":"<<e.x<<",\"z\":"<<e.z
      <<",\"yaw\":"<<e.yaw<<",\"size\":"<<e.size<<",\"y\":"<<e.y<<",\"sx\":"<<e.sx<<",\"sy\":"<<e.sy<<",\"sz\":"<<e.sz;
   if(e.type==6)out<<",\"asset\":\""<<e.asset<<"\"";
+  if(!e.paint.empty())out<<",\"paint\":\""<<e.paint<<"\"";
   out<<"}";
  }
  out<<"],\"terrain\":[";
  for(size_t i=0;i<gBrushes.size();i++){
   const auto&b=gBrushes[i];if(i)out<<",";
   out<<"["<<b.x<<","<<b.z<<","<<b.radius<<","<<b.strength<<"]";
+ }
+ out<<"],\"terrainPaint\":[";
+ for(size_t i=0;i<gTerrainPaint.size();i++){
+  const auto&paint=gTerrainPaint[i];if(i)out<<",";
+  out<<"["<<paint.x<<","<<paint.z<<","<<paint.radius<<",\""<<paint.texture<<"\"]";
  }
  out<<"]}";return env->NewStringUTF(out.str().c_str());
 }
@@ -1418,11 +1424,17 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsse
 // Validate everything before atomic swap on the GLES thread.
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene(
  JNIEnv*env,jclass,jint size,jboolean demo,jintArray kinds,jfloatArray transforms,
- jobjectArray modelKeys,jfloatArray terrainData){
- if(!allowedWorldSize(size)||!kinds||!transforms||!modelKeys||!terrainData)return JNI_FALSE;
+ jobjectArray modelKeys,jfloatArray terrainData,jobjectArray objectPaintKeys,
+ jfloatArray painting,jobjectArray terrainPaintKeys){
+ if(!allowedWorldSize(size)||!kinds||!transforms||!modelKeys||!terrainData||
+    !objectPaintKeys||!painting||!terrainPaintKeys)return JNI_FALSE;
  const jsize n=env->GetArrayLength(kinds);
  if(n<0||n>MAX_ENTITIES||env->GetArrayLength(transforms)!=n*8||
-    env->GetArrayLength(modelKeys)!=n)return JNI_FALSE;
+    env->GetArrayLength(modelKeys)!=n||env->GetArrayLength(objectPaintKeys)!=n)return JNI_FALSE;
+ const jsize paintFloats=env->GetArrayLength(painting);
+ if(paintFloats<0||paintFloats%3!=0||
+    paintFloats>static_cast<jsize>(MAX_TERRAIN_PAINT*3)||
+    env->GetArrayLength(terrainPaintKeys)!=paintFloats/3)return JNI_FALSE;
  const jsize brushFloats=env->GetArrayLength(terrainData);
  if(brushFloats<0||brushFloats%4!=0||
     brushFloats>static_cast<jsize>(MAX_TERRAIN_BRUSHES*4))return JNI_FALSE;
@@ -1447,6 +1459,24 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
      std::abs(x)>half||std::abs(z)>half||radius<16.f||radius>256.f||
      std::abs(strength)<.001f||std::abs(strength)>60.f)return JNI_FALSE;
   stagedBrushes.push_back({x,z,radius,strength});
+ }
+ std::vector<TerrainPaint> stagedPaint;
+ stagedPaint.reserve(static_cast<size_t>(paintFloats/3));
+ std::array<jfloat,MAX_TERRAIN_PAINT*3> paintData{};
+ if(paintFloats)env->GetFloatArrayRegion(painting,0,paintFloats,paintData.data());
+ if(env->ExceptionCheck())return JNI_FALSE;
+ for(jsize i=0;i<paintFloats/3;i++){
+  const float x=paintData[i*3],z=paintData[i*3+1],radius=paintData[i*3+2];
+  if(!std::isfinite(x)||!std::isfinite(z)||!std::isfinite(radius)||
+     std::abs(x)>half||std::abs(z)>half||radius<4.f||radius>64.f)return JNI_FALSE;
+  jstring rawPaint=static_cast<jstring>(env->GetObjectArrayElement(terrainPaintKeys,i));
+  if(!rawPaint||env->ExceptionCheck())return JNI_FALSE;
+  const char*paintChars=env->GetStringUTFChars(rawPaint,nullptr);
+  if(!paintChars){env->DeleteLocalRef(rawPaint);return JNI_FALSE;}
+  const std::string key(paintChars);
+  env->ReleaseStringUTFChars(rawPaint,paintChars);env->DeleteLocalRef(rawPaint);
+  if(!validPaintKey(key)||gPaintTextures.find(key)==gPaintTextures.end())return JNI_FALSE;
+  stagedPaint.push_back({x,z,radius,key});
  }
  std::vector<Entity> staged;
  staged.reserve(static_cast<size_t>(n));
@@ -1473,10 +1503,19 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
    auto asset=gAssets.find(key);
    if(asset==gAssets.end()||asset->second.gpu.count<=0)return JNI_FALSE;
   }
-  staged.push_back({static_cast<int>(i)+1,type,x,z,yaw,scl,key,y,sx,sy,sz});
+  jstring paintKey=static_cast<jstring>(env->GetObjectArrayElement(objectPaintKeys,i));
+  if(!paintKey||env->ExceptionCheck())return JNI_FALSE;
+  const char*paintRaw=env->GetStringUTFChars(paintKey,nullptr);
+  if(!paintRaw){env->DeleteLocalRef(paintKey);return JNI_FALSE;}
+  const std::string paintName(paintRaw);
+  env->ReleaseStringUTFChars(paintKey,paintRaw);env->DeleteLocalRef(paintKey);
+  if(!paintName.empty()&&(!validPaintKey(paintName)||
+     gPaintTextures.find(paintName)==gPaintTextures.end()))return JNI_FALSE;
+  staged.push_back({static_cast<int>(i)+1,type,x,z,yaw,scl,key,y,sx,sy,sz,paintName});
  }
  // Commit: no validation or allocation failures below this point.
- gEntities.swap(staged);gBrushes.swap(stagedBrushes);gTerrainRevision++;
+ gEntities.swap(staged);gBrushes.swap(stagedBrushes);
+ gTerrainPaint.swap(stagedPaint);gTerrainRevision++;
  gWorldSize=size;gDemoRoads=demo==JNI_TRUE;
  gNextId=static_cast<int>(n)+1;gSelected=0;
  gTarget={0,terrainHeightAt(0,1.3f)+1.2f,1.3f};gDistance=28.f;

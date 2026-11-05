@@ -430,6 +430,9 @@ public final class GlbReader {
         }
         require(at==data.length && jsonAt>=0 && binAt>=0 && binLen>0,"GLB без JSON или BIN");
         JSONObject gltf=new JSONObject(new String(data,jsonAt,jsonLen,StandardCharsets.UTF_8).trim());
+        JSONObject meta=gltf.optJSONObject("asset");
+        require(meta!=null&&meta.optString("version","").startsWith("2."),
+            "GLB содержит неподдерживаемую версию glTF");
         JSONArray required=gltf.optJSONArray("extensionsRequired");
         if(required!=null)for(int i=0;i<required.length();i++){
             String extension=required.getString(i);

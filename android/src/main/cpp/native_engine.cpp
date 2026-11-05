@@ -32,7 +32,7 @@ struct Asset {
  float centerY=0.f, radius=0.f; // Conservative normalized object-space sphere.
 };
 static Mesh gMeshes[3];
-static Mesh gStaticMeshes[6]; // Every decorative object is a single combined draw.
+static Mesh gStaticMeshes[10]; // Every decorative object is a single combined draw.
 void bakeStaticMesh(int type);
 // Cached, combined flat terrain: one GLES draw call per frame instead of one per tile.
 struct TerrainGpu {
@@ -233,7 +233,7 @@ void setupGL(){
   glEnableVertexAttribArray(1);glVertexAttribPointer(1,3,GL_FLOAT,GL_FALSE,6*sizeof(float),reinterpret_cast<void*>(3*sizeof(float)));
   glDisableVertexAttribArray(2);
  }
- for(int kind=0;kind<6;kind++)bakeStaticMesh(kind);
+ for(int kind=0;kind<10;kind++)if(kind!=6)bakeStaticMesh(kind);
  for(auto &kv:gAssets)uploadAsset(kv.second);
  // A new OpenGL context needs new handles; never reuse IDs from the previous context.
  gTerrain={};
@@ -362,6 +362,18 @@ void forEachStaticPart(int type,Part&&part){
  }else if(type==5){
    part(2,0,1.45f,0,.62f,2.9f,.62f,oak);
    part(2,0,3.55f,0,2.2f,2.5f,2.2f,{.20f,.39f,.27f});
+ }else if(type==7){ // Stone cluster
+   part(0,0,.47f,0,1.45f,.85f,1.24f,{.37f,.39f,.41f});
+   part(1,.58f,.56f,-.32f,.76f,1.0f,.82f,{.45f,.44f,.42f});
+ }else if(type==8){ // Shrub
+   part(2,0,.24f,0,.24f,.48f,.24f,oak);
+   part(1,0,.64f,0,1.4f,.94f,1.32f,{.20f,.36f,.19f});
+   part(1,.43f,.49f,.25f,.74f,.70f,.80f,{.25f,.42f,.21f});
+ }else if(type==9){ // Bench
+   part(0,0,.75f,0,2.0f,.20f,.72f,oak);
+   part(0,0,1.19f,.34f,2.0f,.79f,.17f,oak);
+   for(float x:{-.73f,.73f})for(float z:{-.27f,.27f})
+     part(0,x,.36f,z,.16f,.72f,.15f,dark);
  }
 }
 void bakeStaticMesh(int type){
@@ -382,7 +394,7 @@ void bakeStaticMesh(int type){
  gStaticMeshes[type]=baked.gpu;
 }
 void drawStatic(const Mat4&vp,const Entity&e){
- if(e.type<0||e.type>=6)return;
+ if(e.type<0||e.type>=10||e.type==6)return;
  const Mesh&m=gStaticMeshes[e.type];
  if(m.count<=0)return;
  const Mat4 model=mul(mul(translate({e.x,0,e.z}),rotateY(e.yaw*RAD)),
@@ -496,7 +508,7 @@ void drawEntity(const Mat4&vp,const Frustum&frustum,const Entity&e){
  if(staticInView(vp,e))drawStatic(vp,e);
 }
 int add(int type,float x,float z,float yaw,float size){
- if(type<0||type>5||gEntities.size()>=MAX_ENTITIES)return 0;
+ if(type<0||type>9||type==6||gEntities.size()>=MAX_ENTITIES)return 0;
  recordEdit();
  int id=gNextId++;gEntities.push_back({id,type,x,z,yaw,size,""});gSelected=id;return id;
 }
@@ -522,8 +534,8 @@ void reset(bool demo){
 }
 Entity* selected(){for(auto &e:gEntities)if(e.id==gSelected)return &e;return nullptr;}
 const char* nameFor(int type){
- const char* names[]={"Таверна","Кузница","Аукционный дом","Фонарь","Фонтан","Дерево","Модель GLB"};
- return type>=0&&type<7?names[type]:"Объект";
+ const char* names[]={"Таверна","Кузница","Аукционный дом","Фонарь","Фонтан","Дерево","Модель GLB","Камни","Куст","Лавка"};
+ return type>=0&&type<10?names[type]:"Объект";
 }
 } // namespace
 
@@ -608,7 +620,7 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePick(JNIEnv*,jcl
  return found;
 }
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeAdd(JNIEnv*,jclass,jint type){
- if(type<0||type>5)return 0;
+ if(type<0||type>9||type==6)return 0;
  float x=gTarget.x,z=gTarget.z;
  for(int radius=0;radius<=160;radius+=12){
   for(int angle=0;angle<8;angle++){
@@ -621,7 +633,7 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeAdd(JNIEnv*,jcla
  return 0;
 }
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePlaceAtScreen(JNIEnv*,jclass,jint type,jfloat px,jfloat py){
- if(type<0||type>5)return 0;
+ if(type<0||type>9||type==6)return 0;
  float x,z;
  if(!groundPoint(px,py,x,z)||blocked(x,z,type))return 0;
  return add(type,x,z,0,1);
@@ -638,7 +650,7 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePlaceImportedAtS
  int id=gNextId++;gEntities.push_back({id,6,x,z,0,1,asset});gSelected=id;return id;
 }
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeAddPlaced(JNIEnv*,jclass,jint type,jfloat x,jfloat z,jfloat yaw,jfloat size){
- if(type<0||type>5 || !std::isfinite(x)||!std::isfinite(z)||!std::isfinite(yaw)||!std::isfinite(size) ||
+ if(type<0||type>9||type==6 || !std::isfinite(x)||!std::isfinite(z)||!std::isfinite(yaw)||!std::isfinite(size) ||
  std::abs(x)>worldHalf() || std::abs(z)>worldHalf() || std::abs(yaw)>36000 || size<.2f || size>8)return 0;
  return add(type,x,z,yaw,size);
 }
@@ -803,7 +815,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  for(jsize i=0;i<n;i++){
   const int type=types[i];
   const float x=matrix[i*4],z=matrix[i*4+1],yaw=matrix[i*4+2],scale=matrix[i*4+3];
-  if(type<0||type>6||!std::isfinite(x)||!std::isfinite(z)||
+  if(type<0||type>9||!std::isfinite(x)||!std::isfinite(z)||
     !std::isfinite(yaw)||!std::isfinite(scale)||
     std::abs(x)>half||std::abs(z)>half||std::abs(yaw)>36000||
     scale<.2f||scale>8.f)return JNI_FALSE;

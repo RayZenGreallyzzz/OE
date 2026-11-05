@@ -263,25 +263,33 @@ void setupGL(){
  layout(location=0) in vec3 aPos;
  layout(location=1) in vec3 aNormal;
  layout(location=2) in vec3 aColor;
+ layout(location=3) in vec2 aUV;
  uniform mat4 uMvp;
  uniform mat4 uModel;
  out vec3 vNormal;
  out vec3 vColor;
+ out vec2 vUV;
  void main(){
    gl_Position=uMvp*vec4(aPos,1.0);
    vNormal=normalize(mat3(uModel)*aNormal);
    vColor=aColor;
+   vUV=aUV;
  })";
  const char*frag=R"(#version 300 es
  precision mediump float;
  in vec3 vNormal;
  in vec3 vColor;
+ in vec2 vUV;
  uniform vec3 uColor;
+ uniform sampler2D uTexture;
+ uniform float uUseTexture;
  uniform float uHighlight;
  out vec4 fragColor;
  void main(){
    float sun=max(dot(normalize(vNormal),normalize(vec3(-.55,1.,.5))),0.);
-   vec3 color=uColor*vColor*(.52+.48*sun);
+   vec4 texel=uUseTexture>.5?texture(uTexture,vUV):vec4(1.);
+   if(texel.a<.45)discard;
+   vec3 color=uColor*vColor*texel.rgb*(.52+.48*sun);
    color=mix(color,vec3(.99,.72,.30),uHighlight*.30);
    fragColor=vec4(color,1.);
  })";
@@ -295,6 +303,11 @@ void setupGL(){
  gShader.locModel=glGetUniformLocation(gShader.program,"uModel");
  gShader.locColor=glGetUniformLocation(gShader.program,"uColor");
  gShader.locLight=glGetUniformLocation(gShader.program,"uHighlight");
+ gShader.locTexture=glGetUniformLocation(gShader.program,"uTexture");
+ gShader.locTextured=glGetUniformLocation(gShader.program,"uUseTexture");
+ glUseProgram(gShader.program);
+ glUniform1i(gShader.locTexture,0);
+ glUniform1f(gShader.locTextured,0.f);
  for(int kind=0;kind<3;kind++){
   std::vector<float> d=geometry(kind);Mesh &m=gMeshes[kind];m.count=(GLsizei)(d.size()/6);
   glGenVertexArrays(1,&m.vao);glBindVertexArray(m.vao);
@@ -303,9 +316,14 @@ void setupGL(){
   glEnableVertexAttribArray(0);glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,6*sizeof(float),nullptr);
   glEnableVertexAttribArray(1);glVertexAttribPointer(1,3,GL_FLOAT,GL_FALSE,6*sizeof(float),reinterpret_cast<void*>(3*sizeof(float)));
   glDisableVertexAttribArray(2);
+  glDisableVertexAttribArray(3);
  }
  for(int kind=0;kind<17;kind++)if(kind!=6)bakeStaticMesh(kind);
- for(auto &kv:gAssets)uploadAsset(kv.second);
+ for(auto &kv:gAssets){
+  uploadAsset(kv.second);
+  if(!uploadTextures(kv.second))
+   __android_log_print(ANDROID_LOG_ERROR,"OE","Failed to restore textures after EGL context recreation");
+ }
  // A new OpenGL context needs new handles; never reuse IDs from the previous context.
  gTerrain={};
  glGenVertexArrays(1,&gTerrain.vao);
@@ -331,6 +349,7 @@ void draw(const Mat4&vp,int kind,Vec3 position,Vec3 dimensions,float yaw,Color c
  glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
  glUniform3f(gShader.locColor,color.r,color.g,color.b);
  glUniform1f(gShader.locLight,selected?1.f:0.f);
+ glUniform1f(gShader.locTextured,0.f);
  const Mesh &mesh=gMeshes[std::max(0,std::min(2,kind))];
  glBindVertexArray(mesh.vao);glDrawArrays(GL_TRIANGLES,0,mesh.count);
  ++gDrawCalls;gTriangles+=mesh.count/3;
@@ -372,15 +391,31 @@ bool importedInView(const Frustum&frustum,const Entity&e){
 void drawImported(const Mat4&vp,const Entity&e){
  auto it=gAssets.find(e.asset);
  if(it==gAssets.end()||it->second.gpu.count==0)return;
- const Mat4 model=mul(mul(translate({e.x,e.y,e.z}),rotateY(e.yaw*RAD)),scale({e.size*e.sx,e.size*e.sy,e.size*e.sz}));
+ const Mat4 model=mul(mul(translate({e.x,e.y,e.z}),rotateY(e.yaw*RAD)),
+  scale({e.size*e.sx,e.size*e.sy,e.size*e.sz}));
  const Mat4 mvp=mul(vp,model);
  glUniformMatrix4fv(gShader.locMvp,1,GL_FALSE,mvp.m);
  glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
  glUniform3f(gShader.locColor,1,1,1);
  glUniform1f(gShader.locLight,e.id==gSelected?1.f:0.f);
- const Mesh &m=it->second.gpu;
- glBindVertexArray(m.vao);glDrawArrays(GL_TRIANGLES,0,m.count);
- ++gDrawCalls;gTriangles+=m.count/3;
+ const Asset &asset=it->second;
+ glBindVertexArray(asset.gpu.vao);
+ if(asset.batches.empty()){
+  glUniform1f(gShader.locTextured,0.f);
+  glDrawArrays(GL_TRIANGLES,0,asset.gpu.count);
+  ++gDrawCalls;gTriangles+=asset.gpu.count/3;
+ }else for(const auto&batch:asset.batches){
+  if(batch.texture>=0&&static_cast<size_t>(batch.texture)<asset.textures.size()&&
+     asset.textures[batch.texture].id){
+   glActiveTexture(GL_TEXTURE0);
+   glBindTexture(GL_TEXTURE_2D,asset.textures[batch.texture].id);
+   glUniform1f(gShader.locTextured,1.f);
+  }else glUniform1f(gShader.locTextured,0.f);
+  glDrawArrays(GL_TRIANGLES,batch.first,batch.count);
+  ++gDrawCalls;gTriangles+=batch.count/3;
+ }
+ glUniform1f(gShader.locTextured,0.f);
+ glBindTexture(GL_TEXTURE_2D,0);
 }
 void part(const Mat4&vp,const Entity&e,int kind,float x,float y,float z,float sx,float sy,float sz,Color color){
  const float a=e.yaw*RAD,c=std::cos(a),s=std::sin(a),k=e.size;
@@ -501,6 +536,7 @@ void drawStatic(const Mat4&vp,const Entity&e){
  glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
  glUniform3f(gShader.locColor,1.f,1.f,1.f);
  glUniform1f(gShader.locLight,e.id==gSelected?1.f:0.f);
+ glUniform1f(gShader.locTextured,0.f);
  glBindVertexArray(m.vao);
  glDrawArrays(GL_TRIANGLES,0,m.count);
  ++gDrawCalls;gTriangles+=m.count/3;
@@ -583,6 +619,7 @@ void drawWorld(const Mat4&vp){
   glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
   glUniform3f(gShader.locColor,1,1,1);
   glUniform1f(gShader.locLight,0);
+  glUniform1f(gShader.locTextured,0.f);
   glBindVertexArray(gTerrain.vao);
   glDrawArrays(GL_TRIANGLES,0,gTerrain.vertices);
   ++gDrawCalls;gTriangles+=gTerrain.vertices/3;

@@ -27,6 +27,7 @@ import java.io.FileOutputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.Locale;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -64,6 +65,8 @@ public class EditorActivity extends Activity {
     private static native void nativeRotate(float deg);
     private static native void nativeScale(float factor);
     private static native String nativeSelectedInfo();
+    private static native double[] nativeSelectedCoordinates();
+    private static native boolean nativeSetSelectedCoordinates(double x,double y,double z);
     private static native String nativeSceneSnapshot();
     private static native String[] nativeLabels();
     private static native int[] nativeIds();
@@ -117,7 +120,7 @@ public class EditorActivity extends Activity {
     private volatile int terrainMode=0; // -1 lower, +1 raise
     private volatile float terrainRadius=96f;
     private volatile float terrainStrength=20f;
-    private volatile float moveStep=.25f,turnStep=5f,scaleStep=1.05f;
+    private volatile float moveStep=.001f,turnStep=5f,scaleStep=1.05f;
     private volatile int textureLimit=1024; // Low-power default; applies to newly imported GLB.
     private final int gold = Color.rgb(240, 192, 113);
     private final int text = Color.rgb(234, 228, 218);
@@ -196,7 +199,7 @@ public class EditorActivity extends Activity {
         top.setPadding(dp(5),dp(2),dp(5),dp(2));
         top.setBackgroundColor(Color.argb(220,14,21,32));
         TextView title=new TextView(this);
-        title.setText("OE 0.6.9  /  ORVETRA ENGINE");
+        title.setText("OE 0.6.10  /  ORVETRA ENGINE");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
         title.setTextSize(12);
@@ -289,6 +292,13 @@ public class EditorActivity extends Activity {
         addControl(scaleRow,"+ Размер",()->edit(()->nativeScale(scaleStep)));
         addControl(scaleRow,"Точность",this::choosePrecision);
         advancedInspector.addView(scaleRow);
+        LinearLayout millimeterRow=row();
+        addControl(millimeterRow,"📍 XYZ вручную",this::editSelectedCoordinates);
+        addControl(millimeterRow,"Шаг 1 мм",()->{
+            moveStep=.001f;
+            message("Точный шаг: 0,001 м (1 мм) · сетка выключена");
+        });
+        advancedInspector.addView(millimeterRow);
         for(int axis=0;axis<3;axis++){
             final int targetAxis=axis;
             LinearLayout axisRow=row();
@@ -451,17 +461,78 @@ public class EditorActivity extends Activity {
             }).show();
     }
     private void choosePrecision(){
-        final String[] choices={"Очень точно: 0.10 м / 5° / 5%",
-            "Точно: 0.25 м / 5° / 5%",
-            "Обычно: 0.5 м / 15° / 10%",
-            "Крупный шаг: 1 м / 15° / 10%"};
-        final float[] moves={.10f,.25f,.5f,1f};
-        new AlertDialog.Builder(this).setTitle("Шаг редактирования деталей")
+        final String[] choices={
+            "1 мм · 0,001 м",
+            "5 мм · 0,005 м",
+            "1 см · 0,010 м",
+            "5 см · 0,050 м",
+            "10 см · 0,100 м",
+            "25 см · 0,250 м",
+            "50 см · 0,500 м",
+            "1 м · 1,000 м"};
+        final float[] moves={.001f,.005f,.01f,.05f,.10f,.25f,.5f,1f};
+        new AlertDialog.Builder(this).setTitle("Точность без сетки")
             .setItems(choices,(dialog,index)->{
-                moveStep=moves[index];turnStep=index<=1?5f:15f;
-                scaleStep=index<=1?1.05f:1.10f;
-                message("Шаг: "+moveStep+" м");
+                moveStep=moves[index];
+                turnStep=index<=3?5f:15f;
+                scaleStep=index<=3?1.05f:1.10f;
+                message("Шаг перемещения: "+choices[index]+" · без привязки к сетке");
             }).show();
+    }
+    private void editSelectedCoordinates(){
+        if(importing){message("Заверши импорт перед редактированием");return;}
+        surface.queueEvent(()->{
+            final double[] xyz=nativeSelectedCoordinates();
+            if(xyz==null){
+                message("Сначала выбери деталь, здание или GLB");
+                return;
+            }
+            ui(()->{
+                LinearLayout form=new LinearLayout(this);
+                form.setOrientation(LinearLayout.VERTICAL);
+                form.setPadding(dp(22),dp(8),dp(22),dp(4));
+                final EditText[] fields=new EditText[3];
+                final String[] names={"X — вправо / влево","Y — вверх / вниз",
+                    "Z — вперёд / назад"};
+                final int mode=InputType.TYPE_CLASS_NUMBER|
+                    InputType.TYPE_NUMBER_FLAG_DECIMAL|InputType.TYPE_NUMBER_FLAG_SIGNED;
+                for(int i=0;i<3;i++){
+                    EditText field=new EditText(this);
+                    field.setInputType(mode);
+                    field.setSingleLine(true);
+                    field.setText(String.format(Locale.US,"%.3f",xyz[i]));
+                    field.setSelectAllOnFocus(true);
+                    field.setHint(names[i]+" (метры)");
+                    form.addView(field);
+                    fields[i]=field;
+                }
+                new AlertDialog.Builder(this).setTitle("Точные координаты X / Y / Z")
+                    .setMessage("В метрах: 0,001 = 1 мм. Свободное размещение без сетки. "
+                        +"Предел X/Z — размер мира, Y от −24 до 160 м.")
+                    .setView(form)
+                    .setPositiveButton("Применить",(dialog,which)->{
+                        try{
+                            final double x=Double.parseDouble(fields[0].getText()
+                                .toString().trim().replace(',','.'));
+                            final double y=Double.parseDouble(fields[1].getText()
+                                .toString().trim().replace(',','.'));
+                            final double z=Double.parseDouble(fields[2].getText()
+                                .toString().trim().replace(',','.'));
+                            if(!Double.isFinite(x)||!Double.isFinite(y)||
+                                !Double.isFinite(z))throw new NumberFormatException();
+                            edit(()->{
+                                if(nativeSetSelectedCoordinates(x,y,z))
+                                    message("Координаты обновлены · точность 0,001 м");
+                                else message("Координаты вне мира или объект не выбран");
+                            });
+                        }catch(NumberFormatException invalid){
+                            message("Введите корректные координаты X, Y и Z");
+                        }
+                    })
+                    .setNegativeButton("Отмена",null)
+                    .show();
+            });
+        });
     }
     private void showLocations() {
         final String[] locations = {

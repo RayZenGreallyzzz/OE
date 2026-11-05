@@ -26,11 +26,21 @@ struct Color {float r,g,b;};
 struct Shader {
  GLuint program=0;
  GLint locMvp=-1, locModel=-1, locColor=-1, locLight=-1;
+ GLint locTexture=-1,locTextured=-1;
 };
+struct TextureResource {
+ GLuint id=0;
+ int width=0,height=0,format=0; // 0 RGBA8, 1 ETC2 RGB, 2 ETC2 RGBA
+ std::vector<unsigned char> bytes; // Retained to restore an EGL context.
+};
+struct AssetBatch {int first=0,count=0,texture=-1;};
 struct Asset {
  Mesh gpu;
+ int vertexStride=9;
  std::vector<float> vertices; // Retained for GPU context recreation.
- float centerY=0.f, radius=0.f; // Conservative normalized object-space sphere.
+ std::vector<AssetBatch> batches;
+ std::vector<TextureResource> textures;
+ float centerY=0.f, radius=0.f;
 };
 static Mesh gMeshes[3];
 static Mesh gStaticMeshes[17]; // Every decorative object is a single combined draw.
@@ -44,6 +54,13 @@ struct TerrainGpu {
 static TerrainGpu gTerrain;
 static int gDrawCalls=0,gTriangles=0;
 static std::unordered_map<std::string,Asset> gAssets;
+static constexpr size_t MAX_TEXTURE_CACHE_BYTES=96u*1024u*1024u;
+size_t textureCacheBytes(){
+ size_t bytes=0;
+ for(const auto&item:gAssets)for(const auto&tex:item.second.textures)
+  bytes+=tex.bytes.size();
+ return bytes;
+}
 static constexpr int MAX_ASSETS=12;
 static constexpr int MAX_IMPORTED_TRIANGLES=90000;
 static Shader gShader;
@@ -187,16 +204,53 @@ void uploadAsset(Asset&asset){
  const auto &v=asset.vertices;
  if(v.empty())return;
  Mesh &m=asset.gpu;
- m.count=static_cast<GLsizei>(v.size()/9);
+ m.count=static_cast<GLsizei>(v.size()/static_cast<size_t>(asset.vertexStride));
  glGenVertexArrays(1,&m.vao);glBindVertexArray(m.vao);
  glGenBuffers(1,&m.buffer);glBindBuffer(GL_ARRAY_BUFFER,m.buffer);
  glBufferData(GL_ARRAY_BUFFER,static_cast<GLsizeiptr>(v.size()*sizeof(float)),v.data(),GL_STATIC_DRAW);
- const GLsizei stride=9*sizeof(float);
+ const GLsizei stride=static_cast<GLsizei>(asset.vertexStride*sizeof(float));
  for(int attrib=0;attrib<3;attrib++){
-   glEnableVertexAttribArray(attrib);
-   glVertexAttribPointer(attrib,3,GL_FLOAT,GL_FALSE,stride,reinterpret_cast<void*>(static_cast<uintptr_t>(attrib*3*sizeof(float))));
+  glEnableVertexAttribArray(attrib);
+  glVertexAttribPointer(attrib,3,GL_FLOAT,GL_FALSE,stride,
+   reinterpret_cast<void*>(static_cast<uintptr_t>(attrib*3*sizeof(float))));
  }
+ if(asset.vertexStride==11){
+  glEnableVertexAttribArray(3);
+  glVertexAttribPointer(3,2,GL_FLOAT,GL_FALSE,stride,
+   reinterpret_cast<void*>(static_cast<uintptr_t>(9*sizeof(float))));
+ }else glDisableVertexAttribArray(3);
  glBindVertexArray(0);
+}
+bool uploadTextures(Asset&asset){
+ for(auto&tex:asset.textures){
+  tex.id=0;
+  glGenTextures(1,&tex.id);
+  if(!tex.id)return false;
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D,tex.id);
+  glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_REPEAT);
+  glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_REPEAT);
+  glPixelStorei(GL_UNPACK_ALIGNMENT,1);
+  if(tex.format==0){
+   glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,tex.width,tex.height,0,GL_RGBA,
+    GL_UNSIGNED_BYTE,tex.bytes.data());
+  }else{
+   const GLenum internal=tex.format==1?GL_COMPRESSED_RGB8_ETC2:GL_COMPRESSED_RGBA8_ETC2_EAC;
+   glCompressedTexImage2D(GL_TEXTURE_2D,0,internal,tex.width,tex.height,0,
+     static_cast<GLsizei>(tex.bytes.size()),tex.bytes.data());
+  }
+  glPixelStorei(GL_UNPACK_ALIGNMENT,4);
+  if(glGetError()!=GL_NO_ERROR)return false;
+ }
+ glBindTexture(GL_TEXTURE_2D,0);
+ return true;
+}
+void releaseAssetGpu(Asset&asset){
+ for(auto&tex:asset.textures)if(tex.id)glDeleteTextures(1,&tex.id);
+ if(asset.gpu.vao)glDeleteVertexArrays(1,&asset.gpu.vao);
+ if(asset.gpu.buffer)glDeleteBuffers(1,&asset.gpu.buffer);
 }
 GLuint shader(GLenum kind,const char*src){
  GLuint s=glCreateShader(kind);glShaderSource(s,1,&src,nullptr);glCompileShader(s);
@@ -209,25 +263,33 @@ void setupGL(){
  layout(location=0) in vec3 aPos;
  layout(location=1) in vec3 aNormal;
  layout(location=2) in vec3 aColor;
+ layout(location=3) in vec2 aUV;
  uniform mat4 uMvp;
  uniform mat4 uModel;
  out vec3 vNormal;
  out vec3 vColor;
+ out vec2 vUV;
  void main(){
    gl_Position=uMvp*vec4(aPos,1.0);
    vNormal=normalize(mat3(uModel)*aNormal);
    vColor=aColor;
+   vUV=aUV;
  })";
  const char*frag=R"(#version 300 es
  precision mediump float;
  in vec3 vNormal;
  in vec3 vColor;
+ in vec2 vUV;
  uniform vec3 uColor;
+ uniform sampler2D uTexture;
+ uniform float uUseTexture;
  uniform float uHighlight;
  out vec4 fragColor;
  void main(){
    float sun=max(dot(normalize(vNormal),normalize(vec3(-.55,1.,.5))),0.);
-   vec3 color=uColor*vColor*(.52+.48*sun);
+   vec4 texel=uUseTexture>.5?texture(uTexture,vUV):vec4(1.);
+   if(texel.a<.45)discard;
+   vec3 color=uColor*vColor*texel.rgb*(.52+.48*sun);
    color=mix(color,vec3(.99,.72,.30),uHighlight*.30);
    fragColor=vec4(color,1.);
  })";
@@ -241,6 +303,11 @@ void setupGL(){
  gShader.locModel=glGetUniformLocation(gShader.program,"uModel");
  gShader.locColor=glGetUniformLocation(gShader.program,"uColor");
  gShader.locLight=glGetUniformLocation(gShader.program,"uHighlight");
+ gShader.locTexture=glGetUniformLocation(gShader.program,"uTexture");
+ gShader.locTextured=glGetUniformLocation(gShader.program,"uUseTexture");
+ glUseProgram(gShader.program);
+ glUniform1i(gShader.locTexture,0);
+ glUniform1f(gShader.locTextured,0.f);
  for(int kind=0;kind<3;kind++){
   std::vector<float> d=geometry(kind);Mesh &m=gMeshes[kind];m.count=(GLsizei)(d.size()/6);
   glGenVertexArrays(1,&m.vao);glBindVertexArray(m.vao);
@@ -249,9 +316,14 @@ void setupGL(){
   glEnableVertexAttribArray(0);glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,6*sizeof(float),nullptr);
   glEnableVertexAttribArray(1);glVertexAttribPointer(1,3,GL_FLOAT,GL_FALSE,6*sizeof(float),reinterpret_cast<void*>(3*sizeof(float)));
   glDisableVertexAttribArray(2);
+  glDisableVertexAttribArray(3);
  }
  for(int kind=0;kind<17;kind++)if(kind!=6)bakeStaticMesh(kind);
- for(auto &kv:gAssets)uploadAsset(kv.second);
+ for(auto &kv:gAssets){
+  uploadAsset(kv.second);
+  if(!uploadTextures(kv.second))
+   __android_log_print(ANDROID_LOG_ERROR,"OE","Failed to restore textures after EGL context recreation");
+ }
  // A new OpenGL context needs new handles; never reuse IDs from the previous context.
  gTerrain={};
  glGenVertexArrays(1,&gTerrain.vao);
@@ -277,6 +349,7 @@ void draw(const Mat4&vp,int kind,Vec3 position,Vec3 dimensions,float yaw,Color c
  glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
  glUniform3f(gShader.locColor,color.r,color.g,color.b);
  glUniform1f(gShader.locLight,selected?1.f:0.f);
+ glUniform1f(gShader.locTextured,0.f);
  const Mesh &mesh=gMeshes[std::max(0,std::min(2,kind))];
  glBindVertexArray(mesh.vao);glDrawArrays(GL_TRIANGLES,0,mesh.count);
  ++gDrawCalls;gTriangles+=mesh.count/3;
@@ -318,15 +391,31 @@ bool importedInView(const Frustum&frustum,const Entity&e){
 void drawImported(const Mat4&vp,const Entity&e){
  auto it=gAssets.find(e.asset);
  if(it==gAssets.end()||it->second.gpu.count==0)return;
- const Mat4 model=mul(mul(translate({e.x,e.y,e.z}),rotateY(e.yaw*RAD)),scale({e.size*e.sx,e.size*e.sy,e.size*e.sz}));
+ const Mat4 model=mul(mul(translate({e.x,e.y,e.z}),rotateY(e.yaw*RAD)),
+  scale({e.size*e.sx,e.size*e.sy,e.size*e.sz}));
  const Mat4 mvp=mul(vp,model);
  glUniformMatrix4fv(gShader.locMvp,1,GL_FALSE,mvp.m);
  glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
  glUniform3f(gShader.locColor,1,1,1);
  glUniform1f(gShader.locLight,e.id==gSelected?1.f:0.f);
- const Mesh &m=it->second.gpu;
- glBindVertexArray(m.vao);glDrawArrays(GL_TRIANGLES,0,m.count);
- ++gDrawCalls;gTriangles+=m.count/3;
+ const Asset &asset=it->second;
+ glBindVertexArray(asset.gpu.vao);
+ if(asset.batches.empty()){
+  glUniform1f(gShader.locTextured,0.f);
+  glDrawArrays(GL_TRIANGLES,0,asset.gpu.count);
+  ++gDrawCalls;gTriangles+=asset.gpu.count/3;
+ }else for(const auto&batch:asset.batches){
+  if(batch.texture>=0&&static_cast<size_t>(batch.texture)<asset.textures.size()&&
+     asset.textures[batch.texture].id){
+   glActiveTexture(GL_TEXTURE0);
+   glBindTexture(GL_TEXTURE_2D,asset.textures[batch.texture].id);
+   glUniform1f(gShader.locTextured,1.f);
+  }else glUniform1f(gShader.locTextured,0.f);
+  glDrawArrays(GL_TRIANGLES,batch.first,batch.count);
+  ++gDrawCalls;gTriangles+=batch.count/3;
+ }
+ glUniform1f(gShader.locTextured,0.f);
+ glBindTexture(GL_TEXTURE_2D,0);
 }
 void part(const Mat4&vp,const Entity&e,int kind,float x,float y,float z,float sx,float sy,float sz,Color color){
  const float a=e.yaw*RAD,c=std::cos(a),s=std::sin(a),k=e.size;
@@ -447,6 +536,7 @@ void drawStatic(const Mat4&vp,const Entity&e){
  glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
  glUniform3f(gShader.locColor,1.f,1.f,1.f);
  glUniform1f(gShader.locLight,e.id==gSelected?1.f:0.f);
+ glUniform1f(gShader.locTextured,0.f);
  glBindVertexArray(m.vao);
  glDrawArrays(GL_TRIANGLES,0,m.count);
  ++gDrawCalls;gTriangles+=m.count/3;
@@ -529,6 +619,7 @@ void drawWorld(const Mat4&vp){
   glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
   glUniform3f(gShader.locColor,1,1,1);
   glUniform1f(gShader.locLight,0);
+  glUniform1f(gShader.locTextured,0.f);
   glBindVertexArray(gTerrain.vao);
   glDrawArrays(GL_TRIANGLES,0,gTerrain.vertices);
   ++gDrawCalls;gTriangles+=gTerrain.vertices/3;
@@ -922,13 +1013,16 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDiscardUnusedAss
  for(const auto&e:gEntities)if(e.type==6&&e.asset==asset)return;
  auto it=gAssets.find(asset);
  if(it==gAssets.end())return;
- if(it->second.gpu.vao)glDeleteVertexArrays(1,&it->second.gpu.vao);
- if(it->second.gpu.buffer)glDeleteBuffers(1,&it->second.gpu.buffer);
+ releaseAssetGpu(it->second);
  gAssets.erase(it);
 }
+// Register a full GLB atomically: interleaved 11-float vertices, material
+// draw ranges, and up to 4 embedded RGBA8/ETC2 GPU textures.
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsset(
- JNIEnv*env,jclass,jstring key,jfloatArray data,jfloat centerY,jfloat radius){
- if(!key||!data||!std::isfinite(centerY)||!std::isfinite(radius)||
+ JNIEnv*env,jclass,jstring key,jfloatArray vertices,jfloat centerY,jfloat radius,
+ jintArray batchData,jobjectArray imageData,jintArray imageInfo){
+ if(!key||!vertices||!batchData||!imageData||!imageInfo||
+    !std::isfinite(centerY)||!std::isfinite(radius)||
     radius<.05f||radius>100.f||centerY<0.f||centerY>100.f)return JNI_FALSE;
  const char*raw=env->GetStringUTFChars(key,nullptr);
  if(!raw)return JNI_FALSE;
@@ -936,37 +1030,89 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsse
  if(assetKey.size()!=31||assetKey.compare(0,3,"oe_")!=0||
     assetKey.substr(assetKey.size()-4)!=".glb")return JNI_FALSE;
  for(size_t i=3;i<assetKey.size()-4;i++)
-  if(!((assetKey[i]>='0'&&assetKey[i]<='9')||(assetKey[i]>='a'&&assetKey[i]<='f')))
-   return JNI_FALSE;
+  if(!((assetKey[i]>='0'&&assetKey[i]<='9')||
+       (assetKey[i]>='a'&&assetKey[i]<='f')))return JNI_FALSE;
  auto existing=gAssets.find(assetKey);
- // A content-addressed key is immutable; never re-upload the same model.
+ // Content-addressed resources are immutable within the renderer.
  if(existing!=gAssets.end()&&existing->second.gpu.count>0)return JNI_TRUE;
- jsize count=env->GetArrayLength(data);
- if(count<=0||count>MAX_IMPORTED_TRIANGLES*27||count%27!=0)return JNI_FALSE;
  if(existing==gAssets.end()&&gAssets.size()>=MAX_ASSETS)return JNI_FALSE;
- jfloat*ptr=env->GetFloatArrayElements(data,nullptr);
- if(!ptr)return JNI_FALSE;
- bool valid=true;
- for(jsize i=0;i<count;i++)if(!std::isfinite(ptr[i])||std::abs(ptr[i])>10000){valid=false;break;}
- if(!valid){env->ReleaseFloatArrayElements(data,ptr,JNI_ABORT);return JNI_FALSE;}
+ const jsize valueCount=env->GetArrayLength(vertices);
+ if(valueCount<=0||valueCount>MAX_IMPORTED_TRIANGLES*33||valueCount%33!=0)
+  return JNI_FALSE;
+ const jsize vertexCount=valueCount/11;
+ const jsize batchLength=env->GetArrayLength(batchData);
+ if(batchLength<=0||batchLength>6144||batchLength%3!=0)return JNI_FALSE;
+ const jsize imageCount=env->GetArrayLength(imageData);
+ if(imageCount<0||imageCount>4||env->GetArrayLength(imageInfo)!=imageCount*3)
+  return JNI_FALSE;
  Asset prepared;
- prepared.centerY=centerY;prepared.radius=radius;
- prepared.vertices.assign(ptr,ptr+count);
- env->ReleaseFloatArrayElements(data,ptr,JNI_ABORT);
- // Keep the previous GPU asset intact until replacement is ready.
- // Bounded error drain: never block indefinitely on a lost GL context.
+ prepared.vertexStride=11;prepared.centerY=centerY;prepared.radius=radius;
+ prepared.vertices.resize(static_cast<size_t>(valueCount));
+ env->GetFloatArrayRegion(vertices,0,valueCount,prepared.vertices.data());
+ if(env->ExceptionCheck())return JNI_FALSE;
+ for(float value:prepared.vertices)
+  if(!std::isfinite(value)||std::abs(value)>10000.f)return JNI_FALSE;
+ std::vector<jint> batches(static_cast<size_t>(batchLength));
+ env->GetIntArrayRegion(batchData,0,batchLength,batches.data());
+ if(env->ExceptionCheck())return JNI_FALSE;
+ jint consumed=0;
+ for(jsize i=0;i<batchLength;i+=3){
+  const jint first=batches[i],count=batches[i+1],texture=batches[i+2];
+  if(first!=consumed||count<=0||count%3!=0||
+     count>vertexCount-consumed||texture< -1||texture>=imageCount)return JNI_FALSE;
+  prepared.batches.push_back({first,count,texture});
+  consumed+=count;
+ }
+ if(consumed!=vertexCount)return JNI_FALSE;
+ std::vector<jint> info(static_cast<size_t>(imageCount*3));
+ if(imageCount){
+  env->GetIntArrayRegion(imageInfo,0,imageCount*3,info.data());
+  if(env->ExceptionCheck())return JNI_FALSE;
+ }
+ size_t totalNew=0;
+ for(jsize i=0;i<imageCount;i++){
+  const jint width=info[3*i],height=info[3*i+1],format=info[3*i+2];
+  if(width<=0||height<=0||width>2048||height>2048||
+     format<0||format>2)return JNI_FALSE;
+  const size_t expected=format==0?static_cast<size_t>(width)*height*4:
+    static_cast<size_t>((width+3)/4)*static_cast<size_t>((height+3)/4)*
+     static_cast<size_t>(format==1?8:16);
+  jbyteArray bytes=static_cast<jbyteArray>(env->GetObjectArrayElement(imageData,i));
+  if(!bytes||env->ExceptionCheck())return JNI_FALSE;
+  const jsize length=env->GetArrayLength(bytes);
+  if(length<0||static_cast<size_t>(length)!=expected){
+   env->DeleteLocalRef(bytes);return JNI_FALSE;
+  }
+  TextureResource tex;
+  tex.width=width;tex.height=height;tex.format=format;
+  tex.bytes.resize(expected);
+  env->GetByteArrayRegion(bytes,0,length,reinterpret_cast<jbyte*>(tex.bytes.data()));
+  env->DeleteLocalRef(bytes);
+  if(env->ExceptionCheck())return JNI_FALSE;
+  totalNew+=expected;
+  if(totalNew>32u*1024u*1024u)return JNI_FALSE;
+  prepared.textures.push_back(std::move(tex));
+ }
+ const size_t oldBytes=existing==gAssets.end()?0:[&](){
+  size_t n=0;
+  for(const auto&tex:existing->second.textures)n+=tex.bytes.size();
+  return n;
+ }();
+ if(textureCacheBytes()-oldBytes+totalNew>MAX_TEXTURE_CACHE_BYTES)return JNI_FALSE;
+ // Stage GPU state without touching the old scene/asset on failures.
  for(int i=0;i<8&&glGetError()!=GL_NO_ERROR;i++){}
  uploadAsset(prepared);
+ bool texturesOk=prepared.gpu.count>0&&prepared.gpu.vao&&prepared.gpu.buffer;
+ if(texturesOk)texturesOk=uploadTextures(prepared);
  const GLenum error=glGetError();
- if(error!=GL_NO_ERROR||!prepared.gpu.vao||!prepared.gpu.buffer||prepared.gpu.count<=0){
-  if(prepared.gpu.vao)glDeleteVertexArrays(1,&prepared.gpu.vao);
-  if(prepared.gpu.buffer)glDeleteBuffers(1,&prepared.gpu.buffer);
-  __android_log_print(ANDROID_LOG_ERROR,"OE","GLB GPU upload failed: GL 0x%x",error);
+ if(!texturesOk||error!=GL_NO_ERROR){
+  releaseAssetGpu(prepared);
+  __android_log_print(ANDROID_LOG_ERROR,"OE",
+   "GLB asset or texture GPU upload failed: 0x%x",error);
   return JNI_FALSE;
  }
  if(existing!=gAssets.end()){
-  if(existing->second.gpu.vao)glDeleteVertexArrays(1,&existing->second.gpu.vao);
-  if(existing->second.gpu.buffer)glDeleteBuffers(1,&existing->second.gpu.buffer);
+  releaseAssetGpu(existing->second);
   existing->second=std::move(prepared);
  }else gAssets.emplace(assetKey,std::move(prepared));
  return JNI_TRUE;

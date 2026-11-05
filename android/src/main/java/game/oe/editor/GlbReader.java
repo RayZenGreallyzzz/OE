@@ -9,6 +9,8 @@ import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import android.util.Base64;
 import java.util.Map;
 import java.util.Set;
 
@@ -33,7 +35,10 @@ public final class GlbReader {
     private static native byte[] nativeDecodeMeshopt(byte[] compressed,int count,int stride,int mode,int filter);
 
     public static final class Result {
-        public final float[] vertices; // [pos.xyz, normal.xyz, color.rgb] repeated per vertex
+        public final float[] vertices; // [pos.xyz, normal.xyz, color.rgb, uv.xy] per vertex
+        public final int[] draws; // consecutive triplets [firstVertex,vertexCount,textureSlot] (-1 = plain color)
+        public final byte[][] imageData; // RGBA8 or ETC2, indexed by textureSlot
+        public final int[] imageInfo; // [width,height,pixelFormat] per textureSlot
         public final int triangles;
         // Bounds are computed after normalization (the resulting local origin
         // is centered on X/Z and grounded at Y=0). Used for conservative culling.
@@ -42,13 +47,17 @@ public final class GlbReader {
         // Visual preview limitations: original GLB bytes are never rewritten.
         public final boolean previewOmitsTextures, previewOmitsRig;
         Result(float[] vertices, int triangles, float boundCenterY, float boundRadius,
-               boolean previewOmitsTextures, boolean previewOmitsRig) {
+               boolean previewOmitsTextures, boolean previewOmitsRig,
+               int[] draws, byte[][] imageData, int[] imageInfo) {
             this.vertices = vertices;
             this.triangles = triangles;
             this.boundCenterY = boundCenterY;
             this.boundRadius = boundRadius;
             this.previewOmitsTextures=previewOmitsTextures;
             this.previewOmitsRig=previewOmitsRig;
+            this.draws=draws;
+            this.imageData=imageData;
+            this.imageInfo=imageInfo;
         }
     }
 
@@ -58,8 +67,8 @@ public final class GlbReader {
         ByteBuffer data;
     }
     private static final class Job {
-        Access positions, indices;
-        int triangles;
+        Access positions, indices, uv;
+        int triangles, textureIndex=-1;
         float[] matrix, color;
     }
     private static final class State {
@@ -171,7 +180,7 @@ public final class GlbReader {
         st.decodedBytes+=decoded.length;
         return result;
     }
-    private static Access accessor(State st,int index,boolean position) throws Exception {
+    private static Access accessor(State st,int index,int role) throws Exception {
         JSONArray accessors=st.gltf.getJSONArray("accessors");
         require(index>=0 && index<accessors.length(),"Нет accessor");
         JSONObject obj=accessors.getJSONObject(index);
@@ -181,13 +190,14 @@ public final class GlbReader {
         require(count>0 && count<=MAX_TRIANGLES*3,"Слишком много вершин или индексов");
         boolean validPosition=component==5126||component==5120||component==5121||
                               component==5122||component==5123;
-        require((position&&"VEC3".equals(type)&&validPosition)||
-                (!position&&"SCALAR".equals(type)&&
+        require((role==1&&"VEC3".equals(type)&&validPosition)||
+                (role==2&&"VEC2".equals(type)&&validPosition)||
+                (role==0&&"SCALAR".equals(type)&&
                   (component==5121||component==5123||component==5125)),
-                "Формат вершин или индексов GLB не поддерживается");
+                "Формат вершин, UV или индексов GLB не поддерживается");
         int componentBytes=component==5120||component==5121?1:
                            (component==5122||component==5123?2:4);
-        int width=position?componentBytes*3:componentBytes;
+        int width=role==1?componentBytes*3:(role==2?componentBytes*2:componentBytes);
         int viewIndex=obj.getInt("bufferView");
         JSONArray views=st.gltf.getJSONArray("bufferViews");
         require(viewIndex>=0 && viewIndex<views.length(),"Нет bufferView");
@@ -268,6 +278,67 @@ public final class GlbReader {
                 Math.max(0,Math.min(1,rgba[1])),
                 Math.max(0,Math.min(1,rgba[2]))};
     }
+    private static float[] texCoord(Access uv,int vertex) throws Exception {
+        require(uv!=null&&vertex>=0&&vertex<uv.count,"UV за пределами");
+        int step=uv.component==5120||uv.component==5121?1:
+                 (uv.component==5122||uv.component==5123?2:4);
+        int offset=uv.offset+vertex*uv.step;
+        float u=positionComponent(uv,offset),v=positionComponent(uv,offset+step);
+        require(Float.isFinite(u)&&Float.isFinite(v)&&Math.abs(u)<8192&&Math.abs(v)<8192,
+                "Некорректные координаты UV");
+        return new float[]{u,v};
+    }
+    private static TextureReader.Image readTexture(State st,int textureIndex,int limit) throws Exception {
+        JSONArray textures=st.gltf.optJSONArray("textures"),images=st.gltf.optJSONArray("images");
+        require(textures!=null&&images!=null&&textureIndex>=0&&textureIndex<textures.length(),
+            "Недоступна текстура GLB");
+        JSONObject texture=textures.getJSONObject(textureIndex);
+        JSONObject ext=texture.optJSONObject("extensions");
+        JSONObject basis=ext==null?null:ext.optJSONObject("KHR_texture_basisu");
+        if(basis!=null){
+            int imageIndex=basis.getInt("source");
+            try{return readImage(st,images,imageIndex,limit);}
+            catch(Exception ktxProblem){
+                if(!texture.has("source"))
+                    throw new Exception("KTX2 нельзя загрузить: "+ktxProblem.getMessage());
+                // A valid PNG/JPEG fallback may be used instead of unsupported BasisU.
+            }
+        }
+        require(texture.has("source"),"В GLB нет изображения для текстуры");
+        return readImage(st,images,texture.getInt("source"),limit);
+    }
+    private static TextureReader.Image readImage(State st,JSONArray images,
+            int imageIndex,int limit) throws Exception {
+        require(imageIndex>=0&&imageIndex<images.length(),"Неверная ссылка на изображение");
+        JSONObject image=images.getJSONObject(imageIndex);
+        String mime=image.optString("mimeType","");
+        byte[] bytes;
+        if(image.has("bufferView")){
+            int viewIndex=image.getInt("bufferView");
+            JSONArray views=st.gltf.getJSONArray("bufferViews");
+            require(viewIndex>=0&&viewIndex<views.length(),"Неверный bufferView изображения");
+            JSONObject view=views.getJSONObject(viewIndex);
+            require(view.optInt("buffer",0)==0,"Нельзя импортировать внешнюю текстуру");
+            int start=view.optInt("byteOffset",0),length=view.getInt("byteLength");
+            require(start>=0&&length>0&&length<=TextureReader.MAX_SOURCE_BYTES&&
+                (long)start+length<=st.bin.capacity(),"Повреждённый bufferView текстуры");
+            bytes=new byte[length];
+            ByteBuffer b=st.bin.duplicate();
+            b.position(start);b.get(bytes);
+        }else{
+            String uri=image.optString("uri","");
+            int separator=uri.indexOf(",");
+            require(uri.startsWith("data:image/")&&separator>0&&
+                uri.substring(0,separator).endsWith(";base64"),
+                "В GLB нужны встроенные PNG/JPG/KTX2 изображения");
+            if(mime.isEmpty())mime=uri.substring(5,uri.indexOf(";base64"));
+            String encoded=uri.substring(separator+1);
+            require(encoded.length()<=TextureReader.MAX_SOURCE_BYTES*2,
+                "Слишком большое изображение data URI");
+            bytes=Base64.decode(encoded,Base64.DEFAULT);
+        }
+        return TextureReader.decode(bytes,mime,limit);
+    }
     private static void visit(State st,int nodeIndex,float[] parent,Set<Integer> path,int depth) throws Exception {
         JSONArray nodes=st.gltf.getJSONArray("nodes");
         require(nodeIndex>=0&&nodeIndex<nodes.length(),"Неверный узел");
@@ -287,14 +358,30 @@ public final class GlbReader {
                 if(p.optInt("mode",4)!=4)continue; // only triangle lists
                 JSONObject attrs=p.optJSONObject("attributes");
                 if(attrs==null||!attrs.has("POSITION"))continue;
-                Access positions=accessor(st,attrs.getInt("POSITION"),true);
-                Access indices=p.has("indices")?accessor(st,p.getInt("indices"),false):null;
+                Access positions=accessor(st,attrs.getInt("POSITION"),1);
+                Access indices=p.has("indices")?accessor(st,p.getInt("indices"),0):null;
+                Access uv=attrs.has("TEXCOORD_0")?accessor(st,attrs.getInt("TEXCOORD_0"),2):null;
                 int count=indices==null?positions.count:indices.count;
                 int triangles=count/3;
                 if(triangles==0)continue;
                 require((long)st.triangles+triangles<=MAX_TRIANGLES,"Модель больше 90 000 треугольников");
-                Job j=new Job();j.positions=positions;j.indices=indices;
+                Job j=new Job();j.positions=positions;j.indices=indices;j.uv=uv;
                 j.triangles=triangles;j.matrix=matrix;j.color=color(st,p);
+                int materialIndex=p.optInt("material",-1);
+                JSONArray materials=st.gltf.optJSONArray("materials");
+                if(materialIndex>=0&&materials!=null&&materialIndex<materials.length()&&uv!=null){
+                    JSONObject mat=materials.getJSONObject(materialIndex);
+                    JSONObject pbr=mat.optJSONObject("pbrMetallicRoughness");
+                    JSONObject textureInfo=pbr==null?null:pbr.optJSONObject("baseColorTexture");
+                    if(textureInfo!=null){
+                        require(textureInfo.optInt("texCoord",0)==0,
+                            "GLB: поддерживается только UV TEXCOORD_0");
+                        JSONObject ex=textureInfo.optJSONObject("extensions");
+                        require(ex==null||!ex.has("KHR_texture_transform"),
+                            "GLB: трансформация UV пока не поддерживается");
+                        j.textureIndex=textureInfo.getInt("index");
+                    }
+                }
                 st.jobs.add(j);st.triangles+=triangles;
             }
         }
@@ -303,6 +390,10 @@ public final class GlbReader {
         path.remove(nodeIndex);
     }
     public static Result decode(byte[] data) throws Exception {
+        return decode(data,TextureReader.DEFAULT_LIMIT);
+    }
+    public static Result decode(byte[] data,int textureLimit) throws Exception {
+        require(textureLimit==1024||textureLimit==2048,"Укажи 1024 или 2048 px");
         require(data!=null && data.length>=20 && data.length<=MAX_BYTES,"Размер GLB должен быть до 24 МБ");
         ByteBuffer src=ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
         require(u32(src,0)==0x46546c67 && u32(src,4)==2 && Integer.toUnsignedLong(u32(src,8))==data.length,
@@ -323,7 +414,8 @@ public final class GlbReader {
             String extension=required.getString(i);
             if(!"EXT_meshopt_compression".equals(extension)&&
                !"KHR_meshopt_compression".equals(extension)&&
-               !"KHR_mesh_quantization".equals(extension))
+               !"KHR_mesh_quantization".equals(extension)&&
+               !"KHR_texture_basisu".equals(extension))
                 throw new Exception("Неподдерживаемое обязательное расширение GLB: "+extension);
         }
         ByteBuffer binary=ByteBuffer.wrap(data,binAt,binLen).slice().order(ByteOrder.LITTLE_ENDIAN);
@@ -340,22 +432,39 @@ public final class GlbReader {
             } else for(int i=0;i<nodes.length();i++)visit(st,i,identity(),new HashSet<>(),0);
         } else throw new Exception("В GLB нет узлов сцены");
         require(st.triangles>0,"В GLB нет доступной треугольной геометрии");
-        float[] verts=new float[st.triangles*27];
+        float[] verts=new float[st.triangles*33];
+        int[] draws=new int[st.jobs.size()*3];
+        Map<Integer,Integer> usedTextures=new LinkedHashMap<>();
+        int drawIndex=0;
         int out=0;float minX=Float.POSITIVE_INFINITY,minY=minX,minZ=minX;
         float maxX=Float.NEGATIVE_INFINITY,maxY=maxX,maxZ=maxX;
         for(Job j:st.jobs){
+            int slot=-1;
+            if(j.textureIndex>=0&&j.uv!=null){
+                Integer previous=usedTextures.get(j.textureIndex);
+                if(previous==null){
+                    require(usedTextures.size()<4,"В GLB больше четырёх базовых текстур");
+                    slot=usedTextures.size();
+                    usedTextures.put(j.textureIndex,slot);
+                }else slot=previous;
+            }
+            draws[drawIndex++]=out/11;
+            draws[drawIndex++]=j.triangles*3;
+            draws[drawIndex++]=slot;
             for(int t=0;t<j.triangles;t++){
-                float[][] v=new float[3][];
+                float[][] v=new float[3][],uvs=new float[3][];
                 for(int k=0;k<3;k++){
                     int vertex=readIndex(st,j.indices,t*3+k);
                     v[k]=position(st,j.positions,vertex,j.matrix);
+                    uvs[k]=j.uv==null?new float[]{0,0}:texCoord(j.uv,vertex);
                 }
                 float ax=v[1][0]-v[0][0],ay=v[1][1]-v[0][1],az=v[1][2]-v[0][2];
                 float bx=v[2][0]-v[0][0],by=v[2][1]-v[0][1],bz=v[2][2]-v[0][2];
                 float nx=ay*bz-az*by,ny=az*bx-ax*bz,nz=ax*by-ay*bx;
                 float n=(float)Math.sqrt(nx*nx+ny*ny+nz*nz);
                 if(n<.00001f){nx=0;ny=1;nz=0;}else{nx/=n;ny/=n;nz/=n;}
-                for(float[] p:v){
+                for(int k=0;k<3;k++){
+                    float[] p=v[k];
                     for(float coordinate:p)require(Float.isFinite(coordinate)&&Math.abs(coordinate)<100000,
                             "Некорректные координаты меша");
                     minX=Math.min(minX,p[0]);minY=Math.min(minY,p[1]);minZ=Math.min(minZ,p[2]);
@@ -363,12 +472,13 @@ public final class GlbReader {
                     verts[out++]=p[0];verts[out++]=p[1];verts[out++]=p[2];
                     verts[out++]=nx;verts[out++]=ny;verts[out++]=nz;
                     verts[out++]=j.color[0];verts[out++]=j.color[1];verts[out++]=j.color[2];
+                    verts[out++]=uvs[k][0];verts[out++]=uvs[k][1];
                 }
             }
         }
         float extent=Math.max(.001f,Math.max(maxX-minX,Math.max(maxY-minY,maxZ-minZ)));
         float normalized=6.0f/extent,centerX=(maxX+minX)*.5f,centerZ=(maxZ+minZ)*.5f;
-        for(int i=0;i<verts.length;i+=9){
+        for(int i=0;i<verts.length;i+=11){
             verts[i]=(verts[i]-centerX)*normalized;
             verts[i+1]=(verts[i+1]-minY)*normalized;
             verts[i+2]=(verts[i+2]-centerZ)*normalized;
@@ -383,10 +493,27 @@ public final class GlbReader {
         require(Float.isFinite(sphere)&&sphere>=0&&sphere<100,"Неверные границы GLB");
         JSONArray images=gltf.optJSONArray("images"),skins=gltf.optJSONArray("skins");
         JSONArray animations=gltf.optJSONArray("animations"),textures=gltf.optJSONArray("textures");
-        boolean textured=(images!=null&&images.length()>0)||
-            (textures!=null&&textures.length()>0);
         boolean rigged=(skins!=null&&skins.length()>0)||
             (animations!=null&&animations.length()>0);
-        return new Result(verts,st.triangles,dy*.5f,sphere+.05f,textured,rigged);
+        TextureReader.Image[] decoded=new TextureReader.Image[usedTextures.size()];
+        int memoryUsed=0;
+        for(Map.Entry<Integer,Integer> item:usedTextures.entrySet()){
+            TextureReader.Image image=readTexture(st,item.getKey(),textureLimit);
+            memoryUsed+=image.bytes.length;
+            require(memoryUsed<=32*1024*1024,"Слишком много памяти для текстур GLB");
+            decoded[item.getValue()]=image;
+        }
+        byte[][] dataOut=new byte[decoded.length][];
+        int[] imageInfo=new int[decoded.length*3];
+        for(int i=0;i<decoded.length;i++){
+            TextureReader.Image texture=decoded[i];
+            dataOut[i]=texture.bytes;
+            imageInfo[i*3]=texture.width;
+            imageInfo[i*3+1]=texture.height;
+            imageInfo[i*3+2]=texture.format;
+        }
+        boolean omitted=(images!=null&&images.length()>0&&usedTextures.isEmpty());
+        return new Result(verts,st.triangles,dy*.5f,sphere+.05f,omitted,rigged,
+            draws,dataOut,imageInfo);
     }
 }

@@ -8,15 +8,15 @@ android {
         applicationId 'game.oe.editor'
         minSdk 26
         targetSdk 34
-        versionCode 11
-        versionName '0.6.5-meshopt-foundation-test'
+        versionCode 12
+        versionName '0.6.6-textures-ktx2-test'
         ndk { abiFilters 'arm64-v8a' }
         externalNativeBuild {
             cmake { cppFlags '-std=c++17 -O2 -Wall -Wextra' }
         }
     }
     buildTypes {
-        debug { debuggable true; applicationIdSuffix '.assettest' }
+        debug { debuggable true; applicationIdSuffix '.texturetest' }
         release { minifyEnabled false }
     }
     compileOptions {

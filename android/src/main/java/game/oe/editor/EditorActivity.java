@@ -73,7 +73,8 @@ public class EditorActivity extends Activity {
     private static native boolean nativeRedo();
     private static native void nativeClearHistory();
     private static native int nativeDuplicateSelected();
-    private static native boolean nativeRegisterAsset(String key, float[] vertices, float centerY, float radius);
+    private static native boolean nativeRegisterAsset(String key, float[] vertices, float centerY,
+            float radius, int[] draws, byte[][] images, int[] imageInfo);
     private static native String[] nativeLoadedAssetKeys();
     private static native boolean nativeCanRegisterMore(int newUniqueAssets);
     private static native void nativeDiscardUnusedAsset(String key);
@@ -100,6 +101,7 @@ public class EditorActivity extends Activity {
     private volatile float terrainRadius=96f;
     private volatile float terrainStrength=20f;
     private volatile float moveStep=.25f,turnStep=5f,scaleStep=1.05f;
+    private volatile int textureLimit=1024; // Low-power default; applies to newly imported GLB.
     private final int gold = Color.rgb(240, 192, 113);
     private final int text = Color.rgb(234, 228, 218);
 
@@ -167,7 +169,7 @@ public class EditorActivity extends Activity {
         top.setOrientation(LinearLayout.VERTICAL);
 
         TextView title = new TextView(this);
-        title.setText("OE  /  ORVETRA ENGINE     •     NATIVE ANDROID 0.6.5 · ASSET PIPELINE TEST");
+        title.setText("OE  /  ORVETRA ENGINE     •     NATIVE ANDROID 0.6.6 · TEXTURES TEST");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         title.setTextSize(13);
@@ -201,6 +203,7 @@ public class EditorActivity extends Activity {
         addTool(tools, "Координаты", this::showCoordinateJump);
         addTool(tools, "Отмена", this::cancelPlace);
         addTool(tools, "Импорт GLB", this::pickGlb);
+        addTool(tools, "Качество текстур", this::chooseTextureLimit);
         addTool(tools, "Экспорт проекта", this::exportProject);
         addTool(tools, "Импорт проекта", this::pickProject);
         addTool(tools, "Объекты", this::showObjects);
@@ -304,6 +307,17 @@ public class EditorActivity extends Activity {
             "ГОРА: коснись земли. Кисть радиус "+(int)terrainRadius+" м, высота +"+(int)terrainStrength+" м. Отмена ↶ работает.":
             "ВПАДИНА: коснись земли. Кисть радиус "+(int)terrainRadius+" м, глубина −"+(int)terrainStrength+" м.");
         message("Коснись земли для деформации · максимум 64 мазка на карту");
+    }
+    private void chooseTextureLimit(){
+        final String[] choices={
+            "1024 px · экономия памяти и энергии (рекомендуется)",
+            "2048 px · более чёткие детали, больше расход видеопамяти"};
+        new AlertDialog.Builder(this).setTitle("Лимит текстур для новых GLB")
+            .setSingleChoiceItems(choices,textureLimit==1024?0:1,(dialog,which)->{
+                textureLimit=which==0?1024:2048;
+                message("Лимит: "+textureLimit+" px · уже загруженные модели не изменяются");
+                dialog.dismiss();
+            }).setNegativeButton("Отмена",null).show();
     }
     private void chooseTerrainBrush(){
         final String[] choices={"Небольшая · 32м / 8м","Средняя · 64м / 16м",
@@ -569,10 +583,11 @@ public class EditorActivity extends Activity {
                     }else{
                         new Thread(() -> {
                             try{
-                                final GlbReader.Result model=GlbReader.decode(bytes);
+                                final GlbReader.Result model=GlbReader.decode(bytes,textureLimit);
                                 surface.queueEvent(() -> {
                                     boolean success=nativeRegisterAsset(key,model.vertices,
-                                            model.boundCenterY,model.boundRadius);
+                                            model.boundCenterY,model.boundRadius,
+                                            model.draws,model.imageData,model.imageInfo);
                                     importing=false;
                                     if(success){
                                         surface.requestRender();
@@ -713,7 +728,7 @@ public class EditorActivity extends Activity {
                 byte[] bytes=Files.readAllBytes(model.toPath());
                 if(!GlbReader.key(bytes).equals(asset))
                     throw new Exception("Модель повреждена: "+asset);
-                missing.put(asset,GlbReader.decode(bytes));
+                missing.put(asset,GlbReader.decode(bytes,textureLimit));
             }
             // Install verified model files from the staged archive without
             // deleting or overwriting the active project's files.
@@ -745,7 +760,8 @@ public class EditorActivity extends Activity {
                     for(Map.Entry<String,GlbReader.Result> entry:missing.entrySet()){
                         GlbReader.Result mesh=entry.getValue();
                         if(!nativeRegisterAsset(entry.getKey(),mesh.vertices,
-                                mesh.boundCenterY,mesh.boundRadius))
+                                mesh.boundCenterY,mesh.boundRadius,
+                                mesh.draws,mesh.imageData,mesh.imageInfo))
                             throw new Exception("Ошибка загрузки GPU: "+entry.getKey());
                         uploaded.add(entry.getKey());
                     }

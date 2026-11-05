@@ -889,7 +889,7 @@ public class EditorActivity extends Activity {
     private static final class SavedEntity {
         int type;
         float x,z,yaw,size,y,sx=1f,sy=1f,sz=1f;
-        String asset;
+        String asset,paint="";
     }
     private static boolean validAsset(String name) {
         return name!=null && name.matches("oe_[0-9a-f]{24}\\.glb");
@@ -950,6 +950,28 @@ public class EditorActivity extends Activity {
                     throw new Exception("Изменение рельефа за границами карты");
             }
             String[] modelKeys=new String[arr.length()];
+            String[] objectPaintKeys=new String[arr.length()];
+            HashSet<String> referencedPaint=new HashSet<>();
+            JSONArray paintJson=document.optJSONArray("terrainPaint");
+            int paintCount=paintJson==null?0:paintJson.length();
+            if(paintCount>48)throw new Exception("Максимум 48 мазков по земле");
+            float[] paintBrushes=new float[paintCount*3];
+            String[] paintBrushKeys=new String[paintCount];
+            for(int i=0;i<paintCount;i++){
+                JSONArray brush=paintJson.getJSONArray(i);
+                if(brush.length()!=4)throw new Exception("Неверная кисть текстуры");
+                for(int j=0;j<3;j++){
+                    double value=brush.getDouble(j);
+                    if(!Double.isFinite(value))throw new Exception("Неверная координата покраски");
+                    paintBrushes[3*i+j]=(float)value;
+                }
+                float x=paintBrushes[3*i],z=paintBrushes[3*i+1],r=paintBrushes[3*i+2];
+                if(Math.abs(x)>worldSize/2f||Math.abs(z)>worldSize/2f||
+                    r<4f||r>64f)throw new Exception("Кисть текстуры за пределами карты");
+                String key=brush.getString(3);
+                if(!validTexture(key))throw new Exception("Неверная текстура кисти");
+                paintBrushKeys[i]=key;referencedPaint.add(key);
+            }
             for(int i=0;i<items.length;i++){
                 JSONObject object=arr.getJSONObject(i);
                 SavedEntity e=new SavedEntity();
@@ -969,6 +991,12 @@ public class EditorActivity extends Activity {
                     throw new Exception("Неверный масштаб детали "+i);
                 e.x=(float)x;e.z=(float)z;e.yaw=(float)yaw;e.size=(float)size;e.y=(float)y;
                 e.sx=(float)sx;e.sy=(float)sy;e.sz=(float)sz;
+                e.paint=object.optString("paint","");
+                if(!e.paint.isEmpty()){
+                    if(!validTexture(e.paint))throw new Exception("Неверная текстура объекта "+i);
+                    referencedPaint.add(e.paint);
+                }
+                objectPaintKeys[i]=e.paint;
                 if(e.type==6){
                     e.asset=object.getString("asset");
                     if(!validAsset(e.asset))throw new Exception("Неверная ссылка модели");
@@ -987,6 +1015,19 @@ public class EditorActivity extends Activity {
                 modelKeys[i]=e.asset;
             }
             if(assets.size()>MAX_ASSETS)throw new Exception("Слишком много разных GLB-моделей");
+            if(referencedPaint.size()>8)throw new Exception("Слишком много текстур (макс. 8)");
+            Map<String,TextureReader.Image> paintImages=new LinkedHashMap<>();
+            for(String key:referencedPaint){
+                File texture=new File(sourceTextures==null?textureDir():sourceTextures,key);
+                if(!texture.isFile()||texture.length()<=0||
+                   texture.length()>ProjectArchive.MAX_TEXTURE_BYTES)
+                    throw new Exception("Файл текстуры не найден: "+key);
+                byte[] bytes=Files.readAllBytes(texture.toPath());
+                String mime=textureType(bytes);
+                if(!key.equals(textureKey(bytes,mime)))
+                    throw new Exception("Повреждена текстура: "+key);
+                paintImages.put(key,TextureReader.decode(bytes,mime,1024));
+            }
             Map<String,GlbReader.Result> missing=new LinkedHashMap<>();
             // Verify that each GLB still has a file on disk, but decode only
             // resources not already resident in the renderer.
@@ -1022,10 +1063,33 @@ public class EditorActivity extends Activity {
                     }
                 }
             }
+            if(sourceTextures!=null){
+                File targetFolder=textureDir();
+                for(String key:referencedPaint){
+                    File target=new File(targetFolder,key);
+                    if(target.exists()){
+                        byte[] current=Files.readAllBytes(target.toPath());
+                        if(!key.equals(textureKey(current,textureType(current))))
+                            throw new Exception("Повреждена существующая текстура: "+key);
+                    }else{
+                        File partial=new File(targetFolder,key+".part");
+                        try{
+                            Files.copy(new File(sourceTextures,key).toPath(),partial.toPath(),
+                                StandardCopyOption.REPLACE_EXISTING);
+                            Files.move(partial.toPath(),target.toPath());
+                        }finally{Files.deleteIfExists(partial.toPath());}
+                    }
+                }
+            }
             surface.queueEvent(() -> {
                 ArrayList<String> uploaded=new ArrayList<>();
                 boolean committed=false;
                 try {
+                    for(Map.Entry<String,TextureReader.Image> entry:paintImages.entrySet()){
+                        TextureReader.Image img=entry.getValue();
+                        if(!nativeRegisterPaintTexture(entry.getKey(),img.bytes,img.width,img.height))
+                            throw new Exception("Лимит памяти пользовательских текстур: "+entry.getKey());
+                    }
                     if(!nativeCanRegisterMore(missing.size()))
                         throw new Exception("Недостаточно свободных слотов GLB (макс. 12)");
                     for(Map.Entry<String,GlbReader.Result> entry:missing.entrySet()){
@@ -1036,12 +1100,13 @@ public class EditorActivity extends Activity {
                             throw new Exception("Ошибка загрузки GPU: "+entry.getKey());
                         uploaded.add(entry.getKey());
                     }
-                    if(!nativeReplaceScene(worldSize,demoRoads,kinds,transforms,modelKeys,terrainBrushes))
+                    if(!nativeReplaceScene(worldSize,demoRoads,kinds,transforms,modelKeys,
+                            terrainBrushes,objectPaintKeys,paintBrushes,paintBrushKeys))
                         throw new Exception("Сцена не прошла полную проверку в движке");
                     committed=true;
                     surface.requestRender();
                     refreshSelected();
-                    message("Сцена загружена · "+items.length+" объектов, GLB "+assets.size()+
+                    message("Сцена загружена · "+items.length+" объектов, текстур "+referencedPaint.size()+", GLB "+assets.size()+
                             " (из памяти "+(assets.size()-missing.size())+")");
                 }catch(Exception e){
                     message("Сцена НЕ изменена: "+e.getMessage());

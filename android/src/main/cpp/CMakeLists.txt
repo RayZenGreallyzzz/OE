@@ -6,6 +6,8 @@ add_library(oe_native SHARED
     vendor/meshoptimizer/vertexcodec.cpp
     vendor/meshoptimizer/indexcodec.cpp
     vendor/meshoptimizer/vertexfilter.cpp
-    vendor/meshoptimizer/allocator.cpp)
+    vendor/meshoptimizer/allocator.cpp
+    vendor/meshoptimizer/indexgenerator.cpp
+    vendor/meshoptimizer/simplifier.cpp)
 target_compile_features(oe_native PRIVATE cxx_std_17)
 target_link_libraries(oe_native PRIVATE GLESv3 log android)

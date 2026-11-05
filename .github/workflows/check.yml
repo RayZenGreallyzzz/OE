@@ -28,3 +28,12 @@ jobs:
             android/src/main/cpp/vendor/meshoptimizer/allocator.cpp \
             -o /tmp/oe-meshopt-test
           /tmp/oe-meshopt-test
+      - name: Static GLB LOD simplification smoke
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra \
+            tests/meshopt_lod_smoke.cpp \
+            android/src/main/cpp/vendor/meshoptimizer/indexgenerator.cpp \
+            android/src/main/cpp/vendor/meshoptimizer/simplifier.cpp \
+            android/src/main/cpp/vendor/meshoptimizer/allocator.cpp \
+            -o /tmp/oe-lod-test
+          /tmp/oe-lod-test

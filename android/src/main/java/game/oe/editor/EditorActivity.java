@@ -167,7 +167,7 @@ public class EditorActivity extends Activity {
         top.setOrientation(LinearLayout.VERTICAL);
 
         TextView title = new TextView(this);
-        title.setText("OE  /  ORVETRA ENGINE     •     NATIVE ANDROID 0.6.4 · WORLD TOOLS TEST");
+        title.setText("OE  /  ORVETRA ENGINE     •     NATIVE ANDROID 0.6.5 · ASSET PIPELINE TEST");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         title.setTextSize(13);

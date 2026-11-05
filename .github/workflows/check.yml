@@ -1,7 +1,7 @@
 name: OE smoke tests
 on:
   push:
-    branches: [main]
+    branches: [main, test/advanced-assets-065]
   pull_request:
 jobs:
   syntax-and-scenes:
@@ -14,3 +14,17 @@ jobs:
       - run: node --check src/engine.js
       - run: node --check src/editor.js
       - run: node --test tests/engine.test.cjs
+  meshopt-codec:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile offline Meshopt encoder/decoder smoke test
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra \
+            tests/meshopt_codec_smoke.cpp \
+            android/src/main/cpp/vendor/meshoptimizer/vertexcodec.cpp \
+            android/src/main/cpp/vendor/meshoptimizer/indexcodec.cpp \
+            android/src/main/cpp/vendor/meshoptimizer/vertexfilter.cpp \
+            android/src/main/cpp/vendor/meshoptimizer/allocator.cpp \
+            -o /tmp/oe-meshopt-test
+          /tmp/oe-meshopt-test

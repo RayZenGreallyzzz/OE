@@ -610,10 +610,11 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativePan(JNIEnv*,jcla
  const float c=std::cos(gYaw),s=std::sin(gYaw);
  gTarget.x=clampf(gTarget.x+(-dx*c+dy*s)*speed,-worldHalf()+4,worldHalf()-4);
  gTarget.z=clampf(gTarget.z+(dx*s+dy*c)*speed,-worldHalf()+4,worldHalf()-4);
+ gTarget.y=terrainHeightAt(gTarget.x,gTarget.z)+1.2f;
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeFocusLocation(JNIEnv*,jclass,jint index){
  if(index<0 || index>=static_cast<jint>(sizeof(LOCATIONS)/sizeof(LOCATIONS[0])))return;
- gTarget={LOCATIONS[index].x,1.2f,LOCATIONS[index].z};
+ gTarget={LOCATIONS[index].x,terrainHeightAt(LOCATIONS[index].x,LOCATIONS[index].z)+1.2f,LOCATIONS[index].z};
  gDistance=index==0?35.f:68.f;
 }
 JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeRenderStats(JNIEnv*env,jclass){
@@ -636,7 +637,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeSetWorldSize
 }
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeJumpTo(JNIEnv*,jclass,jfloat x,jfloat z){
  if(!std::isfinite(x)||!std::isfinite(z)||std::abs(x)>worldHalf()-4.f||std::abs(z)>worldHalf()-4.f)return JNI_FALSE;
- gTarget={x,1.2f,z};
+ gTarget={x,terrainHeightAt(x,z)+1.2f,z};
  return JNI_TRUE;
 }
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePick(JNIEnv*,jclass,jfloat x,jfloat y){
@@ -716,6 +717,33 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeNudge(JNIEnv*,jc
   if(nx==e->x&&nz==e->z)return;
   recordEdit();e->x=nx;e->z=nz;
  }
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeChangeSelectedHeight(JNIEnv*,jclass,jfloat dy){
+ if(!std::isfinite(dy)||dy==0)return;
+ if(Entity*e=selected()){
+  const float y=clampf(e->y+dy,-24.f,160.f);
+  if(y==e->y)return;
+  recordEdit();e->y=y;
+ }
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeSnapSelectedToGround(JNIEnv*,jclass){
+ if(Entity*e=selected()){
+  const float y=terrainHeightAt(e->x,e->z);
+  if(y!=e->y){recordEdit();e->y=y;}
+ }
+}
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeApplyTerrainBrushAtScreen(
+ JNIEnv*,jclass,jfloat px,jfloat py,jfloat radius,jfloat amount){
+ float x,z;
+ if(!groundPoint(px,py,x,z)||!std::isfinite(radius)||!std::isfinite(amount)||
+    radius<16.f||radius>256.f||std::abs(amount)>60.f||std::abs(amount)<.001f||
+    gBrushes.size()>=MAX_TERRAIN_BRUSHES)return 0;
+ recordEdit();gBrushes.push_back({x,z,radius,amount});gTerrainRevision++;
+ gTarget.y=terrainHeightAt(gTarget.x,gTarget.z)+1.2f;
+ return static_cast<jint>(gBrushes.size());
+}
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeTerrainBrushCount(JNIEnv*,jclass){
+ return static_cast<jint>(gBrushes.size());
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeRotate(JNIEnv*,jclass,jfloat deg){
  if(!std::isfinite(deg)||deg==0)return;
@@ -842,30 +870,49 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsse
 }
 // Replace a scene only if EVERY model and entity is valid. No scene mutation
 // occurs until all checks finish: failed imports cannot erase the open world.
+// Validate everything before atomic swap on the GLES thread.
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene(
  JNIEnv*env,jclass,jint size,jboolean demo,jintArray kinds,jfloatArray transforms,
- jobjectArray modelKeys){
- if(!allowedWorldSize(size)||!kinds||!transforms||!modelKeys)return JNI_FALSE;
+ jobjectArray modelKeys,jfloatArray terrainData){
+ if(!allowedWorldSize(size)||!kinds||!transforms||!modelKeys||!terrainData)return JNI_FALSE;
  const jsize n=env->GetArrayLength(kinds);
- if(n<0||n>MAX_ENTITIES||env->GetArrayLength(transforms)!=n*4||
+ if(n<0||n>MAX_ENTITIES||env->GetArrayLength(transforms)!=n*5||
     env->GetArrayLength(modelKeys)!=n)return JNI_FALSE;
+ const jsize brushFloats=env->GetArrayLength(terrainData);
+ if(brushFloats<0||brushFloats%4!=0||
+    brushFloats>static_cast<jsize>(MAX_TERRAIN_BRUSHES*4))return JNI_FALSE;
  std::array<jint,MAX_ENTITIES> types{};
- std::array<jfloat,MAX_ENTITIES*4> matrix{};
+ std::array<jfloat,MAX_ENTITIES*5> matrix{};
  if(n){
   env->GetIntArrayRegion(kinds,0,n,types.data());
-  env->GetFloatArrayRegion(transforms,0,n*4,matrix.data());
+  env->GetFloatArrayRegion(transforms,0,n*5,matrix.data());
   if(env->ExceptionCheck())return JNI_FALSE;
+ }
+ std::array<jfloat,MAX_TERRAIN_BRUSHES*4> brushRaw{};
+ if(brushFloats){
+  env->GetFloatArrayRegion(terrainData,0,brushFloats,brushRaw.data());
+  if(env->ExceptionCheck())return JNI_FALSE;
+ }
+ const float half=static_cast<float>(size)*.5f;
+ std::vector<TerrainBrush> stagedBrushes;
+ stagedBrushes.reserve(static_cast<size_t>(brushFloats/4));
+ for(jsize i=0;i<brushFloats;i+=4){
+  const float x=brushRaw[i],z=brushRaw[i+1],radius=brushRaw[i+2],strength=brushRaw[i+3];
+  if(!std::isfinite(x)||!std::isfinite(z)||!std::isfinite(radius)||!std::isfinite(strength)||
+     std::abs(x)>half||std::abs(z)>half||radius<16.f||radius>256.f||
+     std::abs(strength)<.001f||std::abs(strength)>60.f)return JNI_FALSE;
+  stagedBrushes.push_back({x,z,radius,strength});
  }
  std::vector<Entity> staged;
  staged.reserve(static_cast<size_t>(n));
- const float half=static_cast<float>(size)*.5f;
  for(jsize i=0;i<n;i++){
   const int type=types[i];
-  const float x=matrix[i*4],z=matrix[i*4+1],yaw=matrix[i*4+2],scale=matrix[i*4+3];
+  const float x=matrix[i*5],z=matrix[i*5+1],yaw=matrix[i*5+2],
+              scl=matrix[i*5+3],y=matrix[i*5+4];
   if(type<0||type>9||!std::isfinite(x)||!std::isfinite(z)||
-    !std::isfinite(yaw)||!std::isfinite(scale)||
+    !std::isfinite(yaw)||!std::isfinite(scl)||!std::isfinite(y)||
     std::abs(x)>half||std::abs(z)>half||std::abs(yaw)>36000||
-    scale<.2f||scale>8.f)return JNI_FALSE;
+    scl<.2f||scl>8.f||y<-24.f||y>160.f)return JNI_FALSE;
   std::string key;
   if(type==6){
    jstring rawKey=static_cast<jstring>(env->GetObjectArrayElement(modelKeys,i));
@@ -878,14 +925,14 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
    auto asset=gAssets.find(key);
    if(asset==gAssets.end()||asset->second.gpu.count<=0)return JNI_FALSE;
   }
-  staged.push_back({static_cast<int>(i)+1,type,x,z,yaw,scale,key});
+  staged.push_back({static_cast<int>(i)+1,type,x,z,yaw,scl,key,y});
  }
- gEntities.swap(staged);
+ // Commit: no validation or allocation failures below this point.
+ gEntities.swap(staged);gBrushes.swap(stagedBrushes);gTerrainRevision++;
  gWorldSize=size;gDemoRoads=demo==JNI_TRUE;
  gNextId=static_cast<int>(n)+1;gSelected=0;
- gTarget={0,1.2f,1.3f};gDistance=28.f;
- gSceneInitialized=true;
- gUndo.clear();gRedo.clear();
+ gTarget={0,terrainHeightAt(0,1.3f)+1.2f,1.3f};gDistance=28.f;
+ gSceneInitialized=true;gUndo.clear();gRedo.clear();
  return JNI_TRUE;
 }
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeAddImportedPlaced(JNIEnv*env,jclass,jstring key,jfloat x,jfloat z,jfloat yaw,jfloat size){

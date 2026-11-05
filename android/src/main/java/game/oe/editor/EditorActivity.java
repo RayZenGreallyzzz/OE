@@ -916,6 +916,8 @@ public class EditorActivity extends Activity {
     private final class EditorSurface extends GLSurfaceView {
         private float lastX, lastY, downX, downY, lastPinch, lastMidX, lastMidY;
         private boolean multiTouch = false;
+        private volatile int touchedGizmoAxis=-1;
+        private boolean gizmoEditStarted=false; // GL thread only.
         // The SurfaceView is full-size; only the underlying GLES buffer is reduced.
         private static final float RENDER_SCALE=.75f;
         private volatile int renderPixelWidth=1,renderPixelHeight=1;
@@ -974,10 +976,19 @@ public class EditorActivity extends Activity {
             int action=e.getActionMasked();
             if(action==MotionEvent.ACTION_DOWN) {
                 downX=lastX=e.getX();downY=lastY=e.getY();multiTouch=false;lastPinch=0;
+                touchedGizmoAxis=-1;
+                final float px=surfaceX(downX),py=surfaceY(downY);
+                queueEvent(() -> {
+                    nativeGizmoEnd();gizmoEditStarted=false;
+                    if(placingKind==-1&&terrainMode==0)
+                        touchedGizmoAxis=nativeGizmoHit(px,py);
+                });
                 return true;
             }
             if(action==MotionEvent.ACTION_POINTER_DOWN) {
                 multiTouch=true;
+                touchedGizmoAxis=-1;
+                queueEvent(()->{nativeGizmoEnd();gizmoEditStarted=false;});
                 if(e.getPointerCount()>=2){
                     lastPinch=pinch(e);
                     lastMidX=(e.getX(0)+e.getX(1))*.5f;
@@ -998,13 +1009,33 @@ public class EditorActivity extends Activity {
                 } else if(!multiTouch) {
                     float x=e.getX(),y=e.getY();
                     final float dx=x-lastX,dy=y-lastY;
-                    if(dx!=0||dy!=0)queueEvent(() -> {nativeOrbit(dx,dy,1);interactiveRender();});
+                    final int axis=touchedGizmoAxis;
+                    if(dx!=0||dy!=0){
+                        if(axis>=0&&placingKind==-1&&terrainMode==0){
+                            // A single history snapshot for the full gesture.
+                            // Incremental edits are performed on the GL thread.
+                            final float sx=surfaceX(dx),sy=surfaceY(dy);
+                            queueEvent(()->{
+                                if(!gizmoEditStarted)gizmoEditStarted=nativeGizmoBegin(axis);
+                                if(gizmoEditStarted)nativeGizmoDrag(axis,sx,sy);
+                                interactiveRender();
+                            });
+                        }else queueEvent(()->{nativeOrbit(dx,dy,1);interactiveRender();});
+                    }
                     lastX=x;lastY=y;
                 }
                 return true;
             }
             if(action==MotionEvent.ACTION_POINTER_UP) {multiTouch=true;lastPinch=0;return true;}
             if(action==MotionEvent.ACTION_UP) {
+                if(!multiTouch&&touchedGizmoAxis>=0){
+                    touchedGizmoAxis=-1;
+                    queueEvent(()->{
+                        nativeGizmoEnd();gizmoEditStarted=false;
+                        requestRender();refreshSelected();
+                    });
+                    return true;
+                }
                 if(!multiTouch && Math.hypot(e.getX()-downX,e.getY()-downY)<dp(8)) {
                     final float x=surfaceX(e.getX()),y=surfaceY(e.getY());
                     final int kind=placingKind;
@@ -1038,10 +1069,15 @@ public class EditorActivity extends Activity {
                 } else {
                     queueEvent(this::requestRender);
                 }
-                multiTouch=false;
+                multiTouch=false;touchedGizmoAxis=-1;
+                queueEvent(()->{nativeGizmoEnd();gizmoEditStarted=false;});
                 return true;
             }
-            if(action==MotionEvent.ACTION_CANCEL) {multiTouch=false;return true;}
+            if(action==MotionEvent.ACTION_CANCEL) {
+                multiTouch=false;touchedGizmoAxis=-1;
+                queueEvent(()->{nativeGizmoEnd();gizmoEditStarted=false;});
+                return true;
+            }
             return true;
         }
     }

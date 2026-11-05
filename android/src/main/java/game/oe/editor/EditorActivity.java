@@ -36,6 +36,7 @@ import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -79,7 +80,11 @@ public class EditorActivity extends Activity {
     private static native boolean nativeCanRegisterMore(int newUniqueAssets);
     private static native void nativeDiscardUnusedAsset(String key);
     private static native boolean nativeReplaceScene(int size, boolean demoRoads,
-            int[] kinds, float[] transforms, String[] modelKeys, float[] terrain);
+            int[] kinds, float[] transforms, String[] modelKeys, float[] terrain,
+            String[] objectPaintKeys, float[] painting, String[] terrainPaintKeys);
+    private static native boolean nativeRegisterPaintTexture(String key, byte[] rgba,int width,int height);
+    private static native boolean nativePaintSelected(String key);
+    private static native int nativePaintTerrainAtScreen(float x,float y,float radius,String key);
     private static native void nativeChangeSelectedHeight(float dy);
     private static native void nativeScaleSelectedAxis(int axis,float factor);
     private static native void nativeSnapSelectedToGround();
@@ -91,7 +96,7 @@ public class EditorActivity extends Activity {
     private static native void nativeGizmoDrag(int axis,float dx,float dy);
     private static native void nativeGizmoEnd();
     private static native int nativeAddImportedPlaced(String key, float x, float z, float yaw, float size);
-    private static final int PICK_GLB = 702, PICK_PROJECT=703, SAVE_PROJECT=704;
+    private static final int PICK_GLB = 702, PICK_PROJECT=703, SAVE_PROJECT=704, PICK_PAINT=705;
     private static final int MAX_ASSETS = 12;
 
     private EditorSurface surface;
@@ -101,6 +106,9 @@ public class EditorActivity extends Activity {
     private LinearLayout toolDrawer, paletteItems, inspectorPanel, advancedInspector;
     private boolean drawerOpen=false;
     private volatile int gizmoMode=0;
+    private volatile String activePaintKey="";
+    private volatile boolean paintTerrainMode=false;
+    private volatile float paintRadius=16f;
     private volatile long statsUpdatedAt=0;
     private volatile boolean importing = false;
     private volatile int placingKind = -1;
@@ -325,7 +333,7 @@ public class EditorActivity extends Activity {
         Button b=button(label,()->{
             action.run();
             // Start placing directly on the exposed 3D world.
-            if(placingKind>=0||terrainMode!=0)toggleDrawer(false);
+            if(placingKind>=0||terrainMode!=0||paintTerrainMode)toggleDrawer(false);
         });
         LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,dp(43));
         p.setMargins(dp(4),dp(2),dp(4),dp(2));
@@ -359,13 +367,20 @@ public class EditorActivity extends Activity {
             addPaletteOption("📐 Радиус и сила кисти",this::chooseTerrainBrush);
             addPaletteOption("✕ Завершить изменение",this::cancelPlace);
         }else if("Текстуры".equals(category)){
-            addPaletteOption("Импорт GLB с текстурами",this::pickGlb);
-            addPaletteOption("Качество 1024 / 2048 px",this::chooseTextureLimit);
+            addPaletteOption("🖼 Загрузить свой PNG / JPG",this::pickPaintTexture);
+            addPaletteOption("🎨 Мои текстуры",this::choosePaintTexture);
+            addPaletteOption("🧱 Нанести на выбранную деталь",this::applyPaintToSelected);
+            addPaletteOption("🧽 Очистить текстуру детали",()->edit(()->nativePaintSelected("")));
+            addPaletteOption("🖌 Покрасить землю",this::activateTerrainPainting);
+            addPaletteOption("📏 Радиус кисти земли",this::choosePaintRadius);
+            addPaletteOption("✕ Завершить покраску",this::cancelPlace);
+            addPaletteOption("Импорт GLB с материалами",this::pickGlb);
+            addPaletteOption("Качество GLB 1024 / 2048 px",this::chooseTextureLimit);
             addPaletteOption("Форматы и ограничения",()->new AlertDialog.Builder(this)
                 .setTitle("Текстуры OE")
-                .setMessage("Сейчас работают встроенные в GLB PNG/JPG и GPU-готовые ETC2/сырой RGBA8 KTX2. "
-                    +"Нанесение отдельного PNG на стену и покраска земли кистью пока не готовы. "
-                    +"BasisU и Draco ещё не подключены.")
+                .setMessage("Можно загружать PNG/JPG до 1024px и наносить на объекты или землю. "
+                    +"В GLB читаются встроенные изображения и готовые KTX2 ETC2/RGBA8. "
+                    +"Draco и BasisU/KTX2 с транскодированием пока не поддерживаются.")
                 .setPositiveButton("Понятно",null).show());
         }else if("Проект".equals(category)){
             addPaletteOption("💾 Сохранить локально",this::saveScene);
@@ -390,13 +405,14 @@ public class EditorActivity extends Activity {
     }
     private void enterPlaceMode(int kind, String asset) {
         if(importing) { message("Сначала дождись завершения импорта"); return; }
-        terrainMode=0;
+        terrainMode=0;paintTerrainMode=false;
         placingKind = kind;
         placingGlb = asset;
         statusText.setText("РАЗМЕЩЕНИЕ: коснись свободной земли, чтобы поставить объект. Для отмены нажми «Отмена».");
         message("Коснись места на карте для размещения");
     }
     private void cancelPlace() {
+        paintTerrainMode=false;
         terrainMode=0;
         placingKind = -1;
         placingGlb = null;
@@ -405,7 +421,7 @@ public class EditorActivity extends Activity {
     }
     private void enterTerrainMode(int direction){
         if(importing){message("Дождись завершения операции");return;}
-        placingKind=-1;placingGlb=null;
+        placingKind=-1;placingGlb=null;paintTerrainMode=false;
         terrainMode=direction;
         statusText.setText(direction>0?
             "ГОРА: коснись земли. Кисть радиус "+(int)terrainRadius+" м, высота +"+(int)terrainStrength+" м. Отмена ↶ работает.":
@@ -611,7 +627,7 @@ public class EditorActivity extends Activity {
                 try{
                     try(OutputStream stream=getContentResolver().openOutputStream(uri,"w")){
                         if(stream==null)throw new Exception("Нет доступа к файлу");
-                        ProjectArchive.exportProject(scene,modelDir(),stream);
+                        ProjectArchive.exportProject(scene,modelDir(),textureDir(),stream);
                     }
                     message("Проект экспортирован со всеми используемыми GLB");
                 }catch(Exception e){
@@ -633,7 +649,8 @@ public class EditorActivity extends Activity {
                 }
                 surface.queueEvent(() -> {
                     final HashSet<String> cached=new HashSet<>(Arrays.asList(nativeLoadedAssetKeys()));
-                    new Thread(() -> readAndPrepareScene(cached,staged.sceneFile,staged.modelDir,staged.root),
+                    new Thread(() -> readAndPrepareScene(cached,staged.sceneFile,staged.modelDir,
+                    staged.textureDir,staged.root),
                         "oe-project-validate").start();
                 });
             }catch(Exception e){
@@ -657,6 +674,11 @@ public class EditorActivity extends Activity {
     }
     @Override protected void onActivityResult(int requestCode,int resultCode,Intent intent) {
         super.onActivityResult(requestCode,resultCode,intent);
+        if(requestCode==PICK_PAINT){
+            if(resultCode==RESULT_OK&&intent!=null&&intent.getData()!=null)
+                importPaintTexture(intent.getData());
+            return;
+        }
         if(requestCode==SAVE_PROJECT||requestCode==PICK_PROJECT){
             if(resultCode==RESULT_OK&&intent!=null&&intent.getData()!=null){
                 if(requestCode==SAVE_PROJECT)exportToUri(intent.getData());
@@ -734,11 +756,11 @@ public class EditorActivity extends Activity {
         // thread can skip expensive decode work for those immutable GLBs.
         surface.queueEvent(() -> {
             final HashSet<String> cached=new HashSet<>(Arrays.asList(nativeLoadedAssetKeys()));
-            new Thread(() -> readAndPrepareScene(cached,null,null,null),"oe-scene-load").start();
+            new Thread(() -> readAndPrepareScene(cached,null,null,null,null),"oe-scene-load").start();
         });
     }
     private void readAndPrepareScene(HashSet<String> cached,File sourceScene,
-            File sourceModels,File stagingRoot) {
+            File sourceModels,File sourceTextures,File stagingRoot) {
         try {
             File file=sourceScene==null?saveFile():sourceScene;
             ByteArrayOutputStream jsonBytes=new ByteArrayOutputStream();

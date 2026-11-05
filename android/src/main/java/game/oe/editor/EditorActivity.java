@@ -601,6 +601,151 @@ public class EditorActivity extends Activity {
             return out.toByteArray();
         }
     }
+    private File textureDir() throws Exception {
+        File folder=new File(getFilesDir(),"textures");
+        if(!folder.exists()&&!folder.mkdirs())throw new Exception("Не создать папку текстур");
+        return folder;
+    }
+    private static String textureType(byte[] data) throws Exception {
+        if(data.length>=8&&(data[0]&255)==137&&data[1]==80&&data[2]==78&&data[3]==71)
+            return "image/png";
+        if(data.length>=4&&(data[0]&255)==255&&(data[1]&255)==216)
+            return "image/jpeg";
+        throw new Exception("Выбери настоящую PNG/JPG текстуру");
+    }
+    private static String textureKey(byte[] bytes,String mime) throws Exception {
+        byte[] sha=MessageDigest.getInstance("SHA-256").digest(bytes);
+        StringBuilder out=new StringBuilder("tx_");
+        final char[] alphabet="0123456789abcdef".toCharArray();
+        for(int i=0;i<12;i++){
+            out.append(alphabet[(sha[i]>>>4)&15]);
+            out.append(alphabet[sha[i]&15]);
+        }
+        return out.append("image/png".equals(mime)?".png":".jpg").toString();
+    }
+    private static boolean validTexture(String key){
+        return key!=null&&key.matches("tx_[0-9a-f]{24}\\.(png|jpg)");
+    }
+    private byte[] limitedTextureRead(InputStream stream) throws Exception {
+        try(InputStream in=stream;ByteArrayOutputStream out=new ByteArrayOutputStream()){
+            if(in==null)throw new Exception("Нельзя открыть изображение");
+            byte[] buffer=new byte[8192];int n;
+            while((n=in.read(buffer))!=-1){
+                if(out.size()+n>ProjectArchive.MAX_TEXTURE_BYTES)
+                    throw new Exception("Максимум 8 МБ на текстуру");
+                out.write(buffer,0,n);
+            }
+            return out.toByteArray();
+        }
+    }
+    private void pickPaintTexture(){
+        if(importing){message("Дождись загрузки");return;}
+        Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("image/*");
+        try{startActivityForResult(intent,PICK_PAINT);}
+        catch(Exception e){message("Не открыть галерею: "+e.getMessage());}
+    }
+    private void importPaintTexture(Uri uri){
+        if(importing)return;
+        importing=true;
+        new Thread(()->{
+            try{
+                byte[] original=limitedTextureRead(getContentResolver().openInputStream(uri));
+                String mime=textureType(original);
+                String key=textureKey(original,mime);
+                TextureReader.Image image=TextureReader.decode(original,mime,1024);
+                File destination=new File(textureDir(),key);
+                if(!destination.exists()){
+                    File partial=new File(textureDir(),key+".part");
+                    try{
+                        Files.write(partial.toPath(),original);
+                        Files.move(partial.toPath(),destination.toPath(),
+                            StandardCopyOption.REPLACE_EXISTING);
+                    }finally{Files.deleteIfExists(partial.toPath());}
+                }else{
+                    byte[] previous=Files.readAllBytes(destination.toPath());
+                    if(!textureKey(previous,textureType(previous)).equals(key))
+                        throw new Exception("Файл текстуры повреждён: "+key);
+                }
+                surface.queueEvent(()->{
+                    boolean ok=nativeRegisterPaintTexture(key,image.bytes,image.width,image.height);
+                    importing=false;
+                    if(ok){
+                        activePaintKey=key;
+                        message("Текстура добавлена · теперь нанеси её на деталь или землю");
+                        surface.requestRender();
+                    }else message("Лимит текстур/памяти GPU. Максимум 8 изображений.");
+                });
+            }catch(Exception err){
+                importing=false;message("Текстура не добавлена: "+err.getMessage());
+            }
+        },"oe-paint-image-import").start();
+    }
+    private void usePaintTexture(String key){
+        if(importing)return;
+        importing=true;
+        new Thread(()->{
+            try{
+                if(!validTexture(key))throw new Exception("Недопустимое имя");
+                File file=new File(textureDir(),key);
+                if(!file.isFile()||file.length()>ProjectArchive.MAX_TEXTURE_BYTES)
+                    throw new Exception("Текстура не найдена");
+                byte[] source=Files.readAllBytes(file.toPath());
+                String mime=textureType(source);
+                if(!key.equals(textureKey(source,mime)))
+                    throw new Exception("Контрольная сумма не совпадает");
+                TextureReader.Image image=TextureReader.decode(source,mime,1024);
+                surface.queueEvent(()->{
+                    boolean ok=nativeRegisterPaintTexture(key,image.bytes,image.width,image.height);
+                    importing=false;
+                    if(ok){activePaintKey=key;message("Выбрана текстура: "+key);}
+                    else message("Не удалось загрузить текстуру в GPU");
+                });
+            }catch(Exception e){importing=false;message("Не открыть текстуру: "+e.getMessage());}
+        },"oe-load-paint").start();
+    }
+    private void choosePaintTexture(){
+        try{
+            File[] files=textureDir().listFiles((dir,name)->validTexture(name));
+            if(files==null||files.length==0){
+                message("Сначала импортируй PNG/JPG");return;
+            }
+            java.util.Arrays.sort(files,(a,b)->a.getName().compareTo(b.getName()));
+            String[] names=new String[files.length];
+            for(int i=0;i<files.length;i++)
+                names[i]="🎨 "+files[i].getName().substring(3,15);
+            new AlertDialog.Builder(this).setTitle("Мои текстуры")
+                .setItems(names,(dialog,which)->usePaintTexture(files[which].getName()))
+                .setNegativeButton("Отмена",null).show();
+        }catch(Exception e){message("Библиотека текстур: "+e.getMessage());}
+    }
+    private void applyPaintToSelected(){
+        String key=activePaintKey;
+        if(key.isEmpty()){message("Сначала выбери PNG/JPG в каталоге");return;}
+        edit(()->{
+            if(nativePaintSelected(key))message("Текстура нанесена на выбранную деталь");
+            else message("Выбери объект или загрузить текстуру повторно");
+        });
+    }
+    private void activateTerrainPainting(){
+        if(activePaintKey.isEmpty()){
+            message("Сначала загрузи и выбери PNG/JPG");return;
+        }
+        terrainMode=0;placingKind=-1;placingGlb=null;
+        paintTerrainMode=true;
+        statusText.setText("КИСТЬ ТЕКСТУР: касайся земли · радиус "+(int)paintRadius+
+            "м · до 48 мазков · ↶ отменить");
+    }
+    private void choosePaintRadius(){
+        final String[] labels={"Маленькая · 4м","8м","16м","32м","64м"};
+        final float[] values={4,8,16,32,64};
+        new AlertDialog.Builder(this).setTitle("Размер кисти текстуры")
+            .setItems(labels,(dialog,n)->{
+                paintRadius=values[n];
+                message("Радиус кисти: "+(int)paintRadius+"м");
+            }).show();
+    }
     private void exportProject(){
         if(importing){message("Дождись завершения операции");return;}
         Intent intent=new Intent(Intent.ACTION_CREATE_DOCUMENT);

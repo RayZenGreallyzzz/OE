@@ -576,9 +576,13 @@ bool groundPoint(float px,float py,float &x,float &z){
  return false;
 }
 bool blocked(float x,float z,int type){
- const float radius=(type==0||type==1||type==2||type==6)?6.3f:1.5f;
+ // Modular walls and floors are intended to join/overlap other pieces.
+ if(type>=10)return false;
+ const float radius=(type==0||type==1||type==2||type==6)?6.3f:(type>=7?.42f:1.5f);
  for(const Entity&e:gEntities){
-  float er=(e.type==0||e.type==1||e.type==2||e.type==6)?6.3f*e.size:1.5f*e.size;
+  if(e.type>=10)continue;
+  float er=(e.type==0||e.type==1||e.type==2||e.type==6)?
+      6.3f*e.size:(e.type>=7?.42f:1.5f)*e.size*std::max(e.sx,e.sz);
   float dx=e.x-x,dz=e.z-z;
   if(dx*dx+dz*dz<(radius+er)*(radius+er))return true;
  }
@@ -822,7 +826,8 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeScale(JNIEnv*,jc
 JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSelectedInfo(JNIEnv*env,jclass){
  Entity*e=selected();if(!e)return env->NewStringUTF("Выбери здание касанием или через список «Объекты»");
  std::ostringstream out;out<<nameFor(e->type)<<" #" <<e->id<<"  |  X "<<std::fixed<<std::setprecision(1)
- <<e->x<<"  Z "<<e->z<<"  Y "<<e->y<<"  ↻ "<<e->yaw<<"°  Размер "<<e->size;
+ <<e->x<<"  Z "<<e->z<<"  Y "<<e->y<<"  ↻ "<<e->yaw<<"°  Размер "<<e->size
+ << " XYZ "<<e->sx<<"/"<<e->sy<<"/"<<e->sz;
  return env->NewStringUTF(out.str().c_str());
 }
 JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSceneSnapshot(JNIEnv*env,jclass){
@@ -938,16 +943,16 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  jobjectArray modelKeys,jfloatArray terrainData){
  if(!allowedWorldSize(size)||!kinds||!transforms||!modelKeys||!terrainData)return JNI_FALSE;
  const jsize n=env->GetArrayLength(kinds);
- if(n<0||n>MAX_ENTITIES||env->GetArrayLength(transforms)!=n*5||
+ if(n<0||n>MAX_ENTITIES||env->GetArrayLength(transforms)!=n*8||
     env->GetArrayLength(modelKeys)!=n)return JNI_FALSE;
  const jsize brushFloats=env->GetArrayLength(terrainData);
  if(brushFloats<0||brushFloats%4!=0||
     brushFloats>static_cast<jsize>(MAX_TERRAIN_BRUSHES*4))return JNI_FALSE;
  std::array<jint,MAX_ENTITIES> types{};
- std::array<jfloat,MAX_ENTITIES*5> matrix{};
+ std::array<jfloat,MAX_ENTITIES*8> matrix{};
  if(n){
   env->GetIntArrayRegion(kinds,0,n,types.data());
-  env->GetFloatArrayRegion(transforms,0,n*5,matrix.data());
+  env->GetFloatArrayRegion(transforms,0,n*8,matrix.data());
   if(env->ExceptionCheck())return JNI_FALSE;
  }
  std::array<jfloat,MAX_TERRAIN_BRUSHES*4> brushRaw{};
@@ -969,12 +974,15 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  staged.reserve(static_cast<size_t>(n));
  for(jsize i=0;i<n;i++){
   const int type=types[i];
-  const float x=matrix[i*5],z=matrix[i*5+1],yaw=matrix[i*5+2],
-              scl=matrix[i*5+3],y=matrix[i*5+4];
-  if(type<0||type>9||!std::isfinite(x)||!std::isfinite(z)||
+  const float x=matrix[i*8],z=matrix[i*8+1],yaw=matrix[i*8+2],
+              scl=matrix[i*8+3],y=matrix[i*8+4],
+              sx=matrix[i*8+5],sy=matrix[i*8+6],sz=matrix[i*8+7];
+  if(type<0||type>16||!std::isfinite(x)||!std::isfinite(z)||
     !std::isfinite(yaw)||!std::isfinite(scl)||!std::isfinite(y)||
+    !std::isfinite(sx)||!std::isfinite(sy)||!std::isfinite(sz)||
     std::abs(x)>half||std::abs(z)>half||std::abs(yaw)>36000||
-    scl<.2f||scl>8.f||y<-24.f||y>160.f)return JNI_FALSE;
+    scl<.2f||scl>8.f||y<-24.f||y>160.f||
+    sx<.10f||sx>8.f||sy<.10f||sy>8.f||sz<.10f||sz>8.f)return JNI_FALSE;
   std::string key;
   if(type==6){
    jstring rawKey=static_cast<jstring>(env->GetObjectArrayElement(modelKeys,i));
@@ -987,7 +995,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
    auto asset=gAssets.find(key);
    if(asset==gAssets.end()||asset->second.gpu.count<=0)return JNI_FALSE;
   }
-  staged.push_back({static_cast<int>(i)+1,type,x,z,yaw,scl,key,y});
+  staged.push_back({static_cast<int>(i)+1,type,x,z,yaw,scl,key,y,sx,sy,sz});
  }
  // Commit: no validation or allocation failures below this point.
  gEntities.swap(staged);gBrushes.swap(stagedBrushes);gTerrainRevision++;

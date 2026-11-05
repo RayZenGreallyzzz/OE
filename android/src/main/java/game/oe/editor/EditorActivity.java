@@ -80,6 +80,7 @@ public class EditorActivity extends Activity {
     private static native boolean nativeReplaceScene(int size, boolean demoRoads,
             int[] kinds, float[] transforms, String[] modelKeys, float[] terrain);
     private static native void nativeChangeSelectedHeight(float dy);
+    private static native void nativeScaleSelectedAxis(int axis,float factor);
     private static native void nativeSnapSelectedToGround();
     private static native int nativeApplyTerrainBrushAtScreen(float x,float y,float radius,float amount);
     private static native int nativeTerrainBrushCount();
@@ -185,6 +186,13 @@ public class EditorActivity extends Activity {
         addTool(tools, "+ Камни", () -> enterPlaceMode(7, null));
         addTool(tools, "+ Куст", () -> enterPlaceMode(8, null));
         addTool(tools, "+ Лавка", () -> enterPlaceMode(9, null));
+        addTool(tools, "▧ Стена", () -> enterPlaceMode(10, null));
+        addTool(tools, "▤ Пол", () -> enterPlaceMode(11, null));
+        addTool(tools, "⌂ Крыша", () -> enterPlaceMode(12, null));
+        addTool(tools, "▯ Дверная рама", () -> enterPlaceMode(13, null));
+        addTool(tools, "▣ Окно", () -> enterPlaceMode(14, null));
+        addTool(tools, "▥ Колонна", () -> enterPlaceMode(15, null));
+        addTool(tools, "↗ Лестница", () -> enterPlaceMode(16, null));
         addTool(tools, "⛰ Гора +", () -> enterTerrainMode(1));
         addTool(tools, "⛰ Рельеф −", () -> enterTerrainMode(-1));
         addTool(tools, "Кисть рельефа", this::chooseTerrainBrush);
@@ -237,6 +245,14 @@ public class EditorActivity extends Activity {
         addControl(detailRow,"К земле",() -> edit(EditorActivity::nativeSnapSelectedToGround));
         addControl(detailRow,"Точность",this::choosePrecision);
         inspector.addView(detailRow);
+        LinearLayout axisRow=row();
+        addControl(axisRow,"X− масштаб",() -> edit(() -> nativeScaleSelectedAxis(0,1f/scaleStep)));
+        addControl(axisRow,"X+ масштаб",() -> edit(() -> nativeScaleSelectedAxis(0,scaleStep)));
+        addControl(axisRow,"Y− масштаб",() -> edit(() -> nativeScaleSelectedAxis(1,1f/scaleStep)));
+        addControl(axisRow,"Y+ масштаб",() -> edit(() -> nativeScaleSelectedAxis(1,scaleStep)));
+        addControl(axisRow,"Z− масштаб",() -> edit(() -> nativeScaleSelectedAxis(2,1f/scaleStep)));
+        addControl(axisRow,"Z+ масштаб",() -> edit(() -> nativeScaleSelectedAxis(2,scaleStep)));
+        inspector.addView(axisRow);
 
         LinearLayout historyRow = row();
         addControl(historyRow, "↶ Отмена", this::undoAction);
@@ -579,7 +595,7 @@ public class EditorActivity extends Activity {
     }
     private static final class SavedEntity {
         int type;
-        float x,z,yaw,size,y;
+        float x,z,yaw,size,y,sx=1f,sy=1f,sz=1f;
         String asset;
     }
     private static boolean validAsset(String name) {
@@ -621,7 +637,7 @@ public class EditorActivity extends Activity {
             SavedEntity[] items=new SavedEntity[arr.length()];
             HashSet<String> assets=new HashSet<>();
             int[] kinds=new int[arr.length()];
-            float[] transforms=new float[arr.length()*5];
+            float[] transforms=new float[arr.length()*8];
             JSONArray brushJson=document.optJSONArray("terrain");
             int brushCount=brushJson==null?0:brushJson.length();
             if(brushCount>64)throw new Exception("Слишком много изменений рельефа");
@@ -648,12 +664,18 @@ public class EditorActivity extends Activity {
                 double x=object.getDouble("x"),z=object.getDouble("z");
                 double yaw=object.getDouble("yaw"),size=object.getDouble("size"),
                         y=object.optDouble("y",0.0);
-                if(e.type<0||e.type>9||!Double.isFinite(x)||!Double.isFinite(z)||
+                if(e.type<0||e.type>16||!Double.isFinite(x)||!Double.isFinite(z)||
                     !Double.isFinite(yaw)||!Double.isFinite(size)||!Double.isFinite(y)||
                     Math.abs(z)>worldSize/2.0||Math.abs(x)>worldSize/2.0||
                     Math.abs(yaw)>36000||size<.2||size>8||y<-24||y>160)
                     throw new Exception("Неверный объект "+i);
+                double sx=object.optDouble("sx",1.0),sy=object.optDouble("sy",1.0),
+                        sz=object.optDouble("sz",1.0);
+                if(!Double.isFinite(sx)||!Double.isFinite(sy)||!Double.isFinite(sz)||
+                   sx<.1||sx>8||sy<.1||sy>8||sz<.1||sz>8)
+                    throw new Exception("Неверный масштаб детали "+i);
                 e.x=(float)x;e.z=(float)z;e.yaw=(float)yaw;e.size=(float)size;e.y=(float)y;
+                e.sx=(float)sx;e.sy=(float)sy;e.sz=(float)sz;
                 if(e.type==6){
                     e.asset=object.getString("asset");
                     if(!validAsset(e.asset))throw new Exception("Неверная ссылка модели");
@@ -661,11 +683,14 @@ public class EditorActivity extends Activity {
                 }
                 items[i]=e;
                 kinds[i]=e.type;
-                transforms[i*5]=e.x;
-                transforms[i*5+1]=e.z;
-                transforms[i*5+2]=e.yaw;
-                transforms[i*5+3]=e.size;
-                transforms[i*5+4]=e.y;
+                transforms[i*8]=e.x;
+                transforms[i*8+1]=e.z;
+                transforms[i*8+2]=e.yaw;
+                transforms[i*8+3]=e.size;
+                transforms[i*8+4]=e.y;
+                transforms[i*8+5]=e.sx;
+                transforms[i*8+6]=e.sy;
+                transforms[i*8+7]=e.sz;
                 modelKeys[i]=e.asset;
             }
             if(assets.size()>MAX_ASSETS)throw new Exception("Слишком много разных GLB-моделей");

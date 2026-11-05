@@ -1,6 +1,7 @@
 package game.oe.editor;
 
 import android.app.Activity;
+import android.app.ActivityManager;
 import android.util.AtomicFile;
 import android.os.SystemClock;
 import android.app.AlertDialog;
@@ -49,6 +50,10 @@ public class EditorActivity extends Activity {
     private static native void nativeResize(int width, int height);
     private static native void nativeDraw();
     private static native String nativeRenderStats();
+    private static native int nativeRecommendQuality(int ramMiB);
+    private static native boolean nativeSetQualityProfile(int tier);
+    private static native float nativeQualityScale(int tier);
+    private static native String[] nativeGetGpuCapabilities();
     private static native void nativeOrbit(float dx, float dy, float zoom);
     private static native void nativePan(float dx, float dy);
     private static native void nativeFocusLocation(int index);
@@ -121,7 +126,18 @@ public class EditorActivity extends Activity {
     private volatile float terrainRadius=96f;
     private volatile float terrainStrength=20f;
     private volatile float moveStep=.001f,turnStep=5f,scaleStep=1.05f;
-    private volatile int textureLimit=1024; // Low-power default; applies to newly imported GLB.
+    private volatile int textureLimit=1024; // Applies to newly imported GLB only.
+    private volatile int deviceRamMiB=4096;
+    private volatile int qualityChoice=-1; // -1=conservative automatic recommendation
+    private volatile int qualityActive=1;
+    private volatile String[] gpuCapabilities=null;
+    private static final String[] QUALITY_MODES={
+        "Авто — с учётом RAM/GPU",
+        "Экономия — 55% рендер",
+        "Низкое — 70% рендер",
+        "Баланс — 85% рендер",
+        "Высокое — 100% рендер"
+    };
     private final int gold = Color.rgb(240, 192, 113);
     private final int text = Color.rgb(234, 228, 218);
 
@@ -178,6 +194,14 @@ public class EditorActivity extends Activity {
     }
     @Override public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        qualityChoice=getPreferences(MODE_PRIVATE).getInt("oe_quality_tier",-1);
+        if(qualityChoice<-1||qualityChoice>3)qualityChoice=-1;
+        ActivityManager manager=(ActivityManager)getSystemService(ACTIVITY_SERVICE);
+        if(manager!=null){
+            ActivityManager.MemoryInfo mem=new ActivityManager.MemoryInfo();
+            manager.getMemoryInfo(mem);
+            deviceRamMiB=(int)Math.max(256,Math.min(131072,mem.totalMem/(1024L*1024L)));
+        }
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         getWindow().setStatusBarColor(Color.rgb(14, 19, 27));
         getWindow().setNavigationBarColor(Color.rgb(14, 19, 27));
@@ -199,7 +223,7 @@ public class EditorActivity extends Activity {
         top.setPadding(dp(5),dp(2),dp(5),dp(2));
         top.setBackgroundColor(Color.argb(220,14,21,32));
         TextView title=new TextView(this);
-        title.setText("OE 0.6.10  /  ORVETRA ENGINE");
+        title.setText("OE 0.6.11  /  DEVICE QUALITY TEST");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
         title.setTextSize(12);
@@ -394,6 +418,8 @@ public class EditorActivity extends Activity {
                     +"Draco и BasisU/KTX2 с транскодированием пока не поддерживаются.")
                 .setPositiveButton("Понятно",null).show());
         }else if("Проект".equals(category)){
+            addPaletteOption("⚡ Графика и качество",this::chooseDeviceProfile);
+            addPaletteOption("🖥 Информация о GPU",this::showDeviceCapabilities);
             addPaletteOption("💾 Сохранить локально",this::saveScene);
             addPaletteOption("📂 Загрузить локально",this::loadScene);
             addPaletteOption("📦 Экспорт .oezip",this::exportProject);
@@ -438,6 +464,58 @@ public class EditorActivity extends Activity {
             "ГОРА: коснись земли. Кисть радиус "+(int)terrainRadius+" м, высота +"+(int)terrainStrength+" м. Отмена ↶ работает.":
             "ВПАДИНА: коснись земли. Кисть радиус "+(int)terrainRadius+" м, глубина −"+(int)terrainStrength+" м.");
         message("Коснись земли для деформации · максимум 64 мазка на карту");
+    }
+    private void selectDeviceQuality(int selected){
+        if(selected< -1||selected>3)return;
+        qualityChoice=selected;
+        getPreferences(MODE_PRIVATE).edit().putInt("oe_quality_tier",selected).apply();
+        if(surface==null)return;
+        surface.queueEvent(()->{
+            final int tier=selected<0?nativeRecommendQuality(deviceRamMiB):selected;
+            if(!nativeSetQualityProfile(tier))return;
+            qualityActive=tier;
+            textureLimit=tier==3?2048:1024;
+            final float scale=nativeQualityScale(tier);
+            ui(()->{
+                surface.applyRenderScale(scale);
+                if(statusText!=null)statusText.setText("Графика: "+
+                    QUALITY_MODES[tier+1]+(selected<0?" · автоподбор":" · вручную"));
+            });
+            surface.requestRender();
+        });
+    }
+    private void chooseDeviceProfile(){
+        if(importing){message("Заверши импорт проекта");return;}
+        new AlertDialog.Builder(this)
+            .setTitle("Качество графики OE")
+            .setSingleChoiceItems(QUALITY_MODES,qualityChoice+1,
+                (dialog,which)->{selectDeviceQuality(which-1);dialog.dismiss();})
+            .setNeutralButton("Видеочип",(dialog,which)->showDeviceCapabilities())
+            .setNegativeButton("Отмена",null).show();
+    }
+    private void showDeviceCapabilities(){
+        if(surface==null)return;
+        surface.queueEvent(()->{
+            final String[] caps=nativeGetGpuCapabilities();
+            gpuCapabilities=caps;
+            if(caps==null||caps.length<6){message("Данные GPU пока недоступны");return;}
+            final int recommended=nativeRecommendQuality(deviceRamMiB);
+            final String report="GPU: "+caps[1]+"\n"+
+                "Производитель: "+caps[0]+"\n"+
+                "OpenGL ES: "+caps[2]+"\n"+
+                "Макс. текстура: "+caps[3]+" px\n"+
+                "ASTC: "+("yes".equals(caps[4])?"поддерживается":"не обнаружен")+"\n"+
+                "Texture units: "+caps[5]+"\n"+
+                "ОЗУ: "+deviceRamMiB+" МиБ\n"+
+                "Рекомендация: "+QUALITY_MODES[recommended+1]+"\n\n"+
+                "Это проверка возможностей GPU, а не тест FPS. "+
+                "Реальную скорость и нагрев нужно измерять на устройстве.";
+            ui(()->new AlertDialog.Builder(this)
+                .setTitle("Графика и оборудование")
+                .setMessage(report).setPositiveButton("Готово",null)
+                .setNeutralButton("Выбрать профиль",(dialog,which)->chooseDeviceProfile())
+                .show());
+        });
     }
     private void chooseTextureLimit(){
         final String[] choices={
@@ -1222,8 +1300,17 @@ public class EditorActivity extends Activity {
         private boolean multiTouch = false;
         private volatile int touchedGizmoAxis=-1;
         private boolean gizmoEditStarted=false; // GL thread only.
-        // The SurfaceView is full-size; only the underlying GLES buffer is reduced.
-        private static final float RENDER_SCALE=.75f;
+        // Render into a scaled GLES buffer, keep touch/viewport full screen.
+        private volatile float renderScale=.70f;
+        void applyRenderScale(float newScale){
+            if(!Float.isFinite(newScale)||newScale<.5f||newScale>1.0f)return;
+            renderScale=newScale;
+            int w=getWidth(),h=getHeight();
+            if(w>0&&h>0)
+                getHolder().setFixedSize(Math.max(1,Math.round(w*renderScale)),
+                    Math.max(1,Math.round(h*renderScale)));
+            requestRender();
+        }
         private volatile int renderPixelWidth=1,renderPixelHeight=1;
         private long lastInteractionFrame=0; // Accessed only on GL thread.
         private void interactiveRender() {
@@ -1243,6 +1330,14 @@ public class EditorActivity extends Activity {
                 @Override public void onSurfaceCreated(javax.microedition.khronos.opengles.GL10 gl,
                                                         javax.microedition.khronos.egl.EGLConfig config) {
                     nativeInit();
+                    gpuCapabilities=nativeGetGpuCapabilities();
+                    final int tier=qualityChoice<0?nativeRecommendQuality(deviceRamMiB):qualityChoice;
+                    if(nativeSetQualityProfile(tier)){
+                        qualityActive=tier;
+                        textureLimit=tier==3?2048:1024;
+                        final float scale=nativeQualityScale(tier);
+                        ui(()->applyRenderScale(scale));
+                    }
                     refreshSelected();
                 }
                 @Override public void onSurfaceChanged(javax.microedition.khronos.opengles.GL10 gl, int w, int h) {
@@ -1256,7 +1351,8 @@ public class EditorActivity extends Activity {
                     long now=SystemClock.uptimeMillis();
                     if(now-statsUpdatedAt>=900){
                         statsUpdatedAt=now;
-                        final String stats=nativeRenderStats()+" · 3D 75%";
+                        final String stats=nativeRenderStats()+" · 3D "+
+                            Math.round(renderScale*100.f)+"%";
                         ui(() -> {if(renderStatsText!=null)renderStatsText.setText(stats);});
                     }
                 }
@@ -1268,8 +1364,8 @@ public class EditorActivity extends Activity {
             super.onSizeChanged(w,h,oldW,oldH);
             if(w>0&&h>0){
                 // Android scales the lower-resolution EGL surface to the view.
-                getHolder().setFixedSize(Math.max(1,Math.round(w*RENDER_SCALE)),
-                                         Math.max(1,Math.round(h*RENDER_SCALE)));
+                getHolder().setFixedSize(Math.max(1,Math.round(w*renderScale)),
+                                         Math.max(1,Math.round(h*renderScale)));
             }
         }
         private float pinch(MotionEvent e) {

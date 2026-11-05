@@ -1,7 +1,7 @@
 name: OE smoke tests
 on:
   push:
-    branches: [main, test/advanced-assets-065]
+    branches: [main, test/advanced-assets-065, test/device-quality-profiles-071]
   pull_request:
 jobs:
   syntax-and-scenes:
@@ -37,3 +37,12 @@ jobs:
             android/src/main/cpp/vendor/meshoptimizer/allocator.cpp \
             -o /tmp/oe-lod-test
           /tmp/oe-lod-test
+  device-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test device-quality recommendation and preset invariants
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror \
+            tests/device_quality_profiles_smoke.cpp -o /tmp/oe-quality-test
+          /tmp/oe-quality-test

@@ -34,12 +34,18 @@ struct TextureResource {
  std::vector<unsigned char> bytes; // Retained to restore an EGL context.
 };
 struct AssetBatch {int first=0,count=0,texture=-1;};
+struct AssetLod{
+ Mesh gpu;
+ std::vector<float> vertices;
+ std::vector<AssetBatch> batches;
+};
 struct Asset {
  Mesh gpu;
  int vertexStride=9;
  std::vector<float> vertices; // Retained for GPU context recreation.
  std::vector<AssetBatch> batches;
  std::vector<TextureResource> textures;
+ std::array<AssetLod,2> lods; // Tier 1/2, original remains tier 0.
  float centerY=0.f, radius=0.f;
 };
 static Mesh gMeshes[3];
@@ -58,6 +64,14 @@ static std::unordered_map<std::string,Asset> gAssets;
 static std::unordered_map<std::string,TextureResource> gPaintTextures;
 static constexpr size_t MAX_PAINT_TEXTURES=8,MAX_PAINT_CACHE_BYTES=32u*1024u*1024u;
 static constexpr size_t MAX_TEXTURE_CACHE_BYTES=96u*1024u*1024u;
+static constexpr size_t MAX_LOD_CACHE_BYTES=40u*1024u*1024u;
+static int gLodDrawCounts[3]={0,0,0};
+size_t lodCacheBytes(){
+ size_t n=0;
+ for(const auto&kv:gAssets)for(const auto&lod:kv.second.lods)
+   n+=lod.vertices.size()*sizeof(float);
+ return n;
+}
 size_t paintCacheBytes(){
  size_t n=0;for(const auto&kv:gPaintTextures)n+=kv.second.bytes.size();return n;
 }
@@ -213,6 +227,7 @@ std::vector<float> geometry(int kind){
  }
  return d;
 }
+void uploadLod(AssetLod&lod);
 void uploadAsset(Asset&asset){
  const auto &v=asset.vertices;
  if(v.empty())return;
@@ -233,6 +248,65 @@ void uploadAsset(Asset&asset){
    reinterpret_cast<void*>(static_cast<uintptr_t>(9*sizeof(float))));
  }else glDisableVertexAttribArray(3);
  glBindVertexArray(0);
+}
+void uploadLod(AssetLod&lod){
+ if(lod.vertices.empty())return;
+ Asset temp;temp.vertexStride=11;
+ temp.vertices=lod.vertices;
+ uploadAsset(temp);
+ lod.gpu=temp.gpu;
+}
+void buildStaticLods(Asset&asset){
+ if(asset.vertexStride!=11||asset.vertices.size()<11*450||
+    asset.batches.empty())return; // tiny props gain nothing
+ const float weights[8]={1.0f,1.0f,1.0f,.25f,.25f,.25f,2.0f,2.0f};
+ const size_t stride=11*sizeof(float);
+ for(int tier=0;tier<2;tier++){
+  AssetLod&lod=asset.lods[tier];
+  const float reduction=tier==0?.55f:.28f;
+  const float errorLimit=tier==0?.012f:.046f;
+  for(const AssetBatch&batch:asset.batches){
+   const size_t n=static_cast<size_t>(batch.count);
+   const float*src=asset.vertices.data()+static_cast<size_t>(batch.first)*11;
+   if(n<90||n%3!=0){
+    const int first=static_cast<int>(lod.vertices.size()/11);
+    lod.vertices.insert(lod.vertices.end(),src,src+n*11);
+    lod.batches.push_back({first,static_cast<int>(n),batch.texture});continue;
+   }
+   std::vector<unsigned int> remap(n),indices(n);
+   const size_t unique=meshopt_generateVertexRemap(
+     remap.data(),nullptr,n,src,n,stride);
+   if(unique<3||unique>n)continue;
+   std::vector<float> welded(unique*11);
+   meshopt_remapVertexBuffer(welded.data(),src,n,stride,remap.data());
+   meshopt_remapIndexBuffer(indices.data(),nullptr,n,remap.data());
+   std::vector<unsigned int> simplified(n);
+   size_t target=static_cast<size_t>(n*reduction)/3*3;
+   target=std::max<size_t>(3,target);
+   float finalError=0;
+   const size_t count=meshopt_simplifyWithAttributes(
+     simplified.data(),indices.data(),n,welded.data(),unique,stride,
+     welded.data()+3,stride,weights,8,nullptr,
+     target,errorLimit,meshopt_SimplifyPermissive,&finalError);
+   const bool use=count>=3&&count%3==0&&count<n&&std::isfinite(finalError);
+   const int first=static_cast<int>(lod.vertices.size()/11);
+   if(use){
+    for(size_t i=0;i<count;i++){
+     const unsigned int index=simplified[i];
+     if(index>=unique){lod.vertices.clear();lod.batches.clear();return;}
+     lod.vertices.insert(lod.vertices.end(),welded.begin()+index*11,
+       welded.begin()+(index+1)*11);
+    }
+   }else lod.vertices.insert(lod.vertices.end(),src,src+n*11);
+   lod.batches.push_back({first,static_cast<int>(use?count:n),batch.texture});
+  }
+  // A tier must measurably reduce draw geometry, or it is disabled.
+  const size_t limit=static_cast<size_t>(asset.vertices.size()*
+    (tier==0?.92f:.80f));
+  if(lod.vertices.size()>=limit){
+   lod.vertices.clear();lod.batches.clear();
+  }
+ }
 }
 bool uploadTextures(Asset&asset){
  for(auto&tex:asset.textures){
@@ -269,6 +343,10 @@ void releaseAssetGpu(Asset&asset){
  for(auto&tex:asset.textures)if(tex.id)glDeleteTextures(1,&tex.id);
  if(asset.gpu.vao)glDeleteVertexArrays(1,&asset.gpu.vao);
  if(asset.gpu.buffer)glDeleteBuffers(1,&asset.gpu.buffer);
+ for(auto&lod:asset.lods){
+  if(lod.gpu.vao)glDeleteVertexArrays(1,&lod.gpu.vao);
+  if(lod.gpu.buffer)glDeleteBuffers(1,&lod.gpu.buffer);
+ }
 }
 GLuint shader(GLenum kind,const char*src){
  GLuint s=glCreateShader(kind);glShaderSource(s,1,&src,nullptr);glCompileShader(s);
@@ -357,6 +435,7 @@ void setupGL(){
  for(int kind=0;kind<17;kind++)if(kind!=6)bakeStaticMesh(kind);
  for(auto &kv:gAssets){
   uploadAsset(kv.second);
+  for(auto&lod:kv.second.lods)uploadLod(lod);
   if(!uploadTextures(kv.second))
    __android_log_print(ANDROID_LOG_ERROR,"OE","Failed to restore textures after EGL context recreation");
  }
@@ -1031,6 +1110,7 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDraw(JNIEnv*,jcl
  glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
  glUseProgram(gShader.program);
  gDrawCalls=0;gTriangles=0;
+ gLodDrawCounts[0]=gLodDrawCounts[1]=gLodDrawCounts[2]=0;
  Mat4 vp=viewProjection();
  const Frustum frustum=makeFrustum(vp);
  drawWorld(vp);
@@ -1098,7 +1178,8 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeFocusLocation(JN
 }
 JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeRenderStats(JNIEnv*env,jclass){
  std::ostringstream out;
- out<<"Рендер: "<<gDrawCalls<<" draw calls / "<<gTriangles<<" треугольников · земля "<<gTerrain.tiles<<" участков";
+ out<<"Рендер: "<<gDrawCalls<<" вызовов / "<<gTriangles<<" треуг. · LOD 0/1/2 "
+ <<gLodDrawCounts[0]<<"/"<<gLodDrawCounts[1]<<"/"<<gLodDrawCounts[2];
  return env->NewStringUTF(out.str().c_str());
 }
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeGetWorldSize(JNIEnv*,jclass){return gWorldSize;}

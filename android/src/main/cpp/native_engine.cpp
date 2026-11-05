@@ -21,12 +21,12 @@ struct Vec3 {float x, y, z;};
 struct Vec4 {float x, y, z, w;};
 struct Mat4 {float m[16]{};};
 struct Mesh {GLuint vao=0, buffer=0; GLsizei count=0;};
-struct Entity {int id=0, type=0; float x=0, z=0, yaw=0, size=1; std::string asset; float y=0.f, sx=1.f,sy=1.f,sz=1.f;};
+struct Entity {int id=0, type=0; float x=0, z=0, yaw=0, size=1; std::string asset; float y=0.f, sx=1.f,sy=1.f,sz=1.f; std::string paint;};
 struct Color {float r,g,b;};
 struct Shader {
  GLuint program=0;
  GLint locMvp=-1, locModel=-1, locColor=-1, locLight=-1;
- GLint locTexture=-1,locTextured=-1;
+ GLint locTexture=-1,locTextured=-1,locPaintOverride=-1,locOverlay=-1,locPaintCenter=-1,locPaintRadius=-1;
 };
 struct TextureResource {
  GLuint id=0;
@@ -43,7 +43,8 @@ struct Asset {
  float centerY=0.f, radius=0.f;
 };
 static Mesh gMeshes[3];
-static Mesh gStaticMeshes[17]; // Every decorative object is a single combined draw.
+static Mesh gStaticMeshes[17];
+static Mesh gPaintMesh; // Every decorative object is a single combined draw.
 void bakeStaticMesh(int type);
 // Cached, combined flat terrain: one GLES draw call per frame instead of one per tile.
 struct TerrainGpu {
@@ -54,7 +55,12 @@ struct TerrainGpu {
 static TerrainGpu gTerrain;
 static int gDrawCalls=0,gTriangles=0;
 static std::unordered_map<std::string,Asset> gAssets;
+static std::unordered_map<std::string,TextureResource> gPaintTextures;
+static constexpr size_t MAX_PAINT_TEXTURES=8,MAX_PAINT_CACHE_BYTES=32u*1024u*1024u;
 static constexpr size_t MAX_TEXTURE_CACHE_BYTES=96u*1024u*1024u;
+size_t paintCacheBytes(){
+ size_t n=0;for(const auto&kv:gPaintTextures)n+=kv.second.bytes.size();return n;
+}
 size_t textureCacheBytes(){
  size_t bytes=0;
  for(const auto&item:gAssets)for(const auto&tex:item.second.textures)
@@ -75,6 +81,9 @@ static bool gSceneInitialized=false, gDemoRoads=false;
 constexpr float WORLD_TILE=64.0f;
 static int gWorldSize=1024; // Set in app to 1024/2048/4096/8192/16384 meters.
 struct TerrainBrush {float x,z,radius,strength;};
+struct TerrainPaint {float x,z,radius;std::string texture;};
+static std::vector<TerrainPaint> gTerrainPaint;
+static constexpr size_t MAX_TERRAIN_PAINT=48;
 static std::vector<TerrainBrush> gBrushes;
 static int gTerrainRevision=0;
 static constexpr size_t MAX_TERRAIN_BRUSHES=64;
@@ -96,15 +105,16 @@ struct SceneSnapshot {
  Vec3 target{0,1.2f,1.3f};
  float cameraDistance=28.f;
  std::vector<TerrainBrush> terrain;
+ std::vector<TerrainPaint> paints;
 };
 static std::vector<SceneSnapshot> gUndo,gRedo;
 static bool gSuspendHistory=false;
 static constexpr size_t HISTORY_LIMIT=40;
-SceneSnapshot captureScene(){return {gEntities,gNextId,gSelected,gWorldSize,gDemoRoads,gTarget,gDistance,gBrushes};}
+SceneSnapshot captureScene(){return {gEntities,gNextId,gSelected,gWorldSize,gDemoRoads,gTarget,gDistance,gBrushes,gTerrainPaint};}
 void restoreScene(const SceneSnapshot&s){
  gEntities=s.entities;gNextId=s.nextId;gSelected=s.selected;gWorldSize=s.worldSize;
  gDemoRoads=s.demoRoads;gTarget=s.target;gDistance=s.cameraDistance;
- gBrushes=s.terrain;gTerrainRevision++;gSceneInitialized=true;
+ gBrushes=s.terrain;gTerrainPaint=s.paints;gTerrainRevision++;gSceneInitialized=true;
 }
 void pushBounded(std::vector<SceneSnapshot>&stack,SceneSnapshot value){
  if(stack.size()>=HISTORY_LIMIT)stack.erase(stack.begin());
@@ -250,6 +260,11 @@ bool uploadTextures(Asset&asset){
  glBindTexture(GL_TEXTURE_2D,0);
  return true;
 }
+bool uploadPaintTexture(TextureResource&tex){
+ Asset temp;temp.textures.push_back(std::move(tex));
+ const bool ok=uploadTextures(temp);
+ tex=std::move(temp.textures[0]);return ok;
+}
 void releaseAssetGpu(Asset&asset){
  for(auto&tex:asset.textures)if(tex.id)glDeleteTextures(1,&tex.id);
  if(asset.gpu.vao)glDeleteVertexArrays(1,&asset.gpu.vao);
@@ -272,29 +287,41 @@ void setupGL(){
  out vec3 vNormal;
  out vec3 vColor;
  out vec2 vUV;
+ out vec3 vWorldPos;
  void main(){
    gl_Position=uMvp*vec4(aPos,1.0);
    vNormal=normalize(mat3(uModel)*aNormal);
    vColor=aColor;
    vUV=aUV;
+   vWorldPos=(uModel*vec4(aPos,1.0)).xyz;
  })";
  const char*frag=R"(#version 300 es
  precision mediump float;
  in vec3 vNormal;
  in vec3 vColor;
  in vec2 vUV;
+ in vec3 vWorldPos;
  uniform vec3 uColor;
  uniform sampler2D uTexture;
  uniform float uUseTexture;
  uniform float uHighlight;
+ uniform float uPaintOverride;
+ uniform float uOverlay;
+ uniform vec2 uPaintCenter;
+ uniform float uPaintRadius;
  out vec4 fragColor;
  void main(){
    float sun=max(dot(normalize(vNormal),normalize(vec3(-.55,1.,.5))),0.);
    vec4 texel=uUseTexture>.5?texture(uTexture,vUV):vec4(1.);
-   if(texel.a<.45)discard;
-   vec3 color=uColor*vColor*texel.rgb*(.52+.48*sun);
+   if(uOverlay>.5){
+     float dist=length(vWorldPos.xz-uPaintCenter)/max(uPaintRadius,.001);
+     texel.a*=1.0-smoothstep(.82,1.0,dist);
+   }
+   if(texel.a<(uOverlay>.5?.01:.45))discard;
+   vec3 tint=mix(vColor,vec3(1.),uPaintOverride);
+   vec3 color=uColor*tint*texel.rgb*(.52+.48*sun);
    color=mix(color,vec3(.99,.72,.30),uHighlight*.30);
-   fragColor=vec4(color,1.);
+   fragColor=vec4(color,texel.a);
  })";
  GLuint v=shader(GL_VERTEX_SHADER,vert),f=shader(GL_FRAGMENT_SHADER,frag);
  gShader.program=glCreateProgram();
@@ -308,9 +335,15 @@ void setupGL(){
  gShader.locLight=glGetUniformLocation(gShader.program,"uHighlight");
  gShader.locTexture=glGetUniformLocation(gShader.program,"uTexture");
  gShader.locTextured=glGetUniformLocation(gShader.program,"uUseTexture");
+ gShader.locPaintOverride=glGetUniformLocation(gShader.program,"uPaintOverride");
+ gShader.locOverlay=glGetUniformLocation(gShader.program,"uOverlay");
+ gShader.locPaintCenter=glGetUniformLocation(gShader.program,"uPaintCenter");
+ gShader.locPaintRadius=glGetUniformLocation(gShader.program,"uPaintRadius");
  glUseProgram(gShader.program);
  glUniform1i(gShader.locTexture,0);
  glUniform1f(gShader.locTextured,0.f);
+ glUniform1f(gShader.locPaintOverride,0.f);
+ glUniform1f(gShader.locOverlay,0.f);
  for(int kind=0;kind<3;kind++){
   std::vector<float> d=geometry(kind);Mesh &m=gMeshes[kind];m.count=(GLsizei)(d.size()/6);
   glGenVertexArrays(1,&m.vao);glBindVertexArray(m.vao);
@@ -327,6 +360,8 @@ void setupGL(){
   if(!uploadTextures(kv.second))
    __android_log_print(ANDROID_LOG_ERROR,"OE","Failed to restore textures after EGL context recreation");
  }
+ for(auto&kv:gPaintTextures)if(!uploadPaintTexture(kv.second))
+  __android_log_print(ANDROID_LOG_ERROR,"OE","Failed to restore custom paint texture");
  // A new OpenGL context needs new handles; never reuse IDs from the previous context.
  gTerrain={};
  glGenVertexArrays(1,&gTerrain.vao);
@@ -339,6 +374,19 @@ void setupGL(){
   glVertexAttribPointer(attrib,3,GL_FLOAT,GL_FALSE,terrainStride,
     reinterpret_cast<void*>(static_cast<uintptr_t>(attrib*3*sizeof(float))));
  }
+ glBindVertexArray(0);
+ glGenVertexArrays(1,&gPaintMesh.vao);
+ glGenBuffers(1,&gPaintMesh.buffer);
+ glBindVertexArray(gPaintMesh.vao);
+ glBindBuffer(GL_ARRAY_BUFFER,gPaintMesh.buffer);
+ for(int a=0;a<3;a++){
+  glEnableVertexAttribArray(a);
+  glVertexAttribPointer(a,3,GL_FLOAT,GL_FALSE,11*sizeof(float),
+   reinterpret_cast<void*>(static_cast<uintptr_t>(a*3*sizeof(float))));
+ }
+ glEnableVertexAttribArray(3);
+ glVertexAttribPointer(3,2,GL_FLOAT,GL_FALSE,11*sizeof(float),
+  reinterpret_cast<void*>(9*sizeof(float)));
  glBindVertexArray(0);
  glVertexAttrib3f(2,1,1,1);
  glEnable(GL_DEPTH_TEST);
@@ -391,6 +439,8 @@ bool importedInView(const Frustum&frustum,const Entity&e){
  if(dot(delta,delta)>maxDistance*maxDistance)return false;
  return visibleSphere(frustum,center,radius);
 }
+const TextureResource*paintTexture(const std::string&key);
+void bindPaint(const TextureResource*paint);
 void drawImported(const Mat4&vp,const Entity&e){
  auto it=gAssets.find(e.asset);
  if(it==gAssets.end()||it->second.gpu.count==0)return;
@@ -402,22 +452,25 @@ void drawImported(const Mat4&vp,const Entity&e){
  glUniform3f(gShader.locColor,1,1,1);
  glUniform1f(gShader.locLight,e.id==gSelected?1.f:0.f);
  const Asset &asset=it->second;
+ const TextureResource*overridePaint=paintTexture(e.paint);
  glBindVertexArray(asset.gpu.vao);
  if(asset.batches.empty()){
   glUniform1f(gShader.locTextured,0.f);
   glDrawArrays(GL_TRIANGLES,0,asset.gpu.count);
   ++gDrawCalls;gTriangles+=asset.gpu.count/3;
  }else for(const auto&batch:asset.batches){
-  if(batch.texture>=0&&static_cast<size_t>(batch.texture)<asset.textures.size()&&
+  if(overridePaint&&overridePaint->id){bindPaint(overridePaint);}
+  else if(batch.texture>=0&&static_cast<size_t>(batch.texture)<asset.textures.size()&&
      asset.textures[batch.texture].id){
    glActiveTexture(GL_TEXTURE0);
    glBindTexture(GL_TEXTURE_2D,asset.textures[batch.texture].id);
    glUniform1f(gShader.locTextured,1.f);
-  }else glUniform1f(gShader.locTextured,0.f);
+   glUniform1f(gShader.locPaintOverride,0.f);
+  }else bindPaint(nullptr);
   glDrawArrays(GL_TRIANGLES,batch.first,batch.count);
   ++gDrawCalls;gTriangles+=batch.count/3;
  }
- glUniform1f(gShader.locTextured,0.f);
+ bindPaint(nullptr);
  glBindTexture(GL_TEXTURE_2D,0);
 }
 void part(const Mat4&vp,const Entity&e,int kind,float x,float y,float z,float sx,float sy,float sz,Color color){
@@ -513,20 +566,38 @@ void forEachStaticPart(int type,Part&&part){
 }
 void bakeStaticMesh(int type){
  Asset baked;
+ baked.vertexStride=11;
  // Build once on GL-context creation. Later only transform one mesh per entity.
  forEachStaticPart(type,[&](int kind,float x,float y,float z,float sx,float sy,float sz,Color col){
   const std::vector<float> source=geometry(kind);
-  baked.vertices.reserve(baked.vertices.size()+source.size()/6*9);
+  baked.vertices.reserve(baked.vertices.size()+source.size()/6*11);
   for(size_t i=0;i+5<source.size();i+=6){
+   const float px=x+source[i]*sx,py=y+source[i+1]*sy,pz=z+source[i+2]*sz;
+   const float nx=source[i+3],ny=source[i+4],nz=source[i+5];
+   // Planar mapping: wall sides use height, floor faces use XZ.
+   const float u=(std::abs(nx)>.6f?pz:px)*.5f;
+   const float v=(std::abs(ny)>.6f?pz:py)*.5f;
    baked.vertices.insert(baked.vertices.end(),{
-      x+source[i]*sx,y+source[i+1]*sy,z+source[i+2]*sz,
-      source[i+3]*sx,source[i+4]*sy,source[i+5]*sz,
-      col.r,col.g,col.b
+      px,py,pz,nx*sx,ny*sy,nz*sz,col.r,col.g,col.b,u,v
    });
   }
  });
  uploadAsset(baked);
  gStaticMeshes[type]=baked.gpu;
+}
+const TextureResource*paintTexture(const std::string&key){
+ auto it=gPaintTextures.find(key);
+ return it==gPaintTextures.end()?nullptr:&it->second;
+}
+void bindPaint(const TextureResource*paint){
+ if(paint&&paint->id){
+  glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,paint->id);
+  glUniform1f(gShader.locTextured,1.f);
+  glUniform1f(gShader.locPaintOverride,1.f);
+ }else{
+  glUniform1f(gShader.locTextured,0.f);
+  glUniform1f(gShader.locPaintOverride,0.f);
+ }
 }
 void drawStatic(const Mat4&vp,const Entity&e){
  if(e.type<0||e.type>=17||e.type==6)return;
@@ -539,10 +610,11 @@ void drawStatic(const Mat4&vp,const Entity&e){
  glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
  glUniform3f(gShader.locColor,1.f,1.f,1.f);
  glUniform1f(gShader.locLight,e.id==gSelected?1.f:0.f);
- glUniform1f(gShader.locTextured,0.f);
+ bindPaint(paintTexture(e.paint));
  glBindVertexArray(m.vao);
  glDrawArrays(GL_TRIANGLES,0,m.count);
  ++gDrawCalls;gTriangles+=m.count/3;
+ bindPaint(nullptr);glBindTexture(GL_TEXTURE_2D,0);
 }
 
 // Low-power flat terrain. Combine nearby 64m squares into one vertex buffer.
@@ -632,6 +704,57 @@ void drawWorld(const Mat4&vp){
   draw(vp,0,{0,-.015f,16},{8,.13f,22},0,{.53f,.51f,.48f});
  }
 }
+// Surface decals conform to sculpted heights. Built only on redraw and culled
+// by camera proximity. Regular terrain remains one batched GLES draw.
+void drawTerrainPaint(const Mat4&vp){
+ if(gTerrainPaint.empty()||!gPaintMesh.vao)return;
+ const int steps=10;
+ std::vector<float> verts;verts.reserve(steps*steps*6*11);
+ glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+ glDepthMask(GL_FALSE);
+ glUniform1f(gShader.locOverlay,1.f);
+ glUniform1f(gShader.locPaintOverride,1.f);
+ glUniform1f(gShader.locTextured,1.f);
+ const Mat4 model=identity();
+ glUniformMatrix4fv(gShader.locMvp,1,GL_FALSE,vp.m);
+ glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
+ glUniform3f(gShader.locColor,1.f,1.f,1.f);
+ glUniform1f(gShader.locLight,0.f);
+ glBindVertexArray(gPaintMesh.vao);
+ for(const auto&stamp:gTerrainPaint){
+  if(std::abs(stamp.x-gTarget.x)>230.f+stamp.radius||
+     std::abs(stamp.z-gTarget.z)>230.f+stamp.radius)continue;
+  const TextureResource*t=paintTexture(stamp.texture);
+  if(!t||!t->id)continue;
+  glUniform2f(gShader.locPaintCenter,stamp.x,stamp.z);
+  glUniform1f(gShader.locPaintRadius,stamp.radius);
+  glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,t->id);
+  verts.clear();
+  auto append=[&](float xx,float zz){
+   float yy=terrainHeightAt(xx,zz)+.06f;
+   verts.insert(verts.end(),{xx,yy,zz,0.f,1.f,0.f,1.f,1.f,1.f,xx/6.f,zz/6.f});
+  };
+  for(int iz=0;iz<steps;iz++)for(int ix=0;ix<steps;ix++){
+   const float x0=stamp.x-stamp.radius+2.f*stamp.radius*ix/steps;
+   const float x1=stamp.x-stamp.radius+2.f*stamp.radius*(ix+1)/steps;
+   const float z0=stamp.z-stamp.radius+2.f*stamp.radius*iz/steps;
+   const float z1=stamp.z-stamp.radius+2.f*stamp.radius*(iz+1)/steps;
+   append(x0,z0);append(x1,z0);append(x1,z1);
+   append(x0,z0);append(x1,z1);append(x0,z1);
+  }
+  glBindBuffer(GL_ARRAY_BUFFER,gPaintMesh.buffer);
+  glBufferData(GL_ARRAY_BUFFER,static_cast<GLsizeiptr>(verts.size()*sizeof(float)),
+     verts.data(),GL_DYNAMIC_DRAW);
+  glDrawArrays(GL_TRIANGLES,0,static_cast<GLsizei>(verts.size()/11));
+  ++gDrawCalls;gTriangles+=static_cast<int>(verts.size()/33);
+ }
+ glBindVertexArray(0);
+ glDepthMask(GL_TRUE);glDisable(GL_BLEND);
+ glUniform1f(gShader.locOverlay,0.f);
+ glUniform1f(gShader.locPaintOverride,0.f);
+ glUniform1f(gShader.locTextured,0.f);
+ glBindTexture(GL_TEXTURE_2D,0);
+}
 bool groundPoint(float px,float py,float &x,float &z){
  const Vec3 eye=cameraEye(),forward=unit(sub(gTarget,eye));
  const Vec3 right=unit(cross(forward,{0,1,0})),up=cross(right,forward);
@@ -709,7 +832,7 @@ void reset(bool demo){
  recordEdit(); // demo generation is a single undoable change
  const bool wasMuted=gSuspendHistory;
  gSuspendHistory=true;
- gEntities.clear();gBrushes.clear();gTerrainRevision++;gNextId=1;gSelected=0;
+ gEntities.clear();gBrushes.clear();gTerrainPaint.clear();gTerrainRevision++;gNextId=1;gSelected=0;
  gSceneInitialized=true;gDemoRoads=demo;
  gTarget={0,1.2f,1.3f};gDistance=28.f;
  if(demo){
@@ -834,6 +957,68 @@ JNIEXPORT jbyteArray JNICALL Java_game_oe_editor_GlbReader_nativeDecodeMeshopt(
                          reinterpret_cast<const jbyte*>(output.data()));
  return decoded;
 }
+// Only RGBA8 decoded on worker thread is accepted; source images remain files.
+bool validPaintKey(const std::string&key){
+ if(key.size()!=31||key.compare(0,3,"tx_")!=0||
+    !(key.substr(27)==".png"||key.substr(27)==".jpg"))return false;
+ for(size_t i=3;i<27;i++)if(!((key[i]>='0'&&key[i]<='9')||
+    (key[i]>='a'&&key[i]<='f')))return false;
+ return true;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterPaintTexture(
+ JNIEnv*env,jclass,jstring name,jbyteArray data,jint width,jint height){
+ if(!name||!data||width<=0||height<=0||width>1024||height>1024)return JNI_FALSE;
+ const size_t bytes=static_cast<size_t>(width)*height*4;
+ if(bytes>4u*1024u*1024u||env->GetArrayLength(data)!=static_cast<jsize>(bytes))
+  return JNI_FALSE;
+ const char*raw=env->GetStringUTFChars(name,nullptr);
+ if(!raw)return JNI_FALSE;
+ const std::string key(raw);env->ReleaseStringUTFChars(name,raw);
+ if(!validPaintKey(key))return JNI_FALSE;
+ auto present=gPaintTextures.find(key);
+ if(present!=gPaintTextures.end()&&present->second.id)return JNI_TRUE;
+ if(present==gPaintTextures.end()&&gPaintTextures.size()>=MAX_PAINT_TEXTURES)return JNI_FALSE;
+ const size_t current=paintCacheBytes()-
+  (present==gPaintTextures.end()?0:present->second.bytes.size());
+ if(current+bytes>MAX_PAINT_CACHE_BYTES)return JNI_FALSE;
+ TextureResource prepared;prepared.width=width;prepared.height=height;
+ prepared.format=0;prepared.bytes.resize(bytes);
+ env->GetByteArrayRegion(data,0,static_cast<jsize>(bytes),
+  reinterpret_cast<jbyte*>(prepared.bytes.data()));
+ if(env->ExceptionCheck())return JNI_FALSE;
+ for(int i=0;i<8&&glGetError()!=GL_NO_ERROR;i++){}
+ if(!uploadPaintTexture(prepared)||glGetError()!=GL_NO_ERROR){
+  if(prepared.id)glDeleteTextures(1,&prepared.id);
+  return JNI_FALSE;
+ }
+ if(present==gPaintTextures.end())gPaintTextures.emplace(key,std::move(prepared));
+ else {if(present->second.id)glDeleteTextures(1,&present->second.id);present->second=std::move(prepared);}
+ return JNI_TRUE;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativePaintSelected(
+ JNIEnv*env,jclass,jstring name){
+ if(!name||!selected())return JNI_FALSE;
+ const char*raw=env->GetStringUTFChars(name,nullptr);
+ if(!raw)return JNI_FALSE;
+ const std::string key(raw);env->ReleaseStringUTFChars(name,raw);
+ if(!key.empty()&&(!validPaintKey(key)||gPaintTextures.find(key)==gPaintTextures.end()))
+  return JNI_FALSE;
+ if(selected()->paint==key)return JNI_TRUE;
+ recordEdit();selected()->paint=key;return JNI_TRUE;
+}
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePaintTerrainAtScreen(
+ JNIEnv*env,jclass,jfloat px,jfloat py,jfloat radius,jstring name){
+ if(!name||!std::isfinite(radius)||radius<4.f||radius>64.f||
+    gTerrainPaint.size()>=MAX_TERRAIN_PAINT)return 0;
+ const char*raw=env->GetStringUTFChars(name,nullptr);
+ if(!raw)return 0;
+ const std::string key(raw);env->ReleaseStringUTFChars(name,raw);
+ if(!validPaintKey(key)||gPaintTextures.find(key)==gPaintTextures.end())return 0;
+ float x,z;
+ if(!groundPoint(px,py,x,z))return 0;
+ recordEdit();gTerrainPaint.push_back({x,z,radius,key});
+ return static_cast<jint>(gTerrainPaint.size());
+}
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeInit(JNIEnv*,jclass){
  setupGL();if(!gSceneInitialized)reset(true);
 }
@@ -849,6 +1034,7 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDraw(JNIEnv*,jcl
  Mat4 vp=viewProjection();
  const Frustum frustum=makeFrustum(vp);
  drawWorld(vp);
+ drawTerrainPaint(vp);
  for(const auto&e:gEntities)drawEntity(vp,frustum,e);
  drawGizmo(vp);
  glBindVertexArray(0);
@@ -1074,12 +1260,18 @@ JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSceneSnapshot
   out<<"{\"type\":"<<e.type<<",\"x\":"<<e.x<<",\"z\":"<<e.z
      <<",\"yaw\":"<<e.yaw<<",\"size\":"<<e.size<<",\"y\":"<<e.y<<",\"sx\":"<<e.sx<<",\"sy\":"<<e.sy<<",\"sz\":"<<e.sz;
   if(e.type==6)out<<",\"asset\":\""<<e.asset<<"\"";
+  if(!e.paint.empty())out<<",\"paint\":\""<<e.paint<<"\"";
   out<<"}";
  }
  out<<"],\"terrain\":[";
  for(size_t i=0;i<gBrushes.size();i++){
   const auto&b=gBrushes[i];if(i)out<<",";
   out<<"["<<b.x<<","<<b.z<<","<<b.radius<<","<<b.strength<<"]";
+ }
+ out<<"],\"terrainPaint\":[";
+ for(size_t i=0;i<gTerrainPaint.size();i++){
+  const auto&paint=gTerrainPaint[i];if(i)out<<",";
+  out<<"["<<paint.x<<","<<paint.z<<","<<paint.radius<<",\""<<paint.texture<<"\"]";
  }
  out<<"]}";return env->NewStringUTF(out.str().c_str());
 }
@@ -1232,11 +1424,17 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsse
 // Validate everything before atomic swap on the GLES thread.
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene(
  JNIEnv*env,jclass,jint size,jboolean demo,jintArray kinds,jfloatArray transforms,
- jobjectArray modelKeys,jfloatArray terrainData){
- if(!allowedWorldSize(size)||!kinds||!transforms||!modelKeys||!terrainData)return JNI_FALSE;
+ jobjectArray modelKeys,jfloatArray terrainData,jobjectArray objectPaintKeys,
+ jfloatArray painting,jobjectArray terrainPaintKeys){
+ if(!allowedWorldSize(size)||!kinds||!transforms||!modelKeys||!terrainData||
+    !objectPaintKeys||!painting||!terrainPaintKeys)return JNI_FALSE;
  const jsize n=env->GetArrayLength(kinds);
  if(n<0||n>MAX_ENTITIES||env->GetArrayLength(transforms)!=n*8||
-    env->GetArrayLength(modelKeys)!=n)return JNI_FALSE;
+    env->GetArrayLength(modelKeys)!=n||env->GetArrayLength(objectPaintKeys)!=n)return JNI_FALSE;
+ const jsize paintFloats=env->GetArrayLength(painting);
+ if(paintFloats<0||paintFloats%3!=0||
+    paintFloats>static_cast<jsize>(MAX_TERRAIN_PAINT*3)||
+    env->GetArrayLength(terrainPaintKeys)!=paintFloats/3)return JNI_FALSE;
  const jsize brushFloats=env->GetArrayLength(terrainData);
  if(brushFloats<0||brushFloats%4!=0||
     brushFloats>static_cast<jsize>(MAX_TERRAIN_BRUSHES*4))return JNI_FALSE;
@@ -1261,6 +1459,24 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
      std::abs(x)>half||std::abs(z)>half||radius<16.f||radius>256.f||
      std::abs(strength)<.001f||std::abs(strength)>60.f)return JNI_FALSE;
   stagedBrushes.push_back({x,z,radius,strength});
+ }
+ std::vector<TerrainPaint> stagedPaint;
+ stagedPaint.reserve(static_cast<size_t>(paintFloats/3));
+ std::array<jfloat,MAX_TERRAIN_PAINT*3> paintData{};
+ if(paintFloats)env->GetFloatArrayRegion(painting,0,paintFloats,paintData.data());
+ if(env->ExceptionCheck())return JNI_FALSE;
+ for(jsize i=0;i<paintFloats/3;i++){
+  const float x=paintData[i*3],z=paintData[i*3+1],radius=paintData[i*3+2];
+  if(!std::isfinite(x)||!std::isfinite(z)||!std::isfinite(radius)||
+     std::abs(x)>half||std::abs(z)>half||radius<4.f||radius>64.f)return JNI_FALSE;
+  jstring rawPaint=static_cast<jstring>(env->GetObjectArrayElement(terrainPaintKeys,i));
+  if(!rawPaint||env->ExceptionCheck())return JNI_FALSE;
+  const char*paintChars=env->GetStringUTFChars(rawPaint,nullptr);
+  if(!paintChars){env->DeleteLocalRef(rawPaint);return JNI_FALSE;}
+  const std::string key(paintChars);
+  env->ReleaseStringUTFChars(rawPaint,paintChars);env->DeleteLocalRef(rawPaint);
+  if(!validPaintKey(key)||gPaintTextures.find(key)==gPaintTextures.end())return JNI_FALSE;
+  stagedPaint.push_back({x,z,radius,key});
  }
  std::vector<Entity> staged;
  staged.reserve(static_cast<size_t>(n));
@@ -1287,10 +1503,19 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
    auto asset=gAssets.find(key);
    if(asset==gAssets.end()||asset->second.gpu.count<=0)return JNI_FALSE;
   }
-  staged.push_back({static_cast<int>(i)+1,type,x,z,yaw,scl,key,y,sx,sy,sz});
+  jstring paintKey=static_cast<jstring>(env->GetObjectArrayElement(objectPaintKeys,i));
+  if(!paintKey||env->ExceptionCheck())return JNI_FALSE;
+  const char*paintRaw=env->GetStringUTFChars(paintKey,nullptr);
+  if(!paintRaw){env->DeleteLocalRef(paintKey);return JNI_FALSE;}
+  const std::string paintName(paintRaw);
+  env->ReleaseStringUTFChars(paintKey,paintRaw);env->DeleteLocalRef(paintKey);
+  if(!paintName.empty()&&(!validPaintKey(paintName)||
+     gPaintTextures.find(paintName)==gPaintTextures.end()))return JNI_FALSE;
+  staged.push_back({static_cast<int>(i)+1,type,x,z,yaw,scl,key,y,sx,sy,sz,paintName});
  }
  // Commit: no validation or allocation failures below this point.
- gEntities.swap(staged);gBrushes.swap(stagedBrushes);gTerrainRevision++;
+ gEntities.swap(staged);gBrushes.swap(stagedBrushes);
+ gTerrainPaint.swap(stagedPaint);gTerrainRevision++;
  gWorldSize=size;gDemoRoads=demo==JNI_TRUE;
  gNextId=static_cast<int>(n)+1;gSelected=0;
  gTarget={0,terrainHeightAt(0,1.3f)+1.2f,1.3f};gDistance=28.f;

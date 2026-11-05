@@ -36,6 +36,7 @@ import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -79,7 +80,11 @@ public class EditorActivity extends Activity {
     private static native boolean nativeCanRegisterMore(int newUniqueAssets);
     private static native void nativeDiscardUnusedAsset(String key);
     private static native boolean nativeReplaceScene(int size, boolean demoRoads,
-            int[] kinds, float[] transforms, String[] modelKeys, float[] terrain);
+            int[] kinds, float[] transforms, String[] modelKeys, float[] terrain,
+            String[] objectPaintKeys, float[] painting, String[] terrainPaintKeys);
+    private static native boolean nativeRegisterPaintTexture(String key, byte[] rgba,int width,int height);
+    private static native boolean nativePaintSelected(String key);
+    private static native int nativePaintTerrainAtScreen(float x,float y,float radius,String key);
     private static native void nativeChangeSelectedHeight(float dy);
     private static native void nativeScaleSelectedAxis(int axis,float factor);
     private static native void nativeSnapSelectedToGround();
@@ -91,7 +96,7 @@ public class EditorActivity extends Activity {
     private static native void nativeGizmoDrag(int axis,float dx,float dy);
     private static native void nativeGizmoEnd();
     private static native int nativeAddImportedPlaced(String key, float x, float z, float yaw, float size);
-    private static final int PICK_GLB = 702, PICK_PROJECT=703, SAVE_PROJECT=704;
+    private static final int PICK_GLB = 702, PICK_PROJECT=703, SAVE_PROJECT=704, PICK_PAINT=705;
     private static final int MAX_ASSETS = 12;
 
     private EditorSurface surface;
@@ -101,6 +106,9 @@ public class EditorActivity extends Activity {
     private LinearLayout toolDrawer, paletteItems, inspectorPanel, advancedInspector;
     private boolean drawerOpen=false;
     private volatile int gizmoMode=0;
+    private volatile String activePaintKey="";
+    private volatile boolean paintTerrainMode=false;
+    private volatile float paintRadius=16f;
     private volatile long statsUpdatedAt=0;
     private volatile boolean importing = false;
     private volatile int placingKind = -1;
@@ -187,7 +195,7 @@ public class EditorActivity extends Activity {
         top.setPadding(dp(5),dp(2),dp(5),dp(2));
         top.setBackgroundColor(Color.argb(220,14,21,32));
         TextView title=new TextView(this);
-        title.setText("OE 0.6.7  /  ORVETRA ENGINE");
+        title.setText("OE 0.6.8  /  ORVETRA ENGINE");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
         title.setTextSize(12);
@@ -325,7 +333,7 @@ public class EditorActivity extends Activity {
         Button b=button(label,()->{
             action.run();
             // Start placing directly on the exposed 3D world.
-            if(placingKind>=0||terrainMode!=0)toggleDrawer(false);
+            if(placingKind>=0||terrainMode!=0||paintTerrainMode)toggleDrawer(false);
         });
         LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,dp(43));
         p.setMargins(dp(4),dp(2),dp(4),dp(2));
@@ -359,13 +367,20 @@ public class EditorActivity extends Activity {
             addPaletteOption("📐 Радиус и сила кисти",this::chooseTerrainBrush);
             addPaletteOption("✕ Завершить изменение",this::cancelPlace);
         }else if("Текстуры".equals(category)){
-            addPaletteOption("Импорт GLB с текстурами",this::pickGlb);
-            addPaletteOption("Качество 1024 / 2048 px",this::chooseTextureLimit);
+            addPaletteOption("🖼 Загрузить свой PNG / JPG",this::pickPaintTexture);
+            addPaletteOption("🎨 Мои текстуры",this::choosePaintTexture);
+            addPaletteOption("🧱 Нанести на выбранную деталь",this::applyPaintToSelected);
+            addPaletteOption("🧽 Очистить текстуру детали",()->edit(()->nativePaintSelected("")));
+            addPaletteOption("🖌 Покрасить землю",this::activateTerrainPainting);
+            addPaletteOption("📏 Радиус кисти земли",this::choosePaintRadius);
+            addPaletteOption("✕ Завершить покраску",this::cancelPlace);
+            addPaletteOption("Импорт GLB с материалами",this::pickGlb);
+            addPaletteOption("Качество GLB 1024 / 2048 px",this::chooseTextureLimit);
             addPaletteOption("Форматы и ограничения",()->new AlertDialog.Builder(this)
                 .setTitle("Текстуры OE")
-                .setMessage("Сейчас работают встроенные в GLB PNG/JPG и GPU-готовые ETC2/сырой RGBA8 KTX2. "
-                    +"Нанесение отдельного PNG на стену и покраска земли кистью пока не готовы. "
-                    +"BasisU и Draco ещё не подключены.")
+                .setMessage("Можно загружать PNG/JPG до 1024px и наносить на объекты или землю. "
+                    +"В GLB читаются встроенные изображения и готовые KTX2 ETC2/RGBA8. "
+                    +"Draco и BasisU/KTX2 с транскодированием пока не поддерживаются.")
                 .setPositiveButton("Понятно",null).show());
         }else if("Проект".equals(category)){
             addPaletteOption("💾 Сохранить локально",this::saveScene);
@@ -390,13 +405,14 @@ public class EditorActivity extends Activity {
     }
     private void enterPlaceMode(int kind, String asset) {
         if(importing) { message("Сначала дождись завершения импорта"); return; }
-        terrainMode=0;
+        terrainMode=0;paintTerrainMode=false;
         placingKind = kind;
         placingGlb = asset;
         statusText.setText("РАЗМЕЩЕНИЕ: коснись свободной земли, чтобы поставить объект. Для отмены нажми «Отмена».");
         message("Коснись места на карте для размещения");
     }
     private void cancelPlace() {
+        paintTerrainMode=false;
         terrainMode=0;
         placingKind = -1;
         placingGlb = null;
@@ -405,7 +421,7 @@ public class EditorActivity extends Activity {
     }
     private void enterTerrainMode(int direction){
         if(importing){message("Дождись завершения операции");return;}
-        placingKind=-1;placingGlb=null;
+        placingKind=-1;placingGlb=null;paintTerrainMode=false;
         terrainMode=direction;
         statusText.setText(direction>0?
             "ГОРА: коснись земли. Кисть радиус "+(int)terrainRadius+" м, высота +"+(int)terrainStrength+" м. Отмена ↶ работает.":
@@ -585,6 +601,151 @@ public class EditorActivity extends Activity {
             return out.toByteArray();
         }
     }
+    private File textureDir() throws Exception {
+        File folder=new File(getFilesDir(),"textures");
+        if(!folder.exists()&&!folder.mkdirs())throw new Exception("Не создать папку текстур");
+        return folder;
+    }
+    private static String textureType(byte[] data) throws Exception {
+        if(data.length>=8&&(data[0]&255)==137&&data[1]==80&&data[2]==78&&data[3]==71)
+            return "image/png";
+        if(data.length>=4&&(data[0]&255)==255&&(data[1]&255)==216)
+            return "image/jpeg";
+        throw new Exception("Выбери настоящую PNG/JPG текстуру");
+    }
+    private static String textureKey(byte[] bytes,String mime) throws Exception {
+        byte[] sha=MessageDigest.getInstance("SHA-256").digest(bytes);
+        StringBuilder out=new StringBuilder("tx_");
+        final char[] alphabet="0123456789abcdef".toCharArray();
+        for(int i=0;i<12;i++){
+            out.append(alphabet[(sha[i]>>>4)&15]);
+            out.append(alphabet[sha[i]&15]);
+        }
+        return out.append("image/png".equals(mime)?".png":".jpg").toString();
+    }
+    private static boolean validTexture(String key){
+        return key!=null&&key.matches("tx_[0-9a-f]{24}\\.(png|jpg)");
+    }
+    private byte[] limitedTextureRead(InputStream stream) throws Exception {
+        try(InputStream in=stream;ByteArrayOutputStream out=new ByteArrayOutputStream()){
+            if(in==null)throw new Exception("Нельзя открыть изображение");
+            byte[] buffer=new byte[8192];int n;
+            while((n=in.read(buffer))!=-1){
+                if(out.size()+n>ProjectArchive.MAX_TEXTURE_BYTES)
+                    throw new Exception("Максимум 8 МБ на текстуру");
+                out.write(buffer,0,n);
+            }
+            return out.toByteArray();
+        }
+    }
+    private void pickPaintTexture(){
+        if(importing){message("Дождись загрузки");return;}
+        Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("image/*");
+        try{startActivityForResult(intent,PICK_PAINT);}
+        catch(Exception e){message("Не открыть галерею: "+e.getMessage());}
+    }
+    private void importPaintTexture(Uri uri){
+        if(importing)return;
+        importing=true;
+        new Thread(()->{
+            try{
+                byte[] original=limitedTextureRead(getContentResolver().openInputStream(uri));
+                String mime=textureType(original);
+                String key=textureKey(original,mime);
+                TextureReader.Image image=TextureReader.decode(original,mime,1024);
+                File destination=new File(textureDir(),key);
+                if(!destination.exists()){
+                    File partial=new File(textureDir(),key+".part");
+                    try{
+                        Files.write(partial.toPath(),original);
+                        Files.move(partial.toPath(),destination.toPath(),
+                            StandardCopyOption.REPLACE_EXISTING);
+                    }finally{Files.deleteIfExists(partial.toPath());}
+                }else{
+                    byte[] previous=Files.readAllBytes(destination.toPath());
+                    if(!textureKey(previous,textureType(previous)).equals(key))
+                        throw new Exception("Файл текстуры повреждён: "+key);
+                }
+                surface.queueEvent(()->{
+                    boolean ok=nativeRegisterPaintTexture(key,image.bytes,image.width,image.height);
+                    importing=false;
+                    if(ok){
+                        activePaintKey=key;
+                        message("Текстура добавлена · теперь нанеси её на деталь или землю");
+                        surface.requestRender();
+                    }else message("Лимит текстур/памяти GPU. Максимум 8 изображений.");
+                });
+            }catch(Exception err){
+                importing=false;message("Текстура не добавлена: "+err.getMessage());
+            }
+        },"oe-paint-image-import").start();
+    }
+    private void usePaintTexture(String key){
+        if(importing)return;
+        importing=true;
+        new Thread(()->{
+            try{
+                if(!validTexture(key))throw new Exception("Недопустимое имя");
+                File file=new File(textureDir(),key);
+                if(!file.isFile()||file.length()>ProjectArchive.MAX_TEXTURE_BYTES)
+                    throw new Exception("Текстура не найдена");
+                byte[] source=Files.readAllBytes(file.toPath());
+                String mime=textureType(source);
+                if(!key.equals(textureKey(source,mime)))
+                    throw new Exception("Контрольная сумма не совпадает");
+                TextureReader.Image image=TextureReader.decode(source,mime,1024);
+                surface.queueEvent(()->{
+                    boolean ok=nativeRegisterPaintTexture(key,image.bytes,image.width,image.height);
+                    importing=false;
+                    if(ok){activePaintKey=key;message("Выбрана текстура: "+key);}
+                    else message("Не удалось загрузить текстуру в GPU");
+                });
+            }catch(Exception e){importing=false;message("Не открыть текстуру: "+e.getMessage());}
+        },"oe-load-paint").start();
+    }
+    private void choosePaintTexture(){
+        try{
+            File[] files=textureDir().listFiles((dir,name)->validTexture(name));
+            if(files==null||files.length==0){
+                message("Сначала импортируй PNG/JPG");return;
+            }
+            java.util.Arrays.sort(files,(a,b)->a.getName().compareTo(b.getName()));
+            String[] names=new String[files.length];
+            for(int i=0;i<files.length;i++)
+                names[i]="🎨 "+files[i].getName().substring(3,15);
+            new AlertDialog.Builder(this).setTitle("Мои текстуры")
+                .setItems(names,(dialog,which)->usePaintTexture(files[which].getName()))
+                .setNegativeButton("Отмена",null).show();
+        }catch(Exception e){message("Библиотека текстур: "+e.getMessage());}
+    }
+    private void applyPaintToSelected(){
+        String key=activePaintKey;
+        if(key.isEmpty()){message("Сначала выбери PNG/JPG в каталоге");return;}
+        edit(()->{
+            if(nativePaintSelected(key))message("Текстура нанесена на выбранную деталь");
+            else message("Выбери объект или загрузить текстуру повторно");
+        });
+    }
+    private void activateTerrainPainting(){
+        if(activePaintKey.isEmpty()){
+            message("Сначала загрузи и выбери PNG/JPG");return;
+        }
+        terrainMode=0;placingKind=-1;placingGlb=null;
+        paintTerrainMode=true;
+        statusText.setText("КИСТЬ ТЕКСТУР: касайся земли · радиус "+(int)paintRadius+
+            "м · до 48 мазков · ↶ отменить");
+    }
+    private void choosePaintRadius(){
+        final String[] labels={"Маленькая · 4м","8м","16м","32м","64м"};
+        final float[] values={4,8,16,32,64};
+        new AlertDialog.Builder(this).setTitle("Размер кисти текстуры")
+            .setItems(labels,(dialog,n)->{
+                paintRadius=values[n];
+                message("Радиус кисти: "+(int)paintRadius+"м");
+            }).show();
+    }
     private void exportProject(){
         if(importing){message("Дождись завершения операции");return;}
         Intent intent=new Intent(Intent.ACTION_CREATE_DOCUMENT);
@@ -611,7 +772,7 @@ public class EditorActivity extends Activity {
                 try{
                     try(OutputStream stream=getContentResolver().openOutputStream(uri,"w")){
                         if(stream==null)throw new Exception("Нет доступа к файлу");
-                        ProjectArchive.exportProject(scene,modelDir(),stream);
+                        ProjectArchive.exportProject(scene,modelDir(),textureDir(),stream);
                     }
                     message("Проект экспортирован со всеми используемыми GLB");
                 }catch(Exception e){
@@ -633,7 +794,8 @@ public class EditorActivity extends Activity {
                 }
                 surface.queueEvent(() -> {
                     final HashSet<String> cached=new HashSet<>(Arrays.asList(nativeLoadedAssetKeys()));
-                    new Thread(() -> readAndPrepareScene(cached,staged.sceneFile,staged.modelDir,staged.root),
+                    new Thread(() -> readAndPrepareScene(cached,staged.sceneFile,staged.modelDir,
+                    staged.textureDir,staged.root),
                         "oe-project-validate").start();
                 });
             }catch(Exception e){
@@ -657,6 +819,11 @@ public class EditorActivity extends Activity {
     }
     @Override protected void onActivityResult(int requestCode,int resultCode,Intent intent) {
         super.onActivityResult(requestCode,resultCode,intent);
+        if(requestCode==PICK_PAINT){
+            if(resultCode==RESULT_OK&&intent!=null&&intent.getData()!=null)
+                importPaintTexture(intent.getData());
+            return;
+        }
         if(requestCode==SAVE_PROJECT||requestCode==PICK_PROJECT){
             if(resultCode==RESULT_OK&&intent!=null&&intent.getData()!=null){
                 if(requestCode==SAVE_PROJECT)exportToUri(intent.getData());
@@ -722,7 +889,7 @@ public class EditorActivity extends Activity {
     private static final class SavedEntity {
         int type;
         float x,z,yaw,size,y,sx=1f,sy=1f,sz=1f;
-        String asset;
+        String asset,paint="";
     }
     private static boolean validAsset(String name) {
         return name!=null && name.matches("oe_[0-9a-f]{24}\\.glb");
@@ -734,11 +901,11 @@ public class EditorActivity extends Activity {
         // thread can skip expensive decode work for those immutable GLBs.
         surface.queueEvent(() -> {
             final HashSet<String> cached=new HashSet<>(Arrays.asList(nativeLoadedAssetKeys()));
-            new Thread(() -> readAndPrepareScene(cached,null,null,null),"oe-scene-load").start();
+            new Thread(() -> readAndPrepareScene(cached,null,null,null,null),"oe-scene-load").start();
         });
     }
     private void readAndPrepareScene(HashSet<String> cached,File sourceScene,
-            File sourceModels,File stagingRoot) {
+            File sourceModels,File sourceTextures,File stagingRoot) {
         try {
             File file=sourceScene==null?saveFile():sourceScene;
             ByteArrayOutputStream jsonBytes=new ByteArrayOutputStream();
@@ -783,6 +950,28 @@ public class EditorActivity extends Activity {
                     throw new Exception("Изменение рельефа за границами карты");
             }
             String[] modelKeys=new String[arr.length()];
+            String[] objectPaintKeys=new String[arr.length()];
+            HashSet<String> referencedPaint=new HashSet<>();
+            JSONArray paintJson=document.optJSONArray("terrainPaint");
+            int paintCount=paintJson==null?0:paintJson.length();
+            if(paintCount>48)throw new Exception("Максимум 48 мазков по земле");
+            float[] paintBrushes=new float[paintCount*3];
+            String[] paintBrushKeys=new String[paintCount];
+            for(int i=0;i<paintCount;i++){
+                JSONArray brush=paintJson.getJSONArray(i);
+                if(brush.length()!=4)throw new Exception("Неверная кисть текстуры");
+                for(int j=0;j<3;j++){
+                    double value=brush.getDouble(j);
+                    if(!Double.isFinite(value))throw new Exception("Неверная координата покраски");
+                    paintBrushes[3*i+j]=(float)value;
+                }
+                float x=paintBrushes[3*i],z=paintBrushes[3*i+1],r=paintBrushes[3*i+2];
+                if(Math.abs(x)>worldSize/2f||Math.abs(z)>worldSize/2f||
+                    r<4f||r>64f)throw new Exception("Кисть текстуры за пределами карты");
+                String key=brush.getString(3);
+                if(!validTexture(key))throw new Exception("Неверная текстура кисти");
+                paintBrushKeys[i]=key;referencedPaint.add(key);
+            }
             for(int i=0;i<items.length;i++){
                 JSONObject object=arr.getJSONObject(i);
                 SavedEntity e=new SavedEntity();
@@ -802,6 +991,12 @@ public class EditorActivity extends Activity {
                     throw new Exception("Неверный масштаб детали "+i);
                 e.x=(float)x;e.z=(float)z;e.yaw=(float)yaw;e.size=(float)size;e.y=(float)y;
                 e.sx=(float)sx;e.sy=(float)sy;e.sz=(float)sz;
+                e.paint=object.optString("paint","");
+                if(!e.paint.isEmpty()){
+                    if(!validTexture(e.paint))throw new Exception("Неверная текстура объекта "+i);
+                    referencedPaint.add(e.paint);
+                }
+                objectPaintKeys[i]=e.paint;
                 if(e.type==6){
                     e.asset=object.getString("asset");
                     if(!validAsset(e.asset))throw new Exception("Неверная ссылка модели");
@@ -820,6 +1015,19 @@ public class EditorActivity extends Activity {
                 modelKeys[i]=e.asset;
             }
             if(assets.size()>MAX_ASSETS)throw new Exception("Слишком много разных GLB-моделей");
+            if(referencedPaint.size()>8)throw new Exception("Слишком много текстур (макс. 8)");
+            Map<String,TextureReader.Image> paintImages=new LinkedHashMap<>();
+            for(String key:referencedPaint){
+                File texture=new File(sourceTextures==null?textureDir():sourceTextures,key);
+                if(!texture.isFile()||texture.length()<=0||
+                   texture.length()>ProjectArchive.MAX_TEXTURE_BYTES)
+                    throw new Exception("Файл текстуры не найден: "+key);
+                byte[] bytes=Files.readAllBytes(texture.toPath());
+                String mime=textureType(bytes);
+                if(!key.equals(textureKey(bytes,mime)))
+                    throw new Exception("Повреждена текстура: "+key);
+                paintImages.put(key,TextureReader.decode(bytes,mime,1024));
+            }
             Map<String,GlbReader.Result> missing=new LinkedHashMap<>();
             // Verify that each GLB still has a file on disk, but decode only
             // resources not already resident in the renderer.
@@ -855,10 +1063,33 @@ public class EditorActivity extends Activity {
                     }
                 }
             }
+            if(sourceTextures!=null){
+                File targetFolder=textureDir();
+                for(String key:referencedPaint){
+                    File target=new File(targetFolder,key);
+                    if(target.exists()){
+                        byte[] current=Files.readAllBytes(target.toPath());
+                        if(!key.equals(textureKey(current,textureType(current))))
+                            throw new Exception("Повреждена существующая текстура: "+key);
+                    }else{
+                        File partial=new File(targetFolder,key+".part");
+                        try{
+                            Files.copy(new File(sourceTextures,key).toPath(),partial.toPath(),
+                                StandardCopyOption.REPLACE_EXISTING);
+                            Files.move(partial.toPath(),target.toPath());
+                        }finally{Files.deleteIfExists(partial.toPath());}
+                    }
+                }
+            }
             surface.queueEvent(() -> {
                 ArrayList<String> uploaded=new ArrayList<>();
                 boolean committed=false;
                 try {
+                    for(Map.Entry<String,TextureReader.Image> entry:paintImages.entrySet()){
+                        TextureReader.Image img=entry.getValue();
+                        if(!nativeRegisterPaintTexture(entry.getKey(),img.bytes,img.width,img.height))
+                            throw new Exception("Лимит памяти пользовательских текстур: "+entry.getKey());
+                    }
                     if(!nativeCanRegisterMore(missing.size()))
                         throw new Exception("Недостаточно свободных слотов GLB (макс. 12)");
                     for(Map.Entry<String,GlbReader.Result> entry:missing.entrySet()){
@@ -869,12 +1100,13 @@ public class EditorActivity extends Activity {
                             throw new Exception("Ошибка загрузки GPU: "+entry.getKey());
                         uploaded.add(entry.getKey());
                     }
-                    if(!nativeReplaceScene(worldSize,demoRoads,kinds,transforms,modelKeys,terrainBrushes))
+                    if(!nativeReplaceScene(worldSize,demoRoads,kinds,transforms,modelKeys,
+                            terrainBrushes,objectPaintKeys,paintBrushes,paintBrushKeys))
                         throw new Exception("Сцена не прошла полную проверку в движке");
                     committed=true;
                     surface.requestRender();
                     refreshSelected();
-                    message("Сцена загружена · "+items.length+" объектов, GLB "+assets.size()+
+                    message("Сцена загружена · "+items.length+" объектов, текстур "+referencedPaint.size()+", GLB "+assets.size()+
                             " (из памяти "+(assets.size()-missing.size())+")");
                 }catch(Exception e){
                     message("Сцена НЕ изменена: "+e.getMessage());
@@ -980,7 +1212,7 @@ public class EditorActivity extends Activity {
                 final float px=surfaceX(downX),py=surfaceY(downY);
                 queueEvent(() -> {
                     nativeGizmoEnd();gizmoEditStarted=false;
-                    if(placingKind==-1&&terrainMode==0)
+                    if(placingKind==-1&&terrainMode==0&&!paintTerrainMode)
                         touchedGizmoAxis=nativeGizmoHit(px,py);
                 });
                 return true;
@@ -1016,7 +1248,7 @@ public class EditorActivity extends Activity {
                         // axis hit-test on DOWN is guaranteed to run before MOVE.
                         queueEvent(()->{
                             final int axis=touchedGizmoAxis;
-                            if(axis>=0&&placingKind==-1&&terrainMode==0){
+                            if(axis>=0&&placingKind==-1&&terrainMode==0&&!paintTerrainMode){
                                 if(!gizmoEditStarted&&movedEnough)
                                     gizmoEditStarted=nativeGizmoBegin(axis);
                                 if(gizmoEditStarted)nativeGizmoDrag(axis,sx,sy);
@@ -1037,6 +1269,8 @@ public class EditorActivity extends Activity {
                     final float px=surfaceX(upX),py=surfaceY(upY);
                     final boolean tap=Math.hypot(upX-downX,upY-downY)<dp(8);
                     final int kind=placingKind,brush=terrainMode;
+                    final boolean paint=paintTerrainMode;
+                    final String paintingKey=activePaintKey;
                     final String asset=placingGlb;
                     queueEvent(()->{
                         if(touchedGizmoAxis>=0){
@@ -1046,7 +1280,11 @@ public class EditorActivity extends Activity {
                             return;
                         }
                         if(tap){
-                            if(brush!=0){
+                            if(paint){
+                                int strokes=nativePaintTerrainAtScreen(px,py,paintRadius,paintingKey);
+                                if(strokes>0)message("Земля окрашена · мазок "+strokes+"/48");
+                                else message("Не получилось покрасить: нет текстуры или лимит 48 кистей");
+                            }else if(brush!=0){
                                 int count=nativeApplyTerrainBrushAtScreen(px,py,terrainRadius,
                                     brush*terrainStrength);
                                 if(count>0)message("Рельеф изменён · "+count+"/64");

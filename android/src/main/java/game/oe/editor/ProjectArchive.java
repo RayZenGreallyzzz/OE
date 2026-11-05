@@ -26,18 +26,46 @@ public final class ProjectArchive {
     public static final long MAX_UNPACKED_BYTES=128L*1024*1024;
     public static final int MAX_MODELS=12;
     public static final int MAX_SCENE_BYTES=200000;
+    public static final int MAX_TEXTURES=8,MAX_TEXTURE_BYTES=8*1024*1024;
 
     public static final class StagedProject {
-        public final File root, sceneFile, modelDir;
+        public final File root, sceneFile, modelDir, textureDir;
         private StagedProject(File root){
             this.root=root;
             this.sceneFile=new File(root,"scene.json");
             this.modelDir=new File(root,"models");
+            this.textureDir=new File(root,"textures");
         }
     }
 
     private static boolean validModel(String name){
         return name!=null && name.matches("oe_[0-9a-f]{24}\\.glb");
+    }
+    private static boolean validTexture(String name){
+        return name!=null&&name.matches("tx_[0-9a-f]{24}\\.(png|jpg)");
+    }
+    private static Set<String> referencedTextures(String scene) throws Exception{
+        JSONObject document=new JSONObject(scene);
+        Set<String> keys=new HashSet<>();
+        JSONArray objects=document.getJSONArray("items");
+        for(int i=0;i<objects.length();i++){
+            String key=objects.getJSONObject(i).optString("paint","");
+            if(!key.isEmpty()){
+                check(validTexture(key),"Недопустимая текстура объекта");keys.add(key);
+            }
+        }
+        JSONArray strokes=document.optJSONArray("terrainPaint");
+        if(strokes!=null){
+            check(strokes.length()<=48,"Слишком много кистей текстуры");
+            for(int i=0;i<strokes.length();i++){
+                JSONArray stroke=strokes.getJSONArray(i);
+                check(stroke.length()==4,"Неверная запись покраски земли");
+                String key=stroke.getString(3);
+                check(validTexture(key),"Недопустимая текстура земли");keys.add(key);
+            }
+        }
+        check(keys.size()<=MAX_TEXTURES,"Более 8 пользовательских текстур");
+        return keys;
     }
     private static void check(boolean ok,String reason) throws IOException{
         if(!ok)throw new IOException(reason);
@@ -75,8 +103,10 @@ public final class ProjectArchive {
         }
         return name.append(".glb").toString();
     }
-    public static void exportProject(String scene,File modelFolder,OutputStream output) throws Exception{
+    public static void exportProject(String scene,File modelFolder,File textureFolder,
+             OutputStream output) throws Exception{
         Set<String> names=referencedModels(scene);
+        Set<String> textures=referencedTextures(scene);
         long budget=scene.getBytes(StandardCharsets.UTF_8).length;
         // Do all preflight validation before emitting an archive.
         for(String name:names){
@@ -86,6 +116,15 @@ public final class ProjectArchive {
             budget+=f.length();
             check(budget<=MAX_UNPACKED_BYTES,"Проект слишком большой");
             check(name.equals(calculatedName(f)),"Повреждён GLB: "+name);
+        }
+        for(String name:textures){
+            File image=new File(textureFolder,name);
+            check(image.isFile()&&image.length()>0&&image.length()<=MAX_TEXTURE_BYTES,
+                "Не найдена текстура для экспорта: "+name);
+            check(name.equals(calculatedTextureName(image)),
+                "Повреждена текстура: "+name);
+            budget+=image.length();
+            check(budget<=MAX_UNPACKED_BYTES,"Проект слишком большой");
         }
         try(ZipOutputStream zip=new ZipOutputStream(new BufferedOutputStream(output))){
             zip.putNextEntry(new ZipEntry("scene.json"));
@@ -100,7 +139,20 @@ public final class ProjectArchive {
                 }
                 zip.closeEntry();
             }
+            for(String name:textures){
+                zip.putNextEntry(new ZipEntry("textures/"+name));
+                try(InputStream in=new BufferedInputStream(
+                    new FileInputStream(new File(textureFolder,name)))){
+                    int count;while((count=in.read(bytes))!=-1)zip.write(bytes,0,count);
+                }
+                zip.closeEntry();
+            }
         }
+    }
+    private static String calculatedTextureName(File image) throws Exception{
+        String suffix=image.getName().endsWith(".jpg")?".jpg":".png";
+        String modelHash=calculatedName(image);
+        return "tx_"+modelHash.substring(3,27)+suffix;
     }
     public static StagedProject importProject(InputStream input,File cacheRoot) throws Exception{
         File root=new File(cacheRoot,"oe-import-"+UUID.randomUUID());
@@ -108,6 +160,7 @@ public final class ProjectArchive {
         StagedProject staged=new StagedProject(root);
         try{
             check(staged.modelDir.mkdir(),"Нельзя создать каталог моделей");
+            check(staged.textureDir.mkdir(),"Нельзя создать каталог текстур");
             long unpacked=0;
             Set<String> seen=new HashSet<>();
             try(ZipInputStream zip=new ZipInputStream(new BufferedInputStream(input))){
@@ -123,12 +176,15 @@ public final class ProjectArchive {
                     boolean scene="scene.json".equals(name);
                     boolean model=name.startsWith("models/")&&
                         validModel(name.substring("models/".length()));
-                    check(scene||model,"Запрещён файл в архиве: "+name);
+                    boolean texture=name.startsWith("textures/")&&
+                        validTexture(name.substring("textures/".length()));
+                    check(scene||model||texture,"Запрещён файл в архиве: "+name);
                     check(seen.add(name),"Повторяющийся файл: "+name);
                     entries++;
-                    check(entries<=MAX_MODELS+1,"Слишком много файлов");
-                    File target=scene?staged.sceneFile:
-                        new File(staged.modelDir,name.substring("models/".length()));
+                    check(entries<=MAX_MODELS+MAX_TEXTURES+1,"Слишком много файлов");
+                    File target=scene?staged.sceneFile:(model?
+                        new File(staged.modelDir,name.substring("models/".length())):
+                        new File(staged.textureDir,name.substring("textures/".length())));
                     int fileBytes=0;
                     try(OutputStream out=new BufferedOutputStream(new FileOutputStream(target))){
                         int n;
@@ -136,7 +192,8 @@ public final class ProjectArchive {
                             fileBytes+=n;
                             unpacked+=n;
                             check(unpacked<=MAX_UNPACKED_BYTES,"Архив слишком большой");
-                            check(fileBytes<=(scene?MAX_SCENE_BYTES:GlbReader.MAX_BYTES),
+                            check(fileBytes<=(scene?MAX_SCENE_BYTES:
+                                  (model?GlbReader.MAX_BYTES:MAX_TEXTURE_BYTES)),
                                   "Файл внутри архива слишком большой");
                             out.write(buf,0,n);
                         }
@@ -153,6 +210,16 @@ public final class ProjectArchive {
                 check(f.isFile(),"Нет модели: "+name);
                 check(name.equals(calculatedName(f)),"Неверный хеш GLB: "+name);
             }
+            Set<String> neededTextures=referencedTextures(json);
+            for(String name:neededTextures){
+                File image=new File(staged.textureDir,name);
+                check(image.isFile(),"Нет текстуры: "+name);
+                check(name.equals(calculatedTextureName(image)),
+                    "Неверная контрольная сумма текстуры: "+name);
+            }
+            File[] textures=staged.textureDir.listFiles();
+            check(textures!=null&&textures.length==neededTextures.size(),
+                "Есть лишние или недостающие текстуры");
             // Every model in the archive must be referenced by the scene.
             File[] files=staged.modelDir.listFiles();
             check(files!=null&&files.length==required.size(),

@@ -928,7 +928,7 @@ public class EditorActivity extends Activity {
                 try{
                     try(OutputStream stream=getContentResolver().openOutputStream(uri,"w")){
                         if(stream==null)throw new Exception("Нет доступа к файлу");
-                        ProjectArchive.exportProject(scene,modelDir(),textureDir(),stream);
+                        ProjectArchive.exportProject(scene,modelDir(),textureDir(),originalDir(),stream);
                     }
                     message("Проект экспортирован со всеми используемыми GLB");
                 }catch(Exception e){
@@ -951,7 +951,7 @@ public class EditorActivity extends Activity {
                 surface.queueEvent(() -> {
                     final HashSet<String> cached=new HashSet<>(Arrays.asList(nativeLoadedAssetKeys()));
                     new Thread(() -> readAndPrepareScene(cached,staged.sceneFile,staged.modelDir,
-                    staged.textureDir,staged.root),
+                    staged.textureDir,staged.sourceDir,staged.root),
                         "oe-project-validate").start();
                 });
             }catch(Exception e){
@@ -1080,11 +1080,12 @@ public class EditorActivity extends Activity {
         // thread can skip expensive decode work for those immutable GLBs.
         surface.queueEvent(() -> {
             final HashSet<String> cached=new HashSet<>(Arrays.asList(nativeLoadedAssetKeys()));
-            new Thread(() -> readAndPrepareScene(cached,null,null,null,null),"oe-scene-load").start();
+            new Thread(() -> readAndPrepareScene(cached,null,null,null,null,null),"oe-scene-load").start();
         });
     }
     private void readAndPrepareScene(HashSet<String> cached,File sourceScene,
-            File sourceModels,File sourceTextures,File stagingRoot) {
+            File sourceModels,File sourceTextures,File sourceOriginals,
+            File stagingRoot) {
         try {
             File file=sourceScene==null?saveFile():sourceScene;
             ByteArrayOutputStream jsonBytes=new ByteArrayOutputStream();
@@ -1256,6 +1257,29 @@ public class EditorActivity extends Activity {
                             Files.copy(new File(sourceTextures,key).toPath(),partial.toPath(),
                                 StandardCopyOption.REPLACE_EXISTING);
                             Files.move(partial.toPath(),target.toPath());
+                        }finally{Files.deleteIfExists(partial.toPath());}
+                    }
+                }
+            }
+            if(sourceOriginals!=null){
+                // Archive import has already checked that each unmodified source
+                // corresponds to the exact content-addressed GLB in this scene.
+                File[] originals=sourceOriginals.listFiles();
+                if(originals==null)throw new Exception("Нет каталога исходных моделей");
+                File target=originalDir();
+                for(File original:originals){
+                    if(!original.isFile())throw new Exception("Неверный источник модели");
+                    File installed=new File(target,original.getName());
+                    if(installed.isFile()){
+                        if(!Arrays.equals(Files.readAllBytes(original.toPath()),
+                                Files.readAllBytes(installed.toPath())))
+                            throw new Exception("Различаются исходные модели с одним именем");
+                    }else{
+                        File partial=new File(target,original.getName()+".part");
+                        try{
+                            Files.copy(original.toPath(),partial.toPath(),
+                                StandardCopyOption.REPLACE_EXISTING);
+                            Files.move(partial.toPath(),installed.toPath());
                         }finally{Files.deleteIfExists(partial.toPath());}
                     }
                 }

@@ -1208,6 +1208,23 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeFocusLocation(JN
  gTarget={LOCATIONS[index].x,terrainHeightAt(LOCATIONS[index].x,LOCATIONS[index].z)+1.2f,LOCATIONS[index].z};
  gDistance=index==0?35.f:68.f;
 }
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeRecommendQuality(
+ JNIEnv*,jclass,jint ramMiB){
+ GLint maxTexture=0;
+ glGetIntegerv(GL_MAX_TEXTURE_SIZE,&maxTexture);
+ const GLubyte*raw=glGetString(GL_RENDERER);
+ const std::string renderer=raw?
+  std::string(reinterpret_cast<const char*>(raw)):"unknown";
+ const bool software=renderer.find("SwiftShader")!=std::string::npos||
+  renderer.find("llvmpipe")!=std::string::npos||
+  renderer.find("softpipe")!=std::string::npos;
+ return static_cast<jint>(oe::recommendedTier(
+   std::max(0,int(ramMiB)),std::max(0,int(maxTexture)),software));
+}
+JNIEXPORT jfloat JNICALL Java_game_oe_editor_EditorActivity_nativeQualityScale(
+ JNIEnv*,jclass,jint tier){
+ return oe::profile(tier).resolutionScale;
+}
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeSetQualityProfile(
  JNIEnv*,jclass,jint tier){
  if(!oe::validTier(tier))return JNI_FALSE;

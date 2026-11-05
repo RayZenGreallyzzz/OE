@@ -20,7 +20,7 @@ struct Vec3 {float x, y, z;};
 struct Vec4 {float x, y, z, w;};
 struct Mat4 {float m[16]{};};
 struct Mesh {GLuint vao=0, buffer=0; GLsizei count=0;};
-struct Entity {int id=0, type=0; float x=0, z=0, yaw=0, size=1; std::string asset; float y=0.f;};
+struct Entity {int id=0, type=0; float x=0, z=0, yaw=0, size=1; std::string asset; float y=0.f, sx=1.f,sy=1.f,sz=1.f;};
 struct Color {float r,g,b;};
 struct Shader {
  GLuint program=0;
@@ -32,7 +32,7 @@ struct Asset {
  float centerY=0.f, radius=0.f; // Conservative normalized object-space sphere.
 };
 static Mesh gMeshes[3];
-static Mesh gStaticMeshes[10]; // Every decorative object is a single combined draw.
+static Mesh gStaticMeshes[17]; // Every decorative object is a single combined draw.
 void bakeStaticMesh(int type);
 // Cached, combined flat terrain: one GLES draw call per frame instead of one per tile.
 struct TerrainGpu {
@@ -249,7 +249,7 @@ void setupGL(){
   glEnableVertexAttribArray(1);glVertexAttribPointer(1,3,GL_FLOAT,GL_FALSE,6*sizeof(float),reinterpret_cast<void*>(3*sizeof(float)));
   glDisableVertexAttribArray(2);
  }
- for(int kind=0;kind<10;kind++)if(kind!=6)bakeStaticMesh(kind);
+ for(int kind=0;kind<17;kind++)if(kind!=6)bakeStaticMesh(kind);
  for(auto &kv:gAssets)uploadAsset(kv.second);
  // A new OpenGL context needs new handles; never reuse IDs from the previous context.
  gTerrain={};
@@ -307,8 +307,8 @@ bool importedInView(const Frustum&frustum,const Entity&e){
  const auto it=gAssets.find(e.asset);
  if(it==gAssets.end()||it->second.gpu.count<=0)return false;
  const Asset &asset=it->second;
- const float radius=asset.radius*e.size;
- const Vec3 center{e.x,e.y+asset.centerY*e.size,e.z};
+ const float radius=asset.radius*e.size*std::max({e.sx,e.sy,e.sz});
+ const Vec3 center{e.x,e.y+asset.centerY*e.size*e.sy,e.z};
  const Vec3 delta=sub(center,cameraEye());
  const float maxDistance=230.f+radius;
  if(dot(delta,delta)>maxDistance*maxDistance)return false;
@@ -317,7 +317,7 @@ bool importedInView(const Frustum&frustum,const Entity&e){
 void drawImported(const Mat4&vp,const Entity&e){
  auto it=gAssets.find(e.asset);
  if(it==gAssets.end()||it->second.gpu.count==0)return;
- const Mat4 model=mul(mul(translate({e.x,e.y,e.z}),rotateY(e.yaw*RAD)),scale({e.size,e.size,e.size}));
+ const Mat4 model=mul(mul(translate({e.x,e.y,e.z}),rotateY(e.yaw*RAD)),scale({e.size*e.sx,e.size*e.sy,e.size*e.sz}));
  const Mat4 mvp=mul(vp,model);
  glUniformMatrix4fv(gShader.locMvp,1,GL_FALSE,mvp.m);
  glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
@@ -390,6 +390,32 @@ void forEachStaticPart(int type,Part&&part){
    part(0,0,1.19f,.34f,2.0f,.79f,.17f,oak);
    for(float x:{-.73f,.73f})for(float z:{-.27f,.27f})
      part(0,x,.36f,z,.16f,.72f,.15f,dark);
+ }else if(type==10){ // Wall segment
+    part(0,0,1.4f,0,3.2f,2.8f,.26f,stone);
+ }else if(type==11){ // Floor tile
+    part(0,0,.10f,0,3.2f,.20f,3.2f,mortar);
+ }else if(type==12){ // Roof segment
+    part(1,0,.85f,0,3.2f,1.55f,3.2f,roof);
+ }else if(type==13){ // Open door frame
+    part(0,-.91f,1.22f,0,.24f,2.44f,.28f,oak);
+    part(0,.91f,1.22f,0,.24f,2.44f,.28f,oak);
+    part(0,0,2.50f,0,2.06f,.24f,.28f,oak);
+ }else if(type==14){ // Window (frame and glass)
+    part(0,0,1.50f,0,1.48f,1.16f,.12f,glass);
+    part(0,0,.89f,0,1.68f,.14f,.19f,oak);
+    part(0,0,2.11f,0,1.68f,.14f,.19f,oak);
+    part(0,-.77f,1.50f,0,.14f,1.34f,.19f,oak);
+    part(0,.77f,1.50f,0,.14f,1.34f,.19f,oak);
+ }else if(type==15){ // Pillar
+    part(2,0,1.45f,0,.40f,2.9f,.40f,stone);
+    part(0,0,.13f,0,.77f,.25f,.77f,mortar);
+    part(0,0,2.78f,0,.77f,.25f,.77f,mortar);
+ }else if(type==16){ // Staircase
+    for(int step=0;step<5;step++){
+      const float depth=.55f;
+      part(0,0,.15f*(step+1),-1.2f+step*depth,
+           2.1f,.30f*(step+1),depth,stone);
+    }
  }
 }
 void bakeStaticMesh(int type){
@@ -410,11 +436,11 @@ void bakeStaticMesh(int type){
  gStaticMeshes[type]=baked.gpu;
 }
 void drawStatic(const Mat4&vp,const Entity&e){
- if(e.type<0||e.type>=10||e.type==6)return;
+ if(e.type<0||e.type>=17||e.type==6)return;
  const Mesh&m=gStaticMeshes[e.type];
  if(m.count<=0)return;
  const Mat4 model=mul(mul(translate({e.x,e.y,e.z}),rotateY(e.yaw*RAD)),
-  scale({e.size,e.size,e.size}));
+  scale({e.size*e.sx,e.size*e.sy,e.size*e.sz}));
  const Mat4 mvp=mul(vp,model);
  glUniformMatrix4fv(gShader.locMvp,1,GL_FALSE,mvp.m);
  glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
@@ -560,8 +586,8 @@ bool blocked(float x,float z,int type){
 }
 bool staticInView(const Mat4&vp,const Entity&e){
  if(std::abs(e.x-gTarget.x)>230.f||std::abs(e.z-gTarget.z)>230.f)return false;
- const Vec4 clip=apply(vp,{e.x,e.y+2.8f*e.size,e.z,1.f});
- const float radius=(e.type<=2?7.5f:(e.type==5?4.5f:3.5f))*e.size;
+ const Vec4 clip=apply(vp,{e.x,e.y+2.8f*e.size*e.sy,e.z,1.f});
+ const float radius=(e.type<=2?7.5f:(e.type==5?4.5f:3.5f))*e.size*std::max({e.sx,e.sy,e.sz});
  if(clip.w < -radius)return false;
  if(clip.w <=radius)return true; // Keep very close objects visible.
  const float padX=radius*vp.m[0]*1.6f;
@@ -576,7 +602,7 @@ void drawEntity(const Mat4&vp,const Frustum&frustum,const Entity&e){
  if(staticInView(vp,e))drawStatic(vp,e);
 }
 int add(int type,float x,float z,float yaw,float size){
- if(type<0||type>9||type==6||gEntities.size()>=MAX_ENTITIES)return 0;
+ if(type<0||type>16||type==6||gEntities.size()>=MAX_ENTITIES)return 0;
  recordEdit();
  int id=gNextId++;gEntities.push_back({id,type,x,z,yaw,size,"",terrainHeightAt(x,z)});gSelected=id;return id;
 }
@@ -602,8 +628,8 @@ void reset(bool demo){
 }
 Entity* selected(){for(auto &e:gEntities)if(e.id==gSelected)return &e;return nullptr;}
 const char* nameFor(int type){
- const char* names[]={"Таверна","Кузница","Аукционный дом","Фонарь","Фонтан","Дерево","Модель GLB","Камни","Куст","Лавка"};
- return type>=0&&type<10?names[type]:"Объект";
+ const char* names[]={"Таверна","Кузница","Аукционный дом","Фонарь","Фонтан","Дерево","Модель GLB","Камни","Куст","Лавка","Стена","Пол","Крыша","Дверная рама","Окно","Колонна","Лестница"};
+ return type>=0&&type<17?names[type]:"Объект";
 }
 } // namespace
 
@@ -676,7 +702,7 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePick(JNIEnv*,jcl
   int visible=0;
   for(float xx:{-range,range})for(float zz:{-range,range})for(float yy:{0.f,h}){
     float a=e.yaw*RAD,k=e.size,c=std::cos(a),s=std::sin(a);
-    Vec4 q=apply(vp,{e.x+(c*xx+s*zz)*k,e.y+yy*k,e.z+(c*zz-s*xx)*k,1});
+    Vec4 q=apply(vp,{e.x+(c*xx*e.sx+s*zz*e.sz)*k,e.y+yy*k*e.sy,e.z+(c*zz*e.sz-s*xx*e.sx)*k,1});
     if(q.w<.1f)continue;visible++;
     float sx=(q.x/q.w*.5f+.5f)*gWidth, sy=(.5f-q.y/q.w*.5f)*gHeight;
     left=std::min(left,sx);right=std::max(right,sx);
@@ -689,7 +715,7 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePick(JNIEnv*,jcl
  return found;
 }
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeAdd(JNIEnv*,jclass,jint type){
- if(type<0||type>9||type==6)return 0;
+ if(type<0||type>16||type==6)return 0;
  float x=gTarget.x,z=gTarget.z;
  for(int radius=0;radius<=160;radius+=12){
   for(int angle=0;angle<8;angle++){
@@ -702,7 +728,7 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeAdd(JNIEnv*,jcla
  return 0;
 }
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePlaceAtScreen(JNIEnv*,jclass,jint type,jfloat px,jfloat py){
- if(type<0||type>9||type==6)return 0;
+ if(type<0||type>16||type==6)return 0;
  float x,z;
  if(!groundPoint(px,py,x,z)||blocked(x,z,type))return 0;
  return add(type,x,z,0,1);
@@ -719,7 +745,7 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePlaceImportedAtS
  int id=gNextId++;gEntities.push_back({id,6,x,z,0,1,asset,terrainHeightAt(x,z)});gSelected=id;return id;
 }
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeAddPlaced(JNIEnv*,jclass,jint type,jfloat x,jfloat z,jfloat yaw,jfloat size){
- if(type<0||type>9||type==6 || !std::isfinite(x)||!std::isfinite(z)||!std::isfinite(yaw)||!std::isfinite(size) ||
+ if(type<0||type>16||type==6 || !std::isfinite(x)||!std::isfinite(z)||!std::isfinite(yaw)||!std::isfinite(size) ||
  std::abs(x)>worldHalf() || std::abs(z)>worldHalf() || std::abs(yaw)>36000 || size<.2f || size>8)return 0;
  return add(type,x,z,yaw,size);
 }
@@ -775,6 +801,16 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeRotate(JNIEnv*,j
  if(!std::isfinite(deg)||deg==0)return;
  if(Entity*e=selected()){recordEdit();e->yaw=std::fmod(e->yaw+deg,360.f);}
 }
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeScaleSelectedAxis(
+ JNIEnv*,jclass,jint axis,jfloat factor){
+ if(axis<0||axis>2||!std::isfinite(factor)||factor<=0)return;
+ if(Entity*e=selected()){
+  float *target=axis==0?&e->sx:(axis==1?&e->sy:&e->sz);
+  const float value=clampf(*target*factor,.10f,8.f);
+  if(value==*target)return;
+  recordEdit();*target=value;
+ }
+}
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeScale(JNIEnv*,jclass,jfloat factor){
  if(!std::isfinite(factor)||factor<=0)return;
  if(Entity*e=selected()){
@@ -794,7 +830,7 @@ JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSceneSnapshot
  for(size_t i=0;i<gEntities.size();i++){
   const auto&e=gEntities[i];if(i)out<<",";
   out<<"{\"type\":"<<e.type<<",\"x\":"<<e.x<<",\"z\":"<<e.z
-     <<",\"yaw\":"<<e.yaw<<",\"size\":"<<e.size<<",\"y\":"<<e.y;
+     <<",\"yaw\":"<<e.yaw<<",\"size\":"<<e.size<<",\"y\":"<<e.y<<",\"sx\":"<<e.sx<<",\"sy\":"<<e.sy<<",\"sz\":"<<e.sz;
   if(e.type==6)out<<",\"asset\":\""<<e.asset<<"\"";
   out<<"}";
  }

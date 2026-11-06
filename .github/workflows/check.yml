@@ -46,6 +46,17 @@ jobs:
           g++ -std=c++17 -O2 -Wall -Wextra -Werror \
             tests/device_quality_profiles_smoke.cpp -o /tmp/oe-quality-test
           /tmp/oe-quality-test
+  road-network:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify portable road centerlines and terrain meshing
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -pedantic \
+            tests/road_network_smoke.cpp \
+            android/src/main/cpp/roads/road_network.cpp \
+            -o /tmp/oe-roads-test
+          /tmp/oe-roads-test
   runtime-core:
     runs-on: ubuntu-latest
     steps:

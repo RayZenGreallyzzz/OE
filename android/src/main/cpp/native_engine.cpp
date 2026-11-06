@@ -2,6 +2,7 @@
 #include <jni.h>
 #include "vendor/meshoptimizer/meshoptimizer.h"
 #include "quality_profiles.h"
+#include "runtime/oe_runtime.h"
 #include <GLES3/gl3.h>
 #include <android/log.h>
 #include <algorithm>
@@ -1208,6 +1209,79 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeFocusLocation(JN
  gTarget={LOCATIONS[index].x,terrainHeightAt(LOCATIONS[index].x,LOCATIONS[index].z)+1.2f,LOCATIONS[index].z};
  gDistance=index==0?35.f:68.f;
 }
+// Editor-to-runtime adapter: only this JNI layer knows about editor globals.
+// The portable oe_runtime_core library NEVER includes GLES, JNI or Java.
+// Build a COPY of the current edited entities and run a deterministic probe.
+JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeRuntimeCoreReport(
+ JNIEnv*env,jclass){
+ std::vector<oe::runtime::SceneItem> staged;
+ staged.reserve(gEntities.size());
+ std::size_t importedModels=0,modules=0;
+ for(const auto&entity:gEntities){
+  oe::runtime::SceneItem item;
+  item.name=std::string(nameFor(entity.type))+" #"+std::to_string(entity.id);
+  item.transform.position={
+   static_cast<double>(entity.x),
+   static_cast<double>(entity.y),
+   static_cast<double>(entity.z)
+  };
+  const double halfYaw=static_cast<double>(entity.yaw)*static_cast<double>(RAD)*.5;
+  item.transform.orientation={0.0,std::sin(halfYaw),0.0,std::cos(halfYaw)};
+  item.transform.scale={
+   static_cast<double>(entity.size)*entity.sx,
+   static_cast<double>(entity.size)*entity.sy,
+   static_cast<double>(entity.size)*entity.sz
+  };
+  if(entity.type==6){
+   item.meshAsset=entity.asset;
+   ++importedModels;
+  }else{
+   item.meshAsset="builtin:"+std::to_string(entity.type);
+   ++modules;
+  }
+  staged.push_back(std::move(item));
+ }
+ oe::runtime::World preview(MAX_ENTITIES+4);
+ if(!preview.loadStaticScene(staged))
+  return env->NewStringUTF("Ошибка: сцена не прошла проверку независимого игрового ядра.");
+ const std::vector<oe::runtime::EntitySnapshot> before=preview.snapshot();
+ const auto actor=preview.create("runtime-test-actor");
+ if(!preview.alive(actor))
+  return env->NewStringUTF("Ошибка: не удалось создать тестовый игровой объект.");
+ oe::runtime::Transform spawn;
+ if(!preview.setTransform(actor,spawn)||
+    !preview.setVelocity(actor,{{1.0,0.0,0.0}})||
+    !preview.stepTicks(120))
+  return env->NewStringUTF("Ошибка симуляции OE Runtime Core.");
+ const oe::runtime::Transform*simulated=preview.transform(actor);
+ if(!simulated||std::abs(simulated->position.x-2.0)>1e-6)
+  return env->NewStringUTF("Ошибка контрольной симуляции 120 тиков.");
+ const std::vector<oe::runtime::EntitySnapshot> after=preview.snapshot();
+ bool sceneUnchanged=after.size()==before.size()+1;
+ if(sceneUnchanged)for(size_t i=0;i<before.size();i++){
+  const auto&beforePos=before[i].transform.position;
+  const auto&afterPos=after[i].transform.position;
+  if(beforePos.x!=afterPos.x||beforePos.y!=afterPos.y||
+     beforePos.z!=afterPos.z||before[i].renderer.has_value()!=after[i].renderer.has_value()){
+   sceneUnchanged=false;break;
+  }
+ }
+ std::ostringstream report;
+ report<<"OE Game Runtime Core 0.7.0\n\n"
+       <<"Редактор -> копия игрового мира: "<<before.size()<<" объектов\n"
+       <<"  Встроенные детали: "<<modules<<"\n"
+       <<"  Импортированные 3D-модели: "<<importedModels<<"\n"
+       <<"Отдельный тестовый актор: 1\n"
+       <<"Фиксированный шаг: 60 тиков/с\n"
+       <<"Проверено: "<<preview.ticks()<<" тиков / "
+       <<std::fixed<<std::setprecision(2)<<preview.elapsedSeconds()<<" с\n"
+       <<"Тест движения: X = "<<simulated->position.x<<" м (ожидается 2.00)\n"
+       <<"Позиции исходной копии: "<<(sceneUnchanged?"сохранены":"ОШИБКА")<<"\n\n"
+       <<"Текущая сцена редактора НЕ изменена.\n"
+       <<"Физика, управление, скрипты, Play и экспорт APK: ЕЩЁ НЕ ГОТОВЫ.";
+ return env->NewStringUTF(report.str().c_str());
+}
+
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeRecommendQuality(
  JNIEnv*,jclass,jint ramMiB){
  GLint maxTexture=0;

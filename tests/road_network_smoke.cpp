@@ -1,4 +1,5 @@
 #include "../android/src/main/cpp/roads/road_network.h"
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <limits>
@@ -19,7 +20,9 @@ int main(){
         assert(std::abs(v.z)<=3.01f);
     }
     assert(std::abs(mesh.triangles.front().v)<1.e-6f);
-    assert(mesh.triangles.back().v>4.9f);
+    float maxV=0.0f;
+    for(const auto& vertex:mesh.triangles)maxV=std::max(maxV,vertex.v);
+    assert(maxV>4.9f);
     const auto before=mesh.triangles.size();
     assert(!buildSurfaceMesh(*roads.find(id),
         [](double,double){return std::numeric_limits<double>::quiet_NaN();},

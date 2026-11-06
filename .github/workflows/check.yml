@@ -1,7 +1,7 @@
 name: OE smoke tests
 on:
   push:
-    branches: [main, test/advanced-assets-065, test/device-quality-profiles-071]
+    branches: [main, test/advanced-assets-065, test/device-quality-profiles-071, test/game-runtime-core-070]
   pull_request:
 jobs:
   syntax-and-scenes:
@@ -46,3 +46,14 @@ jobs:
           g++ -std=c++17 -O2 -Wall -Wextra -Werror \
             tests/device_quality_profiles_smoke.cpp -o /tmp/oe-quality-test
           /tmp/oe-quality-test
+  runtime-core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify portable OE Runtime C++17 without Android/GLES dependencies
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -pedantic \
+            tests/runtime_core_smoke.cpp \
+            android/src/main/cpp/runtime/oe_runtime.cpp \
+            -o /tmp/oe-runtime-core-test
+          /tmp/oe-runtime-core-test

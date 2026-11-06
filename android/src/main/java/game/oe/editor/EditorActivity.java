@@ -50,6 +50,7 @@ public class EditorActivity extends Activity {
     private static native void nativeResize(int width, int height);
     private static native void nativeDraw();
     private static native String nativeRenderStats();
+    private static native String nativeRuntimeCoreReport();
     private static native int nativeRecommendQuality(int ramMiB);
     private static native boolean nativeSetQualityProfile(int tier);
     private static native float nativeQualityScale(int tier);
@@ -223,7 +224,7 @@ public class EditorActivity extends Activity {
         top.setPadding(dp(5),dp(2),dp(5),dp(2));
         top.setBackgroundColor(Color.argb(220,14,21,32));
         TextView title=new TextView(this);
-        title.setText("OE 0.6.12  /  UNIVERSAL IMPORT TEST");
+        title.setText("OE 0.7.0 / GAME RUNTIME CORE TEST");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
         title.setTextSize(12);
@@ -418,6 +419,7 @@ public class EditorActivity extends Activity {
                     +"Draco и BasisU/KTX2 с транскодированием пока не поддерживаются.")
                 .setPositiveButton("Понятно",null).show());
         }else if("Проект".equals(category)){
+            addPaletteOption("🧠 Ядро игры · проверить",this::showRuntimeCoreStatus);
             addPaletteOption("⚡ Графика и качество",this::chooseDeviceProfile);
             addPaletteOption("🖥 Информация о GPU",this::showDeviceCapabilities);
             addPaletteOption("💾 Сохранить локально",this::saveScene);
@@ -492,6 +494,20 @@ public class EditorActivity extends Activity {
                 (dialog,which)->{selectDeviceQuality(which-1);dialog.dismiss();})
             .setNeutralButton("Видеочип",(dialog,which)->showDeviceCapabilities())
             .setNegativeButton("Отмена",null).show();
+    }
+    private void showRuntimeCoreStatus(){
+        if(importing){message("Сначала закончи загрузку проекта");return;}
+        if(surface==null)return;
+        // The GLES/editor scene is read only on its owning thread.
+        // The new game core receives a separate COPY and cannot modify a project.
+        surface.queueEvent(()->{
+            final String report=nativeRuntimeCoreReport();
+            ui(()->new AlertDialog.Builder(this)
+                .setTitle("OE Game Runtime Core · первый этап")
+                .setMessage(report)
+                .setPositiveButton("Готово",null)
+                .show());
+        });
     }
     private void showDeviceCapabilities(){
         if(surface==null)return;

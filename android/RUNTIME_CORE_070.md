@@ -1,7 +1,7 @@
 # OE 0.7.0 Game Runtime Core TEST — milestone 1 of playable engine
 
 **Status: portable game kernel + editor scene bridge; NOT YET PLAYABLE.**
-Branch: `test/game-runtime-core-070` (based on experimental `test/universal-import-072`).
+Branch: `test/game-runtime-core-070` (0.6.12 universal import plus a merge of experimental 0.6.13 BasisU/KTX2).
 Android ID: `game.oe.editor.runtimecore` — isolated from 0.6.12 and stable OE main.
 ORVETHRA remains a separate Godot MMO; its repository is NOT touched.
 
@@ -24,7 +24,7 @@ ORVETHRA remains a separate Godot MMO; its repository is NOT touched.
 - No scripts, events or behavior graph, animation playback, sound, multiplayer, or standalone game APK export.
 - No terrain, paint/brush physics, loaded texture bytes or actual GLES rendering are copied into runtime; the bridge currently transfers only editor objects and mesh references.
 - No general-purpose ECS scheduler/system plug-in framework yet; component store plus one deterministic movement system is the minimum safe foundation.
-- Draco and BasisU transcoding remain unsupported (same status as 0.6.12).
+- Draco remains unsupported. The proven-by-CI BasisU ETC1S/UASTC LDR -> ETC2 transcoder from experimental 0.6.13 is bundled, but real-device texture tests are still needed.
 
 ## Host build / smoke (no Android)
 

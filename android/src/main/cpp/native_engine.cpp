@@ -3,12 +3,15 @@
 #include "vendor/meshoptimizer/meshoptimizer.h"
 #include "quality_profiles.h"
 #include "runtime/oe_runtime.h"
+#include "vendor/basisu/transcoder/basisu_transcoder.h"
 #include <GLES3/gl3.h>
 #include <android/log.h>
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <chrono>
+#include <limits>
+#include <mutex>
 #include <iomanip>
 #include <sstream>
 #include <string>
@@ -1031,6 +1034,65 @@ void drawGizmo(const Mat4&vp){
 } // namespace
 
 extern "C" {
+// Basis Universal ETC1S/UASTC LDR -> native GLES3 ETC2 RGBA8 blocks.
+// Only 2D single-face, non-array KTX2 textures are accepted. Decoding runs
+// on the asset worker thread (never on the GLES render thread).
+static std::once_flag gBasisInitOnce;
+JNIEXPORT jbyteArray JNICALL Java_game_oe_editor_TextureReader_nativeTranscodeBasisKtx2(
+ JNIEnv*env,jclass,jbyteArray source,jint qualityLimit){
+ if(!source||(qualityLimit!=1024&&qualityLimit!=2048))return nullptr;
+ const jsize bytes=env->GetArrayLength(source);
+ if(bytes<104||bytes>24*1024*1024)return nullptr;
+ std::vector<uint8_t> encoded(static_cast<size_t>(bytes));
+ env->GetByteArrayRegion(source,0,bytes,
+      reinterpret_cast<jbyte*>(encoded.data()));
+ if(env->ExceptionCheck())return nullptr;
+ std::call_once(gBasisInitOnce,[](){basist::basisu_transcoder_init();});
+ basist::ktx2_transcoder transcoder;
+ if(!transcoder.init(encoded.data(),static_cast<uint32_t>(encoded.size()))||
+    transcoder.get_faces()!=1||transcoder.get_layers()!=0||
+    transcoder.get_header().m_pixel_depth!=0||
+    !(transcoder.is_etc1s()||transcoder.is_uastc()))return nullptr;
+ uint32_t width=transcoder.get_width(),height=transcoder.get_height();
+ if(!width||!height||width>16384||height>16384||
+    transcoder.get_levels()==0||transcoder.get_levels()>16)return nullptr;
+ uint32_t level=0;
+ // Prefer a source mip level that fits the import budget; do NOT
+ // misrepresent downscaling of non-mipmapped GPU blocks.
+ while(width>static_cast<uint32_t>(qualityLimit)||
+       height>static_cast<uint32_t>(qualityLimit)){
+  if(level+1>=transcoder.get_levels())return nullptr;
+  level++;
+  width=std::max<uint32_t>(1,transcoder.get_width()>>level);
+  height=std::max<uint32_t>(1,transcoder.get_height()>>level);
+ }
+ const size_t blocksX=(width+3)/4,blocksY=(height+3)/4;
+ const size_t nblocks=blocksX*blocksY;
+ const size_t outputBytes=nblocks*16;
+ if(!nblocks||nblocks>static_cast<size_t>(4*1024*1024)||outputBytes>32*1024*1024)
+  return nullptr;
+ if(!transcoder.start_transcoding())return nullptr;
+ std::vector<uint8_t> etc2(outputBytes);
+ const bool okay=transcoder.transcode_image_level(level,0,0,etc2.data(),
+       static_cast<uint32_t>(nblocks),basist::transcoder_texture_format::cTFETC2_RGBA);
+ if(!okay)return nullptr;
+ const size_t packedBytes=12+outputBytes;
+ if(packedBytes>static_cast<size_t>(std::numeric_limits<jsize>::max()))return nullptr;
+ std::vector<uint8_t> packed(packedBytes);
+ auto u32=[&](size_t at,uint32_t n){
+  packed[at]=static_cast<uint8_t>(n);
+  packed[at+1]=static_cast<uint8_t>(n>>8);
+  packed[at+2]=static_cast<uint8_t>(n>>16);
+  packed[at+3]=static_cast<uint8_t>(n>>24);
+ };
+ u32(0,width);u32(4,height);u32(8,2); // TextureReader.FORMAT_ETC2_RGBA
+ std::copy(etc2.begin(),etc2.end(),packed.begin()+12);
+ jbyteArray output=env->NewByteArray(static_cast<jsize>(packedBytes));
+ if(!output)return nullptr;
+ env->SetByteArrayRegion(output,0,static_cast<jsize>(packedBytes),
+                         reinterpret_cast<const jbyte*>(packed.data()));
+ return output;
+}
 // Offline Meshopt decoder — only bounded, validated bufferViews are accepted.
 // This reconstructs decoded GLB views in memory. The original GLB is immutable.
 JNIEXPORT jbyteArray JNICALL Java_game_oe_editor_GlbReader_nativeDecodeMeshopt(

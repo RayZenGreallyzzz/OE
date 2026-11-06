@@ -416,7 +416,7 @@ public class EditorActivity extends Activity {
                 .setTitle("Текстуры OE")
                 .setMessage("Можно загружать PNG/JPG до 1024px и наносить на объекты или землю. "
                     +"В GLB читаются встроенные изображения и готовые KTX2 ETC2/RGBA8. "
-                    +"Draco и BasisU/KTX2 с транскодированием пока не поддерживаются.")
+                    +"Draco пока не поддерживается. KTX2 BasisU ETC1S/UASTC LDR -> ETC2 подключён (тест).")
                 .setPositiveButton("Понятно",null).show());
         }else if("Проект".equals(category)){
             addPaletteOption("🧠 Ядро игры · проверить",this::showRuntimeCoreStatus);

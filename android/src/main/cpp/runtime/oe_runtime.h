@@ -55,6 +55,12 @@ struct EntitySnapshot {
     std::optional<Camera> camera;
     std::optional<Collider> collider;
 };
+// Portable scene description supplied by an editor, game loader or network tool.
+struct SceneItem {
+    std::string name;
+    Transform transform{};
+    std::string meshAsset; // Empty means object has no renderer.
+};
 struct StepResult {
     std::size_t steps=0;
     std::uint64_t totalTicks=0;
@@ -69,6 +75,9 @@ public:
     World& operator=(const World&)=delete;
 
     EntityId create(const std::string& name={});
+    // Validates first; either all scene entities are replaced or none are.
+    // Loading resets the simulation clock and invalidates all previous IDs.
+    bool loadStaticScene(const std::vector<SceneItem>& items);
     bool alive(EntityId id) const noexcept;
     bool destroy(EntityId id) noexcept;
     bool setName(EntityId id,const std::string& name);
@@ -125,6 +134,7 @@ private:
     std::uint64_t ticks_=0;
     double accumulator_=0.0;
     bool paused_=false;
+    std::uint32_t generationSerial_=1;
 };
 
 }} // namespace oe::runtime

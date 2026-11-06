@@ -59,6 +59,8 @@ EntityId World::create(const std::string& name){
         slots_.emplace_back();
     }
     Slot& slot=slots_[index];
+    slot.generation=generationSerial_++;
+    if(generationSerial_==0)generationSerial_=1;
     slot.alive=true;
     slot.name=name;
     slot.transform=Transform{};
@@ -68,6 +70,32 @@ EntityId World::create(const std::string& name){
     slot.collider.reset();
     ++liveCount_;
     return {index,slot.generation};
+}
+bool World::loadStaticScene(const std::vector<SceneItem>& items){
+    if(items.size()>capacity_)return false;
+    // All validation and allocations happen in temporary state.
+    std::vector<Slot> nextSlots;
+    nextSlots.reserve(items.size());
+    std::uint32_t nextGeneration=generationSerial_;
+    for(const SceneItem& item:items){
+        if(item.name.size()>kMaxEntityNameBytes||
+           item.meshAsset.size()>kMaxAssetIdBytes||
+           !validTransform(item.transform))return false;
+        Slot slot;
+        slot.alive=true;
+        slot.generation=nextGeneration++;
+        if(nextGeneration==0)nextGeneration=1;
+        slot.name=item.name;
+        slot.transform=item.transform;
+        if(!item.meshAsset.empty())slot.renderer=MeshRenderer{item.meshAsset,true};
+        nextSlots.push_back(std::move(slot));
+    }
+    slots_.swap(nextSlots);
+    freeSlots_.clear();
+    generationSerial_=nextGeneration;
+    liveCount_=slots_.size();
+    ticks_=0;accumulator_=0.0;paused_=false;
+    return true;
 }
 bool World::alive(EntityId id) const noexcept{return find(id)!=nullptr;}
 bool World::destroy(EntityId id) noexcept{

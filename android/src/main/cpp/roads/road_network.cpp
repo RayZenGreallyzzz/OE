@@ -112,14 +112,14 @@ bool buildSurfaceMesh(const Road& road,const TerrainHeight& height,
     SurfaceMesh result;
     result.triangles.reserve((samples.size()-1)*6);
     for(std::size_t i=1;i<samples.size();++i){
-        // CCW, Y-up for a road along +X.
+        // CCW Y-up winding (the renderer may enable back-face culling).
         const Vertex& l0=left[i-1],&r0=right[i-1],&l1=left[i],&r1=right[i];
         result.triangles.push_back(l0);
-        result.triangles.push_back(r0);
-        result.triangles.push_back(l1);
         result.triangles.push_back(l1);
         result.triangles.push_back(r0);
+        result.triangles.push_back(l1);
         result.triangles.push_back(r1);
+        result.triangles.push_back(r0);
     }
     output=std::move(result);
     return true;

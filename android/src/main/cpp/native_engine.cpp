@@ -4,6 +4,7 @@
 #include "quality_profiles.h"
 #include "runtime/oe_runtime.h"
 #include "roads/road_network.h"
+#include "terrainpaint/paint_tiles.h"
 #include "vendor/basisu/transcoder/basisu_transcoder.h"
 #include <GLES3/gl3.h>
 #include <android/log.h>
@@ -18,6 +19,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <map>
 #include <cstdint>
 
 namespace {
@@ -112,6 +114,15 @@ static std::vector<TerrainPaint> gTerrainPaint;
 static constexpr size_t MAX_TERRAIN_PAINT=48;
 static std::vector<TerrainBrush> gBrushes;
 static int gTerrainRevision=0;
+// R4 composited paint tiles: GPU cache is disposable; authoring bytes are portable.
+static oe::terrainpaint::Canvas gPaintTiles;
+struct PaintTileGpu {GLuint texture=0;std::uint32_t revision=0;};
+static std::map<std::pair<int,int>,PaintTileGpu> gPaintTileGpu;
+static bool gPrecisionPaintActive=false,gPaintCursorVisible=false,gPaintEraser=false;
+static float gPaintCursorX=0,gPaintCursorZ=0,gPaintCursorRadius=2.f;
+static float gStrokeX=0,gStrokeZ=0,gStrokeRadius=2.f,gStrokeOpacity=.8f;
+static std::string gStrokeTexture;
+
 // Editor-only PNG guide is intentionally NOT a Runtime Core entity/material.
 struct MapGuide {
  GLuint texture=0;
@@ -167,18 +178,22 @@ struct SceneSnapshot {
  std::vector<TerrainPaint> paints;
  std::vector<oe::roads::Road> roads;
  std::uint64_t selectedRoad=0;
+ oe::terrainpaint::Canvas precisePaint;
 };
 static std::vector<SceneSnapshot> gUndo,gRedo;
 static bool gSuspendHistory=false;
 static constexpr size_t HISTORY_LIMIT=40;
 SceneSnapshot captureScene(){return {gEntities,gNextId,gSelected,gWorldSize,gDemoRoads,
-    gTarget,gDistance,gBrushes,gTerrainPaint,gRoads.all(),gSelectedRoad};}
+    gTarget,gDistance,gBrushes,gTerrainPaint,gRoads.all(),gSelectedRoad,gPaintTiles};}
 void restoreScene(const SceneSnapshot&s){
  gEntities=s.entities;gNextId=s.nextId;gSelected=s.selected;gWorldSize=s.worldSize;
  gDemoRoads=s.demoRoads;gTarget=s.target;gDistance=s.cameraDistance;
  gBrushes=s.terrain;gTerrainPaint=s.paints;gTerrainRevision++;gSceneInitialized=true;
  gRoads.replaceAll(s.roads);gSelectedRoad=s.selectedRoad;
  gRoadPending=false;gActiveRoad=0;++gRoadRevision;
+ gPaintTiles=s.precisePaint;
+ for(auto& gpu:gPaintTileGpu)if(gpu.second.texture)glDeleteTextures(1,&gpu.second.texture);
+ gPaintTileGpu.clear();gPrecisionPaintActive=false;gPaintCursorVisible=false;
 }
 void pushBounded(std::vector<SceneSnapshot>&stack,SceneSnapshot value){
  if(stack.size()>=HISTORY_LIMIT)stack.erase(stack.begin());
@@ -460,6 +475,7 @@ void setupGL(){
  gMapGuide.texture=0;gMapGuide.mesh={};gMapGuide.meshRevision=-1;
  gMapStage={};
  gRoadGpu={};gRoadRanges.clear();gRoadGpuRevision=-1;gRoadGpuTerrainRevision=-1;
+ gPaintTileGpu.clear();gPrecisionPaintActive=false;gPaintCursorVisible=false;
  const char*vert=R"(#version 300 es
  layout(location=0) in vec3 aPos;
  layout(location=1) in vec3 aNormal;
@@ -1237,6 +1253,9 @@ void reset(bool demo){
  gSuspendHistory=true;
  gEntities.clear();gBrushes.clear();gTerrainPaint.clear();gTerrainRevision++;gNextId=1;gSelected=0;
  gRoads.clear();gSelectedRoad=0;gActiveRoad=0;gRoadPending=false;++gRoadRevision;
+ gPaintTiles.clear();
+ for(auto& gpu:gPaintTileGpu)if(gpu.second.texture)glDeleteTextures(1,&gpu.second.texture);
+ gPaintTileGpu.clear();gPrecisionPaintActive=false;gPaintCursorVisible=false;
  gSceneInitialized=true;gDemoRoads=demo;gMapTopDown=false;
  gTarget={0,1.2f,1.3f};gDistance=28.f;
  if(demo){
@@ -1922,6 +1941,8 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeSetWorldSize
  // Never silently hide buildings when shrinking the world.
  for(const auto&e:gEntities)if(std::abs(e.x)>half-1.f||std::abs(e.z)>half-1.f)return JNI_FALSE;
  if(!roadBudget(gRoads.all(),newSize))return JNI_FALSE;
+ oe::terrainpaint::Canvas nextTiles;
+ if(!nextTiles.replaceAll(gPaintTiles.tiles(),newSize))return JNI_FALSE;
  if(gWorldSize==newSize)return JNI_TRUE;
  recordEdit();
  gWorldSize=newSize;

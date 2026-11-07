@@ -91,7 +91,9 @@ public class EditorActivity extends Activity {
     private static native void nativeDiscardUnusedAsset(String key);
     private static native boolean nativeReplaceScene(int size, boolean demoRoads,
             int[] kinds, float[] transforms, String[] modelKeys, float[] terrain,
-            String[] objectPaintKeys, float[] painting, String[] terrainPaintKeys);
+            String[] objectPaintKeys, float[] painting, String[] terrainPaintKeys,
+            long[] roadIds, String[] roadNames, String[] roadMaterials,
+            double[] roadWidths, double[][] roadPoints);
     private static native boolean nativeRegisterPaintTexture(String key, byte[] rgba,int width,int height);
     private static native boolean nativePaintSelected(String key);
     private static native int nativePaintTerrainAtScreen(float x,float y,float radius,String key);
@@ -106,6 +108,17 @@ public class EditorActivity extends Activity {
     private static native void nativeGizmoDrag(int axis,float dx,float dy);
     private static native void nativeGizmoEnd();
     private static native int nativeAddImportedPlaced(String key, float x, float z, float yaw, float size);
+    private static native void nativeRoadBegin();
+    private static native void nativeRoadFinish();
+    private static native boolean nativeRoadContinue();
+    private static native int nativeRoadTap(float x,float y);
+    private static native String[] nativeRoadLabels();
+    private static native boolean nativeRoadSelect(int index);
+    private static native boolean nativeRoadSetWidth(double width);
+    private static native double nativeRoadSelectedWidth();
+    private static native boolean nativeRoadSetMaterial(int choice);
+    private static native boolean nativeRoadRemoveLastPoint();
+    private static native boolean nativeRoadDeleteSelected();
     private static final int PICK_GLB = 702, PICK_PROJECT=703, SAVE_PROJECT=704, PICK_PAINT=705;
     private static final int MAX_ASSETS = 12;
 
@@ -118,6 +131,8 @@ public class EditorActivity extends Activity {
     private volatile int gizmoMode=0;
     private volatile String activePaintKey="";
     private volatile boolean paintTerrainMode=false;
+    private volatile boolean roadMode=false;
+    private volatile double selectedRoadWidth=6.0;
     private volatile float paintRadius=16f;
     private volatile long statsUpdatedAt=0;
     private volatile boolean importing = false;
@@ -224,7 +239,7 @@ public class EditorActivity extends Activity {
         top.setPadding(dp(5),dp(2),dp(5),dp(2));
         top.setBackgroundColor(Color.argb(220,14,21,32));
         TextView title=new TextView(this);
-        title.setText("OE 0.7.0 / GAME RUNTIME CORE TEST");
+        title.setText("OE ROAD EDITOR R2 / TEST");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
         title.setTextSize(12);
@@ -249,7 +264,7 @@ public class EditorActivity extends Activity {
         HorizontalScrollView categoryScroll=new HorizontalScrollView(this);
         categoryScroll.setHorizontalScrollBarEnabled(false);
         LinearLayout categoryRow=row();
-        for(String category:new String[]{"Здания","Детали","Декор","Рельеф","Текстуры","Проект"}){
+        for(String category:new String[]{"Здания","Детали","Декор","Рельеф","Дороги","Текстуры","Проект"}){
             Button tab=button(category,()->showPalette(category));
             LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(dp(98),dp(44));
             p.setMargins(dp(2),0,dp(2),0);categoryRow.addView(tab,p);
@@ -369,7 +384,7 @@ public class EditorActivity extends Activity {
         Button b=button(label,()->{
             action.run();
             // Start placing directly on the exposed 3D world.
-            if(placingKind>=0||terrainMode!=0||paintTerrainMode)toggleDrawer(false);
+            if(placingKind>=0||terrainMode!=0||paintTerrainMode||roadMode)toggleDrawer(false);
         });
         LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,dp(43));
         p.setMargins(dp(4),dp(2),dp(4),dp(2));
@@ -402,6 +417,22 @@ public class EditorActivity extends Activity {
             addPaletteOption("⛰ Опустить землю",()->enterTerrainMode(-1));
             addPaletteOption("📐 Радиус и сила кисти",this::chooseTerrainBrush);
             addPaletteOption("✕ Завершить изменение",this::cancelPlace);
+        }else if("Дороги".equals(category)){
+            addPaletteOption("🛣 Новая дорога · точки",this::beginNewRoad);
+            addPaletteOption("✔ Завершить дорогу",this::finishRoad);
+            addPaletteOption("📋 Выбрать дорогу",this::chooseExistingRoad);
+            addPaletteOption("➕ Продолжить выбранную",this::continueExistingRoad);
+            addPaletteOption("↶ Удалить последнюю точку",this::removeRoadPoint);
+            addPaletteOption("↔ Ширина дороги",this::chooseRoadWidth);
+            addPaletteOption("🎨 Покрытие дороги",this::chooseRoadMaterial);
+            addPaletteOption("🗑 Удалить выбранную дорогу",this::askDeleteRoad);
+            addPaletteOption("ℹ Помощь",()->new AlertDialog.Builder(this)
+                .setTitle("Дороги OE · R2")
+                .setMessage("Выбери «Новая дорога», затем коснись земли для первой точки, "
+                    +"ещё раз — для второй. Следующие касания продолжают улицу. "
+                    +"Двумя пальцами перемещай карту. Дороги сохраняются вместе с проектом. "
+                    +"Покрытие пока показано цветом: PNG-подложка и текстурная кисть будут позже.")
+                .setPositiveButton("Понятно",null).show());
         }else if("Текстуры".equals(category)){
             addPaletteOption("🖼 Загрузить свой PNG / JPG",this::pickPaintTexture);
             addPaletteOption("🎨 Мои текстуры",this::choosePaintTexture);
@@ -444,14 +475,16 @@ public class EditorActivity extends Activity {
     }
     private void enterPlaceMode(int kind, String asset) {
         if(importing) { message("Сначала дождись завершения импорта"); return; }
-        terrainMode=0;paintTerrainMode=false;
+        terrainMode=0;paintTerrainMode=false;roadMode=false;
+        surface.queueEvent(EditorActivity::nativeRoadFinish);
         placingKind = kind;
         placingGlb = asset;
         statusText.setText("РАЗМЕЩЕНИЕ: коснись свободной земли, чтобы поставить объект. Для отмены нажми «Отмена».");
         message("Коснись места на карте для размещения");
     }
     private void cancelPlace() {
-        paintTerrainMode=false;
+        paintTerrainMode=false;roadMode=false;
+        surface.queueEvent(EditorActivity::nativeRoadFinish);
         terrainMode=0;
         placingKind = -1;
         placingGlb = null;
@@ -460,7 +493,8 @@ public class EditorActivity extends Activity {
     }
     private void enterTerrainMode(int direction){
         if(importing){message("Дождись завершения операции");return;}
-        placingKind=-1;placingGlb=null;paintTerrainMode=false;
+        placingKind=-1;placingGlb=null;paintTerrainMode=false;roadMode=false;
+        surface.queueEvent(EditorActivity::nativeRoadFinish);
         terrainMode=direction;
         statusText.setText(direction>0?
             "ГОРА: коснись земли. Кисть радиус "+(int)terrainRadius+" м, высота +"+(int)terrainStrength+" м. Отмена ↶ работает.":
@@ -486,6 +520,97 @@ public class EditorActivity extends Activity {
             surface.requestRender();
         });
     }
+
+    private void beginNewRoad(){
+        if(importing){message("Дождись завершения импорта");return;}
+        placingKind=-1;placingGlb=null;terrainMode=0;paintTerrainMode=false;roadMode=true;
+        surface.queueEvent(()->{nativeRoadBegin();surface.requestRender();});
+        statusText.setText("ДОРОГА: коснись земли для 1-й точки, затем для 2-й. "
+            +"Следующие касания продолжают дорогу. Два пальца — камера.");
+        message("Создание новой дороги · две точки задают первый участок");
+    }
+    private void finishRoad(){
+        roadMode=false;
+        surface.queueEvent(()->{nativeRoadFinish();surface.requestRender();});
+        statusText.setText("Дорога завершена · выбери другую или отредактируй ширину.");
+    }
+    private void continueExistingRoad(){
+        if(importing)return;
+        surface.queueEvent(()->{
+            if(nativeRoadContinue()){
+                roadMode=true;placingKind=-1;terrainMode=0;paintTerrainMode=false;
+                ui(()->statusText.setText("Продолжение дороги: касайся земли для добавления точек."));
+                surface.requestRender();
+            }else message("Сначала выбери дорогу через «Дороги → Выбрать»");
+        });
+    }
+    private void chooseExistingRoad(){
+        if(importing)return;
+        surface.queueEvent(()->{
+            final String[] list=nativeRoadLabels();
+            ui(()->{
+                if(list==null||list.length==0){message("Пока нет дорог");return;}
+                new AlertDialog.Builder(this).setTitle("Выбери дорогу")
+                    .setItems(list,(dialog,index)->{
+                        roadMode=false;
+                        edit(()->{
+                            nativeRoadFinish();
+                            nativeRoadSelect(index);
+                            selectedRoadWidth=nativeRoadSelectedWidth();
+                            message("Дорога выделена: можно менять ширину, покрытие и точки");
+                        });
+                    }).setNegativeButton("Отмена",null).show();
+            });
+        });
+    }
+    private void chooseRoadWidth(){
+        if(importing)return;
+        final EditText field=new EditText(this);
+        field.setSingleLine(true);
+        field.setText(String.format(Locale.US,"%.2f",selectedRoadWidth));
+        field.setInputType(InputType.TYPE_CLASS_NUMBER|InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        new AlertDialog.Builder(this).setTitle("Ширина дороги, метры · 0,25–32")
+            .setView(field)
+            .setPositiveButton("Применить",(dialog,which)->{
+                try{
+                    final double value=Double.parseDouble(
+                        field.getText().toString().trim().replace(',','.'));
+                    if(!Double.isFinite(value)||value<.25||value>32)
+                        throw new IllegalArgumentException("range");
+                    edit(()->{
+                        if(nativeRoadSetWidth(value)){
+                            selectedRoadWidth=value;
+                            message("Ширина дороги: "+value+" м");
+                        }else message("Ширина не подходит: граница карты или лимит геометрии");
+                    });
+                }catch(Exception error){message("Введите ширину от 0,25 до 32 метров");}
+            }).setNegativeButton("Отмена",null).show();
+    }
+    private void chooseRoadMaterial(){
+        if(importing)return;
+        final String[] options={"Камень (цветовой просмотр)","Грунт","Песок","Трава"};
+        new AlertDialog.Builder(this).setTitle("Покрытие дороги · предпросмотр")
+            .setItems(options,(dialog,index)->edit(()->{
+                if(nativeRoadSetMaterial(index))message("Покрытие: "+options[index]);
+            })).setNegativeButton("Отмена",null).show();
+    }
+    private void removeRoadPoint(){
+        if(importing)return;
+        edit(()->{
+            if(nativeRoadRemoveLastPoint())message("Последняя точка убрана · можно отменить ↶");
+            else message("Сначала выбери дорогу");
+        });
+    }
+    private void askDeleteRoad(){
+        if(importing)return;
+        new AlertDialog.Builder(this).setTitle("Удалить выделенную дорогу?")
+            .setMessage("Удаление можно отменить кнопкой ↶.")
+            .setPositiveButton("Удалить",(dialog,index)->edit(()->{
+                if(nativeRoadDeleteSelected())message("Дорога удалена");
+                else message("Нет выбранной дороги");
+            })).setNegativeButton("Отмена",null).show();
+    }
+
     private void chooseDeviceProfile(){
         if(importing){message("Заверши импорт проекта");return;}
         new AlertDialog.Builder(this)
@@ -904,7 +1029,8 @@ public class EditorActivity extends Activity {
         if(activePaintKey.isEmpty()){
             message("Сначала загрузи и выбери PNG/JPG");return;
         }
-        terrainMode=0;placingKind=-1;placingGlb=null;
+        terrainMode=0;placingKind=-1;placingGlb=null;roadMode=false;
+        surface.queueEvent(EditorActivity::nativeRoadFinish);
         paintTerrainMode=true;
         statusText.setText("КИСТЬ ТЕКСТУР: касайся земли · радиус "+(int)paintRadius+
             "м · до 48 мазков · ↶ отменить");
@@ -1116,7 +1242,9 @@ public class EditorActivity extends Activity {
                 throw new Exception("Сначала сохрани сцену");
             }
             JSONObject document=new JSONObject(new String(jsonBytes.toByteArray(),StandardCharsets.UTF_8));
-            if(document.optInt("version",-1)!=1)throw new Exception("Неверная версия сцены");
+            final int sceneVersion=document.optInt("version",-1);
+            if(sceneVersion!=1&&sceneVersion!=2)
+                throw new Exception("Неверная версия сцены (нужен 1 или 2)");
             final boolean demoRoads=document.optBoolean("demoRoads",false);
             final int worldSize=document.optInt("worldSize",1024);
             if(worldSize!=1024&&worldSize!=2048&&worldSize!=4096&&worldSize!=8192&&worldSize!=16384)
@@ -1209,6 +1337,68 @@ public class EditorActivity extends Activity {
                 transforms[i*8+6]=e.sy;
                 transforms[i*8+7]=e.sz;
                 modelKeys[i]=e.asset;
+            }
+            // Version 1 archives have no roads. Version 2 stores authoring centerlines,
+            // not generated rendering triangles. Validate before native atomic scene swap.
+            JSONArray savedRoads=document.optJSONArray("roads");
+            if((sceneVersion==2 && savedRoads==null)||
+               (sceneVersion==1 && document.has("roads"))||
+               (document.has("roads")&&savedRoads==null))
+                throw new Exception("Некорректная версия или раздел дорог в сцене");
+            final int roadCount=savedRoads==null?0:savedRoads.length();
+            if(roadCount>256)throw new Exception("Слишком много дорог");
+            long[] roadIds=new long[roadCount];
+            String[] roadNames=new String[roadCount],roadMaterials=new String[roadCount];
+            double[] roadWidths=new double[roadCount];
+            double[][] roadPaths=new double[roadCount][];
+            HashSet<Long> usedRoadIds=new HashSet<>();
+            int totalPoints=0,roadVertices=0;
+            for(int i=0;i<roadCount;i++){
+                JSONObject road=savedRoads.getJSONObject(i);
+                String rawId=road.getString("id");
+                if(!rawId.matches("[1-9][0-9]{0,18}"))
+                    throw new Exception("Неверный идентификатор дороги");
+                long id=Long.parseLong(rawId);
+                if(!usedRoadIds.add(id))throw new Exception("Повторяется ID дороги");
+                String name=road.getString("name");
+                if(!name.matches("[A-Za-z0-9 _-]{1,64}"))
+                    throw new Exception("Неверное имя дороги");
+                String material=road.getString("material");
+                if(!material.equals("builtin:cobblestone")&&
+                   !material.equals("builtin:dirt")&&
+                   !material.equals("builtin:sand")&&
+                   !material.equals("builtin:grass"))
+                    throw new Exception("Неизвестное покрытие дороги");
+                double width=road.getDouble("widthMetres");
+                if(!Double.isFinite(width)||width<.25||width>32)
+                    throw new Exception("Неверная ширина дороги");
+                JSONArray points=road.getJSONArray("controlPoints");
+                if(points.length()<2||points.length()>4096||totalPoints+points.length()>4096)
+                    throw new Exception("Слишком много точек дороги");
+                totalPoints+=points.length();
+                double[] xy=new double[points.length()*2];
+                double distance=0;
+                for(int j=0;j<points.length();j++){
+                    JSONArray point=points.getJSONArray(j);
+                    if(point.length()!=2)throw new Exception("Неверная точка дороги");
+                    double x=point.getDouble(0),z=point.getDouble(1);
+                    if(!Double.isFinite(x)||!Double.isFinite(z)||
+                        Math.abs(x)>worldSize/2.0-width*2||
+                        Math.abs(z)>worldSize/2.0-width*2)
+                        throw new Exception("Дорога выходит за карту");
+                    xy[j*2]=x;xy[j*2+1]=z;
+                    if(j>0){
+                        double len=Math.hypot(x-xy[(j-1)*2],z-xy[(j-1)*2+1]);
+                        if(len<.01||!Double.isFinite(len))
+                            throw new Exception("Слишком близкие точки дороги");
+                        distance+=len;
+                        roadVertices+=6*(int)Math.ceil(len/2.0);
+                        if(roadVertices>120000||distance>25000)
+                            throw new Exception("Дорожная сеть слишком велика");
+                    }
+                }
+                roadIds[i]=id;roadNames[i]=name;roadMaterials[i]=material;
+                roadWidths[i]=width;roadPaths[i]=xy;
             }
             if(assets.size()>MAX_ASSETS)throw new Exception("Слишком много разных GLB-моделей");
             if(referencedPaint.size()>8)throw new Exception("Слишком много текстур (макс. 8)");
@@ -1320,9 +1510,11 @@ public class EditorActivity extends Activity {
                         uploaded.add(entry.getKey());
                     }
                     if(!nativeReplaceScene(worldSize,demoRoads,kinds,transforms,modelKeys,
-                            terrainBrushes,objectPaintKeys,paintBrushes,paintBrushKeys))
+                            terrainBrushes,objectPaintKeys,paintBrushes,paintBrushKeys,
+                            roadIds,roadNames,roadMaterials,roadWidths,roadPaths))
                         throw new Exception("Сцена не прошла полную проверку в движке");
                     committed=true;
+                    roadMode=false;
                     surface.requestRender();
                     refreshSelected();
                     message("Сцена загружена · "+items.length+" объектов, текстур "+referencedPaint.size()+", GLB "+assets.size()+
@@ -1449,7 +1641,7 @@ public class EditorActivity extends Activity {
                 final float px=surfaceX(downX),py=surfaceY(downY);
                 queueEvent(() -> {
                     nativeGizmoEnd();gizmoEditStarted=false;
-                    if(placingKind==-1&&terrainMode==0&&!paintTerrainMode)
+                    if(placingKind==-1&&terrainMode==0&&!paintTerrainMode&&!roadMode)
                         touchedGizmoAxis=nativeGizmoHit(px,py);
                 });
                 return true;
@@ -1485,7 +1677,7 @@ public class EditorActivity extends Activity {
                         // axis hit-test on DOWN is guaranteed to run before MOVE.
                         queueEvent(()->{
                             final int axis=touchedGizmoAxis;
-                            if(axis>=0&&placingKind==-1&&terrainMode==0&&!paintTerrainMode){
+                            if(axis>=0&&placingKind==-1&&terrainMode==0&&!paintTerrainMode&&!roadMode){
                                 if(!gizmoEditStarted&&movedEnough)
                                     gizmoEditStarted=nativeGizmoBegin(axis);
                                 if(gizmoEditStarted)nativeGizmoDrag(axis,sx,sy);
@@ -1507,6 +1699,7 @@ public class EditorActivity extends Activity {
                     final boolean tap=Math.hypot(upX-downX,upY-downY)<dp(8);
                     final int kind=placingKind,brush=terrainMode;
                     final boolean paint=paintTerrainMode;
+                    final boolean roadDraw=roadMode;
                     final String paintingKey=activePaintKey;
                     final String asset=placingGlb;
                     queueEvent(()->{
@@ -1517,7 +1710,14 @@ public class EditorActivity extends Activity {
                             return;
                         }
                         if(tap){
-                            if(paint){
+                            if(roadDraw){
+                                final int result=nativeRoadTap(px,py);
+                                if(result==1)message("Первая точка · коснись земли ещё раз");
+                                else if(result==2)message("Дорога создана · добавляй точки");
+                                else if(result==3)message("Точка дороги добавлена");
+                                else if(result==0)message("Не попали на землю: попробуй другой ракурс");
+                                else message("Точка слишком близко, за краем карты или превышен лимит дороги");
+                            }else if(paint){
                                 int strokes=nativePaintTerrainAtScreen(px,py,paintRadius,paintingKey);
                                 if(strokes>0)message("Земля окрашена · мазок "+strokes+"/48");
                                 else message("Не получилось покрасить: нет текстуры или лимит 48 кистей");

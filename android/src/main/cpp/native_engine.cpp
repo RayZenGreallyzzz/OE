@@ -1237,7 +1237,7 @@ void reset(bool demo){
  gSuspendHistory=true;
  gEntities.clear();gBrushes.clear();gTerrainPaint.clear();gTerrainRevision++;gNextId=1;gSelected=0;
  gRoads.clear();gSelectedRoad=0;gActiveRoad=0;gRoadPending=false;++gRoadRevision;
- gSceneInitialized=true;gDemoRoads=demo;
+ gSceneInitialized=true;gDemoRoads=demo;gMapTopDown=false;
  gTarget={0,1.2f,1.3f};gDistance=28.f;
  if(demo){
   add(0,-8,-5,0,1);
@@ -1550,8 +1550,11 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeGizmoEnd(JNIEnv*
  gGizmoActive=false;gGizmoActiveId=0;
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeOrbit(JNIEnv*,jclass,jfloat dx,jfloat dy,jfloat zoom){
- gYaw-=dx*.006f;
- gPitch=clampf(gPitch+dy*.006f,-1.16f,1.25f);
+ if(!gMapTopDown||dx!=0.f||dy!=0.f){
+  gMapTopDown=false;
+  gYaw-=dx*.006f;
+  gPitch=clampf(gPitch+dy*.006f,-1.16f,1.25f);
+ }
  gDistance=clampf(gDistance*clampf(zoom,.6f,1.5f),5,210);
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativePan(JNIEnv*,jclass,jfloat dx,jfloat dy){
@@ -1713,6 +1716,82 @@ JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeRenderStats(J
 }
 
 // Road authoring JNI: always called on GLSurfaceView's GL thread.
+
+JNIEXPORT jdoubleArray JNICALL Java_game_oe_editor_EditorActivity_nativeMapTarget(
+ JNIEnv*env,jclass){
+ jdoubleArray result=env->NewDoubleArray(2);
+ if(result){
+  const jdouble xy[2]={static_cast<double>(gTarget.x),static_cast<double>(gTarget.z)};
+  env->SetDoubleArrayRegion(result,0,2,xy);
+ }
+ return result;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeMapStage(
+ JNIEnv*env,jclass,jbyteArray rgba,jint width,jint height){
+ if(!rgba||width<=0||height<=0||width>2048||height>2048)return JNI_FALSE;
+ const size_t length=static_cast<size_t>(width)*height*4;
+ if(length>MAX_MAP_RGBA_BYTES||static_cast<size_t>(env->GetArrayLength(rgba))!=length)
+  return JNI_FALSE;
+ MapGuide incoming;
+ incoming.pixelWidth=width;incoming.pixelHeight=height;
+ incoming.rgba.resize(length);
+ env->GetByteArrayRegion(rgba,0,static_cast<jsize>(length),
+                         reinterpret_cast<jbyte*>(incoming.rgba.data()));
+ if(env->ExceptionCheck()||!uploadMapTexture(incoming))return JNI_FALSE;
+ releaseMapGpu(gMapStage);
+ gMapStage=std::move(incoming);
+ return JNI_TRUE;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeMapCommit(
+ JNIEnv*,jclass,jdouble cx,jdouble cz,jdouble width,jfloat opacity,jboolean visible){
+ if(!gMapStage.texture)return JNI_FALSE;
+ const double h=width*gMapStage.pixelHeight/gMapStage.pixelWidth;
+ if(!validMapBounds(cx,cz,width,h,opacity)||
+    std::abs(cx)>worldHalf()||std::abs(cz)>worldHalf()||
+    width>gWorldSize||h>gWorldSize)return JNI_FALSE;
+ releaseMapGpu(gMapGuide);
+ gMapGuide=std::move(gMapStage);
+ gMapStage={};
+ gMapGuide.centerX=cx;gMapGuide.centerZ=cz;
+ gMapGuide.widthMetres=width;gMapGuide.heightMetres=h;
+ gMapGuide.opacity=opacity;gMapGuide.visible=visible==JNI_TRUE;
+ ++gMapGuide.revision;gMapGuide.meshRevision=-1;
+ return JNI_TRUE;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeMapConfigure(
+ JNIEnv*,jclass,jdouble cx,jdouble cz,jdouble width,jfloat opacity,jboolean visible){
+ if(!gMapGuide.texture)return JNI_FALSE;
+ const double h=width*gMapGuide.pixelHeight/gMapGuide.pixelWidth;
+ if(!validMapBounds(cx,cz,width,h,opacity)||
+    std::abs(cx)>worldHalf()||std::abs(cz)>worldHalf()||
+    width>gWorldSize||h>gWorldSize)return JNI_FALSE;
+ gMapGuide.centerX=cx;gMapGuide.centerZ=cz;
+ gMapGuide.widthMetres=width;gMapGuide.heightMetres=h;
+ gMapGuide.opacity=opacity;gMapGuide.visible=visible==JNI_TRUE;
+ ++gMapGuide.revision;
+ return JNI_TRUE;
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeMapAbort(JNIEnv*,jclass){
+ releaseMapGpu(gMapStage);gMapStage={};
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeMapClear(JNIEnv*,jclass){
+ releaseMapGpu(gMapStage);gMapStage={};
+ releaseMapGpu(gMapGuide);gMapGuide={};
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeMapTopView(JNIEnv*,jclass){
+ gMapTopDown=true;
+ gYaw=0.f;gPitch=1.55f;
+ if(gMapGuide.texture){
+  gTarget.x=static_cast<float>(gMapGuide.centerX);
+  gTarget.z=static_cast<float>(gMapGuide.centerZ);
+  gTarget.y=terrainHeightAt(gTarget.x,gTarget.z)+1.2f;
+  gDistance=clampf(static_cast<float>(gMapGuide.widthMetres*.55),45.f,210.f);
+ }
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeMapPerspective(JNIEnv*,jclass){
+ gMapTopDown=false;
+ gPitch=.7f;
+}
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeRoadBegin(JNIEnv*,jclass){
  gActiveRoad=0;gSelectedRoad=0;gRoadPending=false;
 }

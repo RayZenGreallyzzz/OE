@@ -971,6 +971,101 @@ void drawTerrainPaint(const Mat4&vp){
  glBindTexture(GL_TEXTURE_2D,0);
 }
 
+
+bool rebuildMapMesh(){
+ if(!gMapGuide.texture||!gMapGuide.visible)return false;
+ const int gx=static_cast<int>(std::floor(gTarget.x/16.f));
+ const int gz=static_cast<int>(std::floor(gTarget.z/16.f));
+ if(gMapGuide.meshRevision==gMapGuide.revision&&
+    gMapGuide.terrainRevision==gTerrainRevision&&
+    gMapGuide.gridX==gx&&gMapGuide.gridZ==gz)return true;
+ const double halfW=gMapGuide.widthMetres*.5,halfH=gMapGuide.heightMetres*.5;
+ const double xBase=gMapGuide.centerX-halfW,zBase=gMapGuide.centerZ-halfH;
+ const double range=std::min<double>(quality().viewRangeMetres,
+                      std::max(96.0,static_cast<double>(gDistance)*1.8));
+ const double loX=std::max({-static_cast<double>(worldHalf()),xBase,
+                           gx*16.0-range-16.0});
+ const double hiX=std::min({ static_cast<double>(worldHalf()),xBase+gMapGuide.widthMetres,
+                           gx*16.0+range+16.0});
+ const double loZ=std::max({-static_cast<double>(worldHalf()),zBase,
+                           gz*16.0-range-16.0});
+ const double hiZ=std::min({ static_cast<double>(worldHalf()),zBase+gMapGuide.heightMetres,
+                           gz*16.0+range+16.0});
+ std::vector<float> verts;
+ if(hiX>loX&&hiZ>loZ){
+  const double step=8.0;
+  const int nx=static_cast<int>(std::ceil((hiX-loX)/step));
+  const int nz=static_cast<int>(std::ceil((hiZ-loZ)/step));
+  if(nx<0||nz<0||static_cast<size_t>(nx)*nz>13000u)return false;
+  verts.reserve(static_cast<size_t>(nx)*nz*6*11);
+  auto append=[&](double x,double z){
+   const float xf=static_cast<float>(x),zf=static_cast<float>(z);
+   const float y=terrainHeightAt(xf,zf)+.095f;
+   const float u=static_cast<float>((x-xBase)/gMapGuide.widthMetres);
+   // BitmapFactory RGBA rows run top-first; GL convention has row 0 at v=0.
+   const float v=static_cast<float>(1.0-(z-zBase)/gMapGuide.heightMetres);
+   verts.insert(verts.end(),{xf,y,zf,0.f,1.f,0.f,1.f,1.f,1.f,u,v});
+  };
+  for(int iz=0;iz<nz;++iz)for(int ix=0;ix<nx;++ix){
+   const double x0=loX+ix*step,x1=std::min(hiX,x0+step);
+   const double z0=loZ+iz*step,z1=std::min(hiZ,z0+step);
+   // CCW, Y-up.
+   append(x0,z0);append(x0,z1);append(x1,z0);
+   append(x1,z0);append(x0,z1);append(x1,z1);
+  }
+ }
+ if(!gMapGuide.mesh.vao){
+  glGenVertexArrays(1,&gMapGuide.mesh.vao);
+  glGenBuffers(1,&gMapGuide.mesh.buffer);
+ }
+ if(!gMapGuide.mesh.vao||!gMapGuide.mesh.buffer)return false;
+ glBindVertexArray(gMapGuide.mesh.vao);
+ glBindBuffer(GL_ARRAY_BUFFER,gMapGuide.mesh.buffer);
+ glBufferData(GL_ARRAY_BUFFER,static_cast<GLsizeiptr>(verts.size()*sizeof(float)),
+              verts.empty()?nullptr:verts.data(),GL_DYNAMIC_DRAW);
+ for(int i=0;i<3;i++){
+  glEnableVertexAttribArray(static_cast<GLuint>(i));
+  glVertexAttribPointer(static_cast<GLuint>(i),3,GL_FLOAT,GL_FALSE,11*sizeof(float),
+   reinterpret_cast<void*>(static_cast<uintptr_t>(i*3*sizeof(float))));
+ }
+ glEnableVertexAttribArray(3);
+ glVertexAttribPointer(3,2,GL_FLOAT,GL_FALSE,11*sizeof(float),
+                      reinterpret_cast<void*>(9*sizeof(float)));
+ glBindVertexArray(0);
+ if(glGetError()!=GL_NO_ERROR)return false;
+ gMapGuide.mesh.count=static_cast<GLsizei>(verts.size()/11);
+ gMapGuide.gridX=gx;gMapGuide.gridZ=gz;
+ gMapGuide.meshRevision=gMapGuide.revision;
+ gMapGuide.terrainRevision=gTerrainRevision;
+ return true;
+}
+void drawMapGuide(const Mat4& vp){
+ if(!gMapGuide.texture||!gMapGuide.visible||!rebuildMapMesh()||
+    gMapGuide.mesh.count<=0)return;
+ const Mat4 model=identity();
+ glUniformMatrix4fv(gShader.locMvp,1,GL_FALSE,vp.m);
+ glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
+ glUniform3f(gShader.locColor,1.f,1.f,1.f);
+ glUniform1f(gShader.locLight,0.f);
+ glUniform1f(gShader.locTextured,1.f);
+ glUniform1f(gShader.locPaintOverride,1.f);
+ glUniform1f(gShader.locOverlay,0.f);
+ glUniform1f(gShader.locGuide,1.f);
+ glUniform1f(gShader.locOpacity,gMapGuide.opacity);
+ glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+ glDepthMask(GL_FALSE);
+ glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,gMapGuide.texture);
+ glBindVertexArray(gMapGuide.mesh.vao);
+ glDrawArrays(GL_TRIANGLES,0,gMapGuide.mesh.count);
+ ++gDrawCalls;gTriangles+=gMapGuide.mesh.count/3;
+ glBindVertexArray(0);glBindTexture(GL_TEXTURE_2D,0);
+ glDepthMask(GL_TRUE);glDisable(GL_BLEND);
+ glUniform1f(gShader.locGuide,0.f);
+ glUniform1f(gShader.locOpacity,1.f);
+ glUniform1f(gShader.locPaintOverride,0.f);
+ glUniform1f(gShader.locTextured,0.f);
+}
+
 Color roadPreviewColor(const std::string& material){
  if(material=="builtin:dirt")return {.50f,.33f,.19f};
  if(material=="builtin:sand")return {.77f,.68f,.43f};
@@ -1405,6 +1500,7 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDraw(JNIEnv*,jcl
  const Frustum frustum=makeFrustum(vp);
  drawWorld(vp);
  drawTerrainPaint(vp);
+ drawMapGuide(vp);
  drawRoads(vp);
  for(const auto&e:gEntities)drawEntity(vp,frustum,e);
  drawGizmo(vp);

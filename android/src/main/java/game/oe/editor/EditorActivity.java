@@ -119,7 +119,15 @@ public class EditorActivity extends Activity {
     private static native boolean nativeRoadSetMaterial(int choice);
     private static native boolean nativeRoadRemoveLastPoint();
     private static native boolean nativeRoadDeleteSelected();
-    private static final int PICK_GLB = 702, PICK_PROJECT=703, SAVE_PROJECT=704, PICK_PAINT=705;
+    private static native double[] nativeMapTarget();
+    private static native boolean nativeMapStage(byte[] rgba,int width,int height);
+    private static native boolean nativeMapCommit(double x,double z,double width,float opacity,boolean visible);
+    private static native boolean nativeMapConfigure(double x,double z,double width,float opacity,boolean visible);
+    private static native void nativeMapAbort();
+    private static native void nativeMapClear();
+    private static native void nativeMapTopView();
+    private static native void nativeMapPerspective();
+    private static final int PICK_GLB = 702, PICK_PROJECT=703, SAVE_PROJECT=704, PICK_PAINT=705, PICK_MAP=706;
     private static final int MAX_ASSETS = 12;
 
     private EditorSurface surface;
@@ -132,6 +140,8 @@ public class EditorActivity extends Activity {
     private volatile String activePaintKey="";
     private volatile boolean paintTerrainMode=false;
     private volatile boolean roadMode=false;
+    private volatile boolean mapTopViewActive=false;
+    private volatile MapGuide mapGuide=null;
     private volatile double selectedRoadWidth=6.0;
     private volatile float paintRadius=16f;
     private volatile long statsUpdatedAt=0;
@@ -239,7 +249,7 @@ public class EditorActivity extends Activity {
         top.setPadding(dp(5),dp(2),dp(5),dp(2));
         top.setBackgroundColor(Color.argb(220,14,21,32));
         TextView title=new TextView(this);
-        title.setText("OE ROAD EDITOR R2 / TEST");
+        title.setText("OE ROAD EDITOR R3 / PNG MAP TEST");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
         title.setTextSize(12);
@@ -418,6 +428,12 @@ public class EditorActivity extends Activity {
             addPaletteOption("📐 Радиус и сила кисти",this::chooseTerrainBrush);
             addPaletteOption("✕ Завершить изменение",this::cancelPlace);
         }else if("Дороги".equals(category)){
+            addPaletteOption("🗺 Загрузить PNG-план города",this::pickMapReference);
+            addPaletteOption("📍 Положение и масштаб плана",this::configureMapReference);
+            addPaletteOption("👁 Показать / скрыть план",this::toggleMapReference);
+            addPaletteOption("⬇ Вид сверху на карту",this::showMapTopView);
+            addPaletteOption("🎥 Вернуть вид 3D",this::showMapPerspective);
+            addPaletteOption("🗑 Убрать PNG-подложку",this::askRemoveMapReference);
             addPaletteOption("🛣 Новая дорога · точки",this::beginNewRoad);
             addPaletteOption("✔ Завершить дорогу",this::finishRoad);
             addPaletteOption("📋 Выбрать дорогу",this::chooseExistingRoad);
@@ -427,11 +443,11 @@ public class EditorActivity extends Activity {
             addPaletteOption("🎨 Покрытие дороги",this::chooseRoadMaterial);
             addPaletteOption("🗑 Удалить выбранную дорогу",this::askDeleteRoad);
             addPaletteOption("ℹ Помощь",()->new AlertDialog.Builder(this)
-                .setTitle("Дороги OE · R2")
+                .setTitle("Дороги OE · R3")
                 .setMessage("Выбери «Новая дорога», затем коснись земли для первой точки, "
                     +"ещё раз — для второй. Следующие касания продолжают улицу. "
                     +"Двумя пальцами перемещай карту. Дороги сохраняются вместе с проектом. "
-                    +"Покрытие пока показано цветом: PNG-подложка и текстурная кисть будут позже.")
+                    +"PNG-план загружается через этот каталог и сохраняется в .oezip. Покрытие пока показано цветом; текстурная кисть будет позже.")
                 .setPositiveButton("Понятно",null).show());
         }else if("Текстуры".equals(category)){
             addPaletteOption("🖼 Загрузить свой PNG / JPG",this::pickPaintTexture);
@@ -586,6 +602,188 @@ public class EditorActivity extends Activity {
                 }catch(Exception error){message("Введите ширину от 0,25 до 32 метров");}
             }).setNegativeButton("Отмена",null).show();
     }
+
+    // Editor-only visual reference: no entity, collision or standalone-game dependency.
+    private static final class MapGuide {
+        final String key;
+        final int widthPx,heightPx;
+        final double centerX,centerZ,widthMetres;
+        final float opacity;
+        final boolean visible;
+        MapGuide(String key,int w,int h,double x,double z,double width,float alpha,boolean show){
+            this.key=key;this.widthPx=w;this.heightPx=h;
+            this.centerX=x;this.centerZ=z;this.widthMetres=width;
+            this.opacity=alpha;this.visible=show;
+        }
+        JSONObject toJson() throws Exception{
+            JSONObject result=new JSONObject();
+            result.put("key",key);
+            result.put("centerX",centerX);result.put("centerZ",centerZ);
+            result.put("widthMetres",widthMetres);
+            result.put("opacity",opacity);result.put("visible",visible);
+            return result;
+        }
+        MapGuide aligned(double x,double z,double width,float alpha,boolean show){
+            return new MapGuide(key,widthPx,heightPx,x,z,width,alpha,show);
+        }
+    }
+    private String snapshotWithGuide() throws Exception{
+        final JSONObject json=new JSONObject(nativeSceneSnapshot());
+        final MapGuide guide=mapGuide;
+        if(guide!=null){
+            if(!new File(referenceDir(),guide.key).isFile())
+                throw new Exception("PNG-подложка отсутствует в памяти проекта");
+            json.put("version",3);
+            json.put("mapReference",guide.toJson());
+        }
+        return json.toString();
+    }
+    private File referenceDir() throws Exception{
+        File dir=new File(getFilesDir(),"references");
+        if(!dir.isDirectory()&&!dir.mkdirs())
+            throw new Exception("Нельзя создать каталог PNG-планов");
+        return dir;
+    }
+    private static String mapKey(byte[] bytes) throws Exception{
+        return "ref_"+textureKey(bytes,"image/png").substring(3);
+    }
+    private void pickMapReference(){
+        if(importing){message("Дождись завершения операции");return;}
+        Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("image/png");
+        try{startActivityForResult(intent,PICK_MAP);}
+        catch(Exception error){message("Не открыть PNG: "+error.getMessage());}
+    }
+    private void importMapReference(Uri uri){
+        if(importing)return;
+        importing=true;
+        surface.queueEvent(()->{
+            final double[] target=nativeMapTarget();
+            final int world=nativeGetWorldSize();
+            new Thread(()->{
+                try{
+                    byte[] original=limitedTextureRead(getContentResolver().openInputStream(uri));
+                    if(!"image/png".equals(textureType(original)))
+                        throw new Exception("Карта города должна быть PNG");
+                    String key=mapKey(original);
+                    TextureReader.Image image=TextureReader.decode(original,"image/png",2048);
+                    double defaultWidth=Math.min(512.0,world*.75);
+                    defaultWidth=Math.min(defaultWidth,world*.75*image.width/image.height);
+                    double defaultHeight=defaultWidth*image.height/image.width;
+                    if(defaultWidth<8.0||defaultHeight<8.0)
+                        throw new Exception("Необычные пропорции PNG-карты: нужен обычный план города");
+                    File saved=new File(referenceDir(),key);
+                    if(saved.exists()){
+                        if(!key.equals(mapKey(Files.readAllBytes(saved.toPath()))))
+                            throw new Exception("Повреждён ранее сохранённый PNG");
+                    }else{
+                        File partial=new File(referenceDir(),key+".part");
+                        try{
+                            Files.write(partial.toPath(),original);
+                            Files.move(partial.toPath(),saved.toPath(),StandardCopyOption.REPLACE_EXISTING);
+                        }finally{Files.deleteIfExists(partial.toPath());}
+                    }
+                    final double centerX=target==null?0.0:target[0];
+                    final double centerZ=target==null?0.0:target[1];
+                    final double metres=defaultWidth;
+                    surface.queueEvent(()->{
+                        try{
+                            if(!nativeMapStage(image.bytes,image.width,image.height)||
+                               !nativeMapCommit(centerX,centerZ,metres,.5f,true))
+                                throw new Exception("GPU не смог загрузить PNG-карту");
+                            mapGuide=new MapGuide(key,image.width,image.height,
+                                                  centerX,centerZ,metres,.5f,true);
+                            nativeMapTopView();mapTopViewActive=true;
+                            surface.requestRender();
+                            message("PNG-карта поверх земли · вид сверху · отрегулируй размер");
+                        }catch(Exception error){
+                            nativeMapAbort();
+                            message("Ошибка PNG-карты: "+error.getMessage());
+                        }finally{importing=false;}
+                    });
+                }catch(Exception error){
+                    importing=false;
+                    message("Карта не загружена: "+error.getMessage());
+                }
+            },"oe-map-reference-import").start();
+        });
+    }
+    private void configureMapReference(){
+        MapGuide current=mapGuide;
+        if(importing||current==null){message("Сначала загрузи PNG-карту");return;}
+        LinearLayout fields=new LinearLayout(this);
+        fields.setOrientation(LinearLayout.VERTICAL);
+        fields.setPadding(dp(20),dp(6),dp(20),dp(4));
+        EditText[] inputs=new EditText[4];
+        String[] hints={"Центр X, метры","Центр Z, метры",
+                        "Ширина карты, метры","Непрозрачность, %"};
+        double[] values={current.centerX,current.centerZ,current.widthMetres,current.opacity*100};
+        for(int i=0;i<4;i++){
+            final EditText input=new EditText(this);
+            input.setSingleLine(true);
+            input.setHint(hints[i]);
+            input.setText(String.format(Locale.US,"%.2f",values[i]));
+            input.setInputType(InputType.TYPE_CLASS_NUMBER|InputType.TYPE_NUMBER_FLAG_DECIMAL|
+                InputType.TYPE_NUMBER_FLAG_SIGNED);
+            fields.addView(input);inputs[i]=input;
+        }
+        new AlertDialog.Builder(this).setTitle("PNG-подложка · привязка к карте")
+            .setMessage("X/Z — центр плана. Ширина в метрах; высота сохраняет пропорции PNG.")
+            .setView(fields)
+            .setPositiveButton("Применить",(dialog,which)->{
+                try{
+                    double x=Double.parseDouble(inputs[0].getText().toString().trim().replace(',','.'));
+                    double z=Double.parseDouble(inputs[1].getText().toString().trim().replace(',','.'));
+                    double width=Double.parseDouble(inputs[2].getText().toString().trim().replace(',','.'));
+                    double alpha=Double.parseDouble(inputs[3].getText().toString().trim().replace(',','.'));
+                    double height=width*current.heightPx/current.widthPx;
+                    if(!Double.isFinite(x)||!Double.isFinite(z)||!Double.isFinite(width)||
+                       !Double.isFinite(alpha)||width<8||width>16384||height<8||
+                       height>16384||alpha<5||alpha>95||Math.abs(x)>8192||Math.abs(z)>8192)
+                        throw new IllegalArgumentException("range");
+                    final float opacity=(float)(alpha/100.0);
+                    edit(()->{
+                        if(nativeMapConfigure(x,z,width,opacity,current.visible)){
+                            mapGuide=current.aligned(x,z,width,opacity,current.visible);
+                            message("Положение и масштаб карты обновлены");
+                        }else message("PNG-карта не помещается в размер игрового мира");
+                    });
+                }catch(Exception invalid){message("Проверь X/Z, ширину и прозрачность от 5 до 95%");}
+            }).setNegativeButton("Отмена",null).show();
+    }
+    private void toggleMapReference(){
+        MapGuide current=mapGuide;
+        if(importing||current==null){message("PNG-карта ещё не загружена");return;}
+        edit(()->{
+            if(nativeMapConfigure(current.centerX,current.centerZ,current.widthMetres,
+                                  current.opacity,!current.visible)){
+                mapGuide=current.aligned(current.centerX,current.centerZ,current.widthMetres,
+                                         current.opacity,!current.visible);
+                message(current.visible?"Карта-подложка скрыта":"Карта-подложка показана");
+            }
+        });
+    }
+    private void showMapTopView(){
+        mapTopViewActive=true;
+        edit(EditorActivity::nativeMapTopView);
+        message("Вид сверху: одним пальцем перемещай карту, касанием ставь точки дороги");
+    }
+    private void showMapPerspective(){
+        mapTopViewActive=false;
+        edit(EditorActivity::nativeMapPerspective);
+    }
+    private void askRemoveMapReference(){
+        if(importing||mapGuide==null){message("Нет PNG-карты");return;}
+        new AlertDialog.Builder(this).setTitle("Убрать PNG-карту из проекта?")
+            .setMessage("Созданные дороги сохранятся. Исходный PNG останется в памяти приложения.")
+            .setPositiveButton("Убрать",(dialog,which)->edit(()->{
+                nativeMapClear();
+                mapGuide=null;mapTopViewActive=false;
+                message("Подложка убрана; дороги не изменены");
+            })).setNegativeButton("Отмена",null).show();
+    }
+
     private void chooseRoadMaterial(){
         if(importing)return;
         final String[] options={"Камень (цветовой просмотр)","Грунт","Песок","Трава"};
@@ -862,10 +1060,10 @@ public class EditorActivity extends Activity {
     private void saveScene() {
         if(importing){message("Дождись завершения загрузки сцены");return;}
         surface.queueEvent(() -> {
-            String json=nativeSceneSnapshot();
             AtomicFile atomic=new AtomicFile(saveFile());
             FileOutputStream stream=null;
             try {
+                String json=snapshotWithGuide();
                 stream=atomic.startWrite();
                 stream.write(json.getBytes(StandardCharsets.UTF_8));
                 atomic.finishWrite(stream);
@@ -1065,14 +1263,18 @@ public class EditorActivity extends Activity {
         if(importing)return;
         importing=true;
         surface.queueEvent(() -> {
-            final String scene=nativeSceneSnapshot();
+            final String scene;
+            try{scene=snapshotWithGuide();}
+            catch(Exception error){
+                importing=false;message("Нельзя экспортировать сцену: "+error.getMessage());return;
+            }
             new Thread(() -> {
                 try{
                     try(OutputStream stream=getContentResolver().openOutputStream(uri,"w")){
                         if(stream==null)throw new Exception("Нет доступа к файлу");
-                        ProjectArchive.exportProject(scene,modelDir(),textureDir(),originalDir(),stream);
+                        ProjectArchive.exportProject(scene,modelDir(),textureDir(),originalDir(),referenceDir(),stream);
                     }
-                    message("Проект экспортирован со всеми используемыми GLB");
+                    message("Проект экспортирован · дороги и PNG-подложка сохранены");
                 }catch(Exception e){
                     message("Ошибка экспорта: "+e.getMessage());
                 }finally{importing=false;}
@@ -1093,7 +1295,7 @@ public class EditorActivity extends Activity {
                 surface.queueEvent(() -> {
                     final HashSet<String> cached=new HashSet<>(Arrays.asList(nativeLoadedAssetKeys()));
                     new Thread(() -> readAndPrepareScene(cached,staged.sceneFile,staged.modelDir,
-                    staged.textureDir,staged.sourceDir,staged.root),
+                    staged.textureDir,staged.sourceDir,staged.referenceDir,staged.root),
                         "oe-project-validate").start();
                 });
             }catch(Exception e){
@@ -1117,6 +1319,11 @@ public class EditorActivity extends Activity {
     }
     @Override protected void onActivityResult(int requestCode,int resultCode,Intent intent) {
         super.onActivityResult(requestCode,resultCode,intent);
+        if(requestCode==PICK_MAP){
+            if(resultCode==RESULT_OK&&intent!=null&&intent.getData()!=null)
+                importMapReference(intent.getData());
+            return;
+        }
         if(requestCode==PICK_PAINT){
             if(resultCode==RESULT_OK&&intent!=null&&intent.getData()!=null)
                 importPaintTexture(intent.getData());
@@ -1222,12 +1429,12 @@ public class EditorActivity extends Activity {
         // thread can skip expensive decode work for those immutable GLBs.
         surface.queueEvent(() -> {
             final HashSet<String> cached=new HashSet<>(Arrays.asList(nativeLoadedAssetKeys()));
-            new Thread(() -> readAndPrepareScene(cached,null,null,null,null,null),"oe-scene-load").start();
+            new Thread(() -> readAndPrepareScene(cached,null,null,null,null,null,null),"oe-scene-load").start();
         });
     }
     private void readAndPrepareScene(HashSet<String> cached,File sourceScene,
             File sourceModels,File sourceTextures,File sourceOriginals,
-            File stagingRoot) {
+            File sourceReferences,File stagingRoot) {
         try {
             File file=sourceScene==null?saveFile():sourceScene;
             ByteArrayOutputStream jsonBytes=new ByteArrayOutputStream();
@@ -1243,12 +1450,50 @@ public class EditorActivity extends Activity {
             }
             JSONObject document=new JSONObject(new String(jsonBytes.toByteArray(),StandardCharsets.UTF_8));
             final int sceneVersion=document.optInt("version",-1);
-            if(sceneVersion!=1&&sceneVersion!=2)
-                throw new Exception("Неверная версия сцены (нужен 1 или 2)");
+            if(sceneVersion<1||sceneVersion>3)
+                throw new Exception("Неверная версия сцены (нужна 1, 2 или 3)");
             final boolean demoRoads=document.optBoolean("demoRoads",false);
             final int worldSize=document.optInt("worldSize",1024);
             if(worldSize!=1024&&worldSize!=2048&&worldSize!=4096&&worldSize!=8192&&worldSize!=16384)
                 throw new Exception("Неподдерживаемый размер карты");
+
+            JSONObject mapObject=document.optJSONObject("mapReference");
+            if((sceneVersion==3&&mapObject==null)||
+               (sceneVersion<3&&document.has("mapReference"))||
+               (document.has("mapReference")&&mapObject==null))
+                throw new Exception("Некорректная PNG-карта в версии сцены");
+            final MapGuide parsedGuide;
+            final TextureReader.Image parsedMapImage;
+            if(mapObject!=null){
+                String key=mapObject.getString("key");
+                if(!key.matches("ref_[0-9a-f]{24}\\.png"))
+                    throw new Exception("Неверное имя PNG-подложки");
+                double x=mapObject.getDouble("centerX");
+                double z=mapObject.getDouble("centerZ");
+                double width=mapObject.getDouble("widthMetres");
+                double opacity=mapObject.getDouble("opacity");
+                boolean visible=mapObject.getBoolean("visible");
+                File png=new File(sourceReferences==null?referenceDir():sourceReferences,key);
+                if(!png.isFile()||png.length()<=0||
+                   png.length()>ProjectArchive.MAX_REFERENCE_BYTES)
+                    throw new Exception("PNG-подложка отсутствует");
+                byte[] original=Files.readAllBytes(png.toPath());
+                if(!"image/png".equals(textureType(original))||!key.equals(mapKey(original)))
+                    throw new Exception("Повреждена исходная PNG-подложка");
+                parsedMapImage=TextureReader.decode(original,"image/png",2048);
+                double height=width*parsedMapImage.height/parsedMapImage.width;
+                if(!Double.isFinite(x)||!Double.isFinite(z)||
+                   !Double.isFinite(width)||!Double.isFinite(opacity)||
+                   Math.abs(x)>worldSize/2.0||Math.abs(z)>worldSize/2.0||
+                   width<8||width>worldSize||height<8||height>worldSize||
+                   opacity<.05||opacity>.95)
+                    throw new Exception("PNG-подложка не соответствует размеру мира");
+                parsedGuide=new MapGuide(key,parsedMapImage.width,parsedMapImage.height,
+                                         x,z,width,(float)opacity,visible);
+            }else{
+                parsedGuide=null;
+                parsedMapImage=null;
+            }
             JSONArray arr=document.getJSONArray("items");
             if(arr.length()>300)throw new Exception("Слишком много объектов");
             SavedEntity[] items=new SavedEntity[arr.length()];
@@ -1490,10 +1735,28 @@ public class EditorActivity extends Activity {
                     }
                 }
             }
+            if(sourceReferences!=null&&parsedGuide!=null){
+                File destination=new File(referenceDir(),parsedGuide.key);
+                if(destination.exists()){
+                    if(!parsedGuide.key.equals(mapKey(Files.readAllBytes(destination.toPath()))))
+                        throw new Exception("Повреждён локальный PNG-план города");
+                }else{
+                    File partial=new File(referenceDir(),parsedGuide.key+".part");
+                    try{
+                        Files.copy(new File(sourceReferences,parsedGuide.key).toPath(),
+                            partial.toPath(),StandardCopyOption.REPLACE_EXISTING);
+                        Files.move(partial.toPath(),destination.toPath(),
+                            StandardCopyOption.REPLACE_EXISTING);
+                    }finally{Files.deleteIfExists(partial.toPath());}
+                }
+            }
             surface.queueEvent(() -> {
                 ArrayList<String> uploaded=new ArrayList<>();
                 boolean committed=false;
                 try {
+                    if(parsedGuide!=null&&!nativeMapStage(parsedMapImage.bytes,
+                            parsedMapImage.width,parsedMapImage.height))
+                        throw new Exception("Нельзя загрузить PNG-подложку в видеопамять");
                     for(Map.Entry<String,TextureReader.Image> entry:paintImages.entrySet()){
                         TextureReader.Image img=entry.getValue();
                         if(!nativeRegisterPaintTexture(entry.getKey(),img.bytes,img.width,img.height))
@@ -1513,6 +1776,13 @@ public class EditorActivity extends Activity {
                             terrainBrushes,objectPaintKeys,paintBrushes,paintBrushKeys,
                             roadIds,roadNames,roadMaterials,roadWidths,roadPaths))
                         throw new Exception("Сцена не прошла полную проверку в движке");
+                    if(parsedGuide!=null){
+                        if(!nativeMapCommit(parsedGuide.centerX,parsedGuide.centerZ,
+                                parsedGuide.widthMetres,parsedGuide.opacity,parsedGuide.visible))
+                            throw new Exception("PNG-подложка не подошла к новому размеру мира");
+                    }else nativeMapClear();
+                    mapGuide=parsedGuide;
+                    mapTopViewActive=false;
                     committed=true;
                     roadMode=false;
                     surface.requestRender();
@@ -1523,6 +1793,7 @@ public class EditorActivity extends Activity {
                     message("Сцена НЕ изменена: "+e.getMessage());
                 }finally{
                     if(!committed){
+                        nativeMapAbort();
                         // Roll back newly uploaded resources without touching
                         // assets referenced by the currently open scene.
                         for(String asset:uploaded)
@@ -1546,7 +1817,10 @@ public class EditorActivity extends Activity {
                     .setMessage("Все текущие несохранённые объекты исчезнут. Ранее сохранённый файл останется доступен через «Загрузить».")
                     .setPositiveButton(demo?"Загрузить":"Очистить",(confirm,which)->{
                         cancelPlace();
-                        edit(()->nativeReset(demo));
+                        edit(()->{
+                            nativeReset(demo);nativeMapClear();
+                            mapGuide=null;mapTopViewActive=false;
+                        });
                         message(demo?"Демонстрационный квартал восстановлен":"Пустая карта: все объекты удалены");
                     })
                     .setNegativeButton("Отмена",null).show();
@@ -1681,7 +1955,8 @@ public class EditorActivity extends Activity {
                                 if(!gizmoEditStarted&&movedEnough)
                                     gizmoEditStarted=nativeGizmoBegin(axis);
                                 if(gizmoEditStarted)nativeGizmoDrag(axis,sx,sy);
-                            }else nativeOrbit(dx,dy,1);
+                            }else if(mapTopViewActive)nativePan(dx,dy);
+                            else nativeOrbit(dx,dy,1);
                             interactiveRender();
                         });
                     }
@@ -1737,7 +2012,7 @@ public class EditorActivity extends Activity {
                             refreshSelected();
                         }else{
                             final float dx=upX-lastX,dy=upY-lastY;
-                            if(dx!=0||dy!=0)nativeOrbit(dx,dy,1);
+                            if(dx!=0||dy!=0){if(mapTopViewActive)nativePan(dx,dy);else nativeOrbit(dx,dy,1);}
                         }
                         requestRender();touchedGizmoAxis=-1;
                     });

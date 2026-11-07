@@ -27,20 +27,56 @@ public final class ProjectArchive {
     public static final int MAX_MODELS=12;
     public static final int MAX_SCENE_BYTES=200000;
     public static final int MAX_TEXTURES=8,MAX_TEXTURE_BYTES=8*1024*1024;
+    public static final int MAX_REFERENCE_BYTES=8*1024*1024;
 
     public static final class StagedProject {
-        public final File root, sceneFile, modelDir, textureDir, sourceDir;
+        public final File root, sceneFile, modelDir, textureDir, sourceDir, referenceDir;
         private StagedProject(File root){
             this.root=root;
             this.sceneFile=new File(root,"scene.json");
             this.modelDir=new File(root,"models");
             this.textureDir=new File(root,"textures");
             this.sourceDir=new File(root,"sources");
+            this.referenceDir=new File(root,"references");
         }
     }
 
     private static boolean validModel(String name){
         return name!=null && name.matches("oe_[0-9a-f]{24}\\.glb");
+    }
+    private static boolean validReference(String name){
+        return name!=null&&name.matches("ref_[0-9a-f]{24}\\.png");
+    }
+    private static String referenceName(String scene) throws Exception{
+        JSONObject json=new JSONObject(scene);
+        int version=json.optInt("version",-1);
+        JSONObject guide=json.optJSONObject("mapReference");
+        check(version==1||version==2||version==3,"Неподдерживаемая версия сцены");
+        if(version!=3){
+            check(!json.has("mapReference"),"Подложка требует сцену версии 3");
+            return null;
+        }
+        check(guide!=null,"В сцене версии 3 нет карты-подложки");
+        String key=guide.getString("key");
+        check(validReference(key),"Неверное имя PNG-подложки");
+        double x=guide.getDouble("centerX"),z=guide.getDouble("centerZ"),
+            width=guide.getDouble("widthMetres"),opacity=guide.getDouble("opacity");
+        check(Double.isFinite(x)&&Double.isFinite(z)&&
+              Double.isFinite(width)&&Double.isFinite(opacity)&&
+              Math.abs(x)<=8192&&Math.abs(z)<=8192&&
+              width>=8&&width<=16384&&opacity>=.05&&opacity<=.95,
+              "Неверное положение PNG-подложки");
+        return key;
+    }
+    private static String calculatedReferenceName(File file) throws Exception{
+        return "ref_"+calculatedName(file).substring(3,27)+".png";
+    }
+    private static boolean pngSignature(File file) throws IOException{
+        final byte[] sig={(byte)137,80,78,71,13,10,26,10};
+        try(InputStream in=new BufferedInputStream(new FileInputStream(file))){
+            for(byte b:sig)if(in.read()!=(b&255))return false;
+        }
+        return true;
     }
     private static boolean validSource(String name){
         return name!=null&&name.matches("oe_[0-9a-f]{24}\\.(vox|gltf)");
@@ -90,7 +126,10 @@ public final class ProjectArchive {
     private static Set<String> referencedModels(String scene) throws Exception {
         check(scene.getBytes(StandardCharsets.UTF_8).length<=MAX_SCENE_BYTES,"Сцена больше 200 КБ");
         JSONObject json=new JSONObject(scene);
-        check(json.optInt("version",-1)==1,"Неподдерживаемая версия сцены");
+        int version=json.optInt("version",-1);
+        check(version>=1&&version<=3,"Неподдерживаемая версия сцены");
+        check(version==1||json.optJSONArray("roads")!=null,"Нет дорожной сети");
+        referenceName(scene);
         JSONArray items=json.getJSONArray("items");
         check(items.length()<=300,"Слишком много объектов");
         Set<String> names=new HashSet<>();
@@ -121,9 +160,10 @@ public final class ProjectArchive {
         return name.append(".glb").toString();
     }
     public static void exportProject(String scene,File modelFolder,File textureFolder,
-             File originalFolder,OutputStream output) throws Exception{
+             File originalFolder,File referenceFolder,OutputStream output) throws Exception{
         Set<String> names=referencedModels(scene);
         Set<String> textures=referencedTextures(scene);
+        String reference=referenceName(scene);
         long budget=scene.getBytes(StandardCharsets.UTF_8).length;
         // Do all preflight validation before emitting an archive.
         for(String name:names){
@@ -142,6 +182,15 @@ public final class ProjectArchive {
                 "Повреждена текстура: "+name);
             budget+=image.length();
             check(budget<=MAX_UNPACKED_BYTES,"Проект слишком большой");
+        }
+        if(reference!=null){
+            File png=new File(referenceFolder,reference);
+            check(png.isFile()&&png.length()>0&&
+                  png.length()<=MAX_REFERENCE_BYTES,"PNG-подложка отсутствует");
+            check(reference.equals(calculatedReferenceName(png))&&pngSignature(png),
+                  "Повреждённая PNG-подложка");
+            budget+=png.length();
+            check(budget<=MAX_UNPACKED_BYTES,"Слишком большая карта-подложка");
         }
         Set<String> sources=new HashSet<>();
         for(String model:names){
@@ -179,6 +228,15 @@ public final class ProjectArchive {
                 }
                 zip.closeEntry();
             }
+            // PNG city plan remains an editor-only source; Runtime never sees it.
+            if(reference!=null){
+                zip.putNextEntry(new ZipEntry("references/"+reference));
+                try(InputStream in=new BufferedInputStream(
+                    new FileInputStream(new File(referenceFolder,reference)))){
+                    int count;while((count=in.read(bytes))!=-1)zip.write(bytes,0,count);
+                }
+                zip.closeEntry();
+            }
             // Keep unmodified VOX and standalone glTF for source re-editing.
             // The canonical GLB is still sufficient to render this scene.
             for(String name:sources){
@@ -204,6 +262,7 @@ public final class ProjectArchive {
             check(staged.modelDir.mkdir(),"Нельзя создать каталог моделей");
             check(staged.textureDir.mkdir(),"Нельзя создать каталог текстур");
             check(staged.sourceDir.mkdir(),"Нельзя создать каталог оригиналов");
+            check(staged.referenceDir.mkdir(),"Нельзя создать каталог карт-подложек");
             long unpacked=0;
             Set<String> seen=new HashSet<>();
             try(ZipInputStream zip=new ZipInputStream(new BufferedInputStream(input))){
@@ -214,7 +273,8 @@ public final class ProjectArchive {
                     if(entry.isDirectory()){
                         check("models/".equals(entry.getName())||
                               "textures/".equals(entry.getName())||
-                              "sources/".equals(entry.getName()),"Неверная папка в проекте");
+                              "sources/".equals(entry.getName())||
+                              "references/".equals(entry.getName()),"Неверная папка в проекте");
                         zip.closeEntry();continue;
                     }
                     String name=entry.getName();
@@ -225,15 +285,18 @@ public final class ProjectArchive {
                         validTexture(name.substring("textures/".length()));
                     boolean original=name.startsWith("sources/")&&
                         validSource(name.substring("sources/".length()));
-                    check(scene||model||texture||original,"Запрещён файл в архиве: "+name);
+                    boolean reference=name.startsWith("references/")&&
+                        validReference(name.substring("references/".length()));
+                    check(scene||model||texture||original||reference,"Запрещён файл в архиве: "+name);
                     check(seen.add(name),"Повторяющийся файл: "+name);
                     entries++;
-                    check(entries<=MAX_MODELS*3+MAX_TEXTURES+1,
+                    check(entries<=MAX_MODELS*3+MAX_TEXTURES+2,
                           "Слишком много файлов");
                     File target=scene?staged.sceneFile:(model?
                         new File(staged.modelDir,name.substring("models/".length())):
                         (texture?new File(staged.textureDir,name.substring("textures/".length())):
-                            new File(staged.sourceDir,name.substring("sources/".length()))));
+                            (original?new File(staged.sourceDir,name.substring("sources/".length())):
+                            new File(staged.referenceDir,name.substring("references/".length())))));
                     int fileBytes=0;
                     try(OutputStream out=new BufferedOutputStream(new FileOutputStream(target))){
                         int n;
@@ -242,7 +305,8 @@ public final class ProjectArchive {
                             unpacked+=n;
                             check(unpacked<=MAX_UNPACKED_BYTES,"Архив слишком большой");
                             check(fileBytes<=(scene?MAX_SCENE_BYTES:
-                                  ((model||original)?GlbReader.MAX_BYTES:MAX_TEXTURE_BYTES)),
+                                  ((model||original)?GlbReader.MAX_BYTES:
+                                   (reference?MAX_REFERENCE_BYTES:MAX_TEXTURE_BYTES))),
                                   "Файл внутри архива слишком большой");
                             out.write(buf,0,n);
                         }
@@ -254,6 +318,17 @@ public final class ProjectArchive {
             check(staged.sceneFile.isFile(),"В проекте отсутствует scene.json");
             String json=new String(Files.readAllBytes(staged.sceneFile.toPath()),StandardCharsets.UTF_8);
             Set<String> required=referencedModels(json);
+            String reference=referenceName(json);
+            File[] referenceFiles=staged.referenceDir.listFiles();
+            check(referenceFiles!=null&&referenceFiles.length==(reference==null?0:1),
+                "Неправильный состав PNG-подложки");
+            if(reference!=null){
+                File png=new File(staged.referenceDir,reference);
+                check(png.isFile()&&png.length()>0&&
+                      png.length()<=MAX_REFERENCE_BYTES&&
+                      reference.equals(calculatedReferenceName(png))&&pngSignature(png),
+                      "Неверная PNG-подложка в архиве");
+            }
             for(String name:required){
                 File f=new File(staged.modelDir,name);
                 check(f.isFile(),"Нет модели: "+name);

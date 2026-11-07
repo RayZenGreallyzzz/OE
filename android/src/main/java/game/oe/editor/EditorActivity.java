@@ -91,7 +91,9 @@ public class EditorActivity extends Activity {
     private static native void nativeDiscardUnusedAsset(String key);
     private static native boolean nativeReplaceScene(int size, boolean demoRoads,
             int[] kinds, float[] transforms, String[] modelKeys, float[] terrain,
-            String[] objectPaintKeys, float[] painting, String[] terrainPaintKeys);
+            String[] objectPaintKeys, float[] painting, String[] terrainPaintKeys,
+            long[] roadIds, String[] roadNames, String[] roadMaterials,
+            double[] roadWidths, double[][] roadPoints);
     private static native boolean nativeRegisterPaintTexture(String key, byte[] rgba,int width,int height);
     private static native boolean nativePaintSelected(String key);
     private static native int nativePaintTerrainAtScreen(float x,float y,float radius,String key);
@@ -1238,7 +1240,9 @@ public class EditorActivity extends Activity {
                 throw new Exception("Сначала сохрани сцену");
             }
             JSONObject document=new JSONObject(new String(jsonBytes.toByteArray(),StandardCharsets.UTF_8));
-            if(document.optInt("version",-1)!=1)throw new Exception("Неверная версия сцены");
+            final int sceneVersion=document.optInt("version",-1);
+            if(sceneVersion!=1&&sceneVersion!=2)
+                throw new Exception("Неверная версия сцены (нужен 1 или 2)");
             final boolean demoRoads=document.optBoolean("demoRoads",false);
             final int worldSize=document.optInt("worldSize",1024);
             if(worldSize!=1024&&worldSize!=2048&&worldSize!=4096&&worldSize!=8192&&worldSize!=16384)
@@ -1331,6 +1335,64 @@ public class EditorActivity extends Activity {
                 transforms[i*8+6]=e.sy;
                 transforms[i*8+7]=e.sz;
                 modelKeys[i]=e.asset;
+            }
+            // Version 1 archives have no roads. Version 2 stores authoring centerlines,
+            // not generated rendering triangles. Validate before native atomic scene swap.
+            JSONArray savedRoads=document.optJSONArray("roads");
+            final int roadCount=savedRoads==null?0:savedRoads.length();
+            if(roadCount>256)throw new Exception("Слишком много дорог");
+            long[] roadIds=new long[roadCount];
+            String[] roadNames=new String[roadCount],roadMaterials=new String[roadCount];
+            double[] roadWidths=new double[roadCount];
+            double[][] roadPaths=new double[roadCount][];
+            HashSet<Long> usedRoadIds=new HashSet<>();
+            int totalPoints=0,roadVertices=0;
+            for(int i=0;i<roadCount;i++){
+                JSONObject road=savedRoads.getJSONObject(i);
+                String rawId=road.getString("id");
+                if(!rawId.matches("[1-9][0-9]{0,18}"))
+                    throw new Exception("Неверный идентификатор дороги");
+                long id=Long.parseLong(rawId);
+                if(!usedRoadIds.add(id))throw new Exception("Повторяется ID дороги");
+                String name=road.getString("name");
+                if(!name.matches("[A-Za-z0-9 _-]{1,64}"))
+                    throw new Exception("Неверное имя дороги");
+                String material=road.getString("material");
+                if(!material.equals("builtin:cobblestone")&&
+                   !material.equals("builtin:dirt")&&
+                   !material.equals("builtin:sand")&&
+                   !material.equals("builtin:grass"))
+                    throw new Exception("Неизвестное покрытие дороги");
+                double width=road.getDouble("widthMetres");
+                if(!Double.isFinite(width)||width<.25||width>32)
+                    throw new Exception("Неверная ширина дороги");
+                JSONArray points=road.getJSONArray("controlPoints");
+                if(points.length()<2||points.length()>4096||totalPoints+points.length()>4096)
+                    throw new Exception("Слишком много точек дороги");
+                totalPoints+=points.length();
+                double[] xy=new double[points.length()*2];
+                double distance=0;
+                for(int j=0;j<points.length();j++){
+                    JSONArray point=points.getJSONArray(j);
+                    if(point.length()!=2)throw new Exception("Неверная точка дороги");
+                    double x=point.getDouble(0),z=point.getDouble(1);
+                    if(!Double.isFinite(x)||!Double.isFinite(z)||
+                        Math.abs(x)>worldSize/2.0-width*2||
+                        Math.abs(z)>worldSize/2.0-width*2)
+                        throw new Exception("Дорога выходит за карту");
+                    xy[j*2]=x;xy[j*2+1]=z;
+                    if(j>0){
+                        double len=Math.hypot(x-xy[(j-1)*2],z-xy[(j-1)*2+1]);
+                        if(len<.01||!Double.isFinite(len))
+                            throw new Exception("Слишком близкие точки дороги");
+                        distance+=len;
+                        roadVertices+=6*(int)Math.ceil(len/2.0);
+                        if(roadVertices>120000||distance>25000)
+                            throw new Exception("Дорожная сеть слишком велика");
+                    }
+                }
+                roadIds[i]=id;roadNames[i]=name;roadMaterials[i]=material;
+                roadWidths[i]=width;roadPaths[i]=xy;
             }
             if(assets.size()>MAX_ASSETS)throw new Exception("Слишком много разных GLB-моделей");
             if(referencedPaint.size()>8)throw new Exception("Слишком много текстур (макс. 8)");
@@ -1442,9 +1504,11 @@ public class EditorActivity extends Activity {
                         uploaded.add(entry.getKey());
                     }
                     if(!nativeReplaceScene(worldSize,demoRoads,kinds,transforms,modelKeys,
-                            terrainBrushes,objectPaintKeys,paintBrushes,paintBrushKeys))
+                            terrainBrushes,objectPaintKeys,paintBrushes,paintBrushKeys,
+                            roadIds,roadNames,roadMaterials,roadWidths,roadPaths))
                         throw new Exception("Сцена не прошла полную проверку в движке");
                     committed=true;
+                    roadMode=false;
                     surface.requestRender();
                     refreshSelected();
                     message("Сцена загружена · "+items.length+" объектов, текстур "+referencedPaint.size()+", GLB "+assets.size()+

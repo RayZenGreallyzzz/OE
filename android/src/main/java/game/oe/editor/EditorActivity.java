@@ -643,6 +643,45 @@ public class EditorActivity extends Activity {
             return new MapGuide(key,widthPx,heightPx,x,z,width,alpha,show);
         }
     }
+
+    private static final int PAINT_TILE_BYTES=128*128*4;
+    private static String compressedTile(byte[] raw) throws Exception{
+        if(raw==null||raw.length!=PAINT_TILE_BYTES)throw new Exception("Неполная кисть R4");
+        java.util.zip.Deflater compressor=new java.util.zip.Deflater(3);
+        try{
+            compressor.setInput(raw);compressor.finish();
+            ByteArrayOutputStream out=new ByteArrayOutputStream(2048);
+            byte[] buffer=new byte[8192];
+            while(!compressor.finished()){
+                int n=compressor.deflate(buffer);
+                if(n<=0)throw new Exception("Не удалось сжать слой земли");
+                if(out.size()+n>75000)throw new Exception("Слишком сложный текстурный слой");
+                out.write(buffer,0,n);
+            }
+            return android.util.Base64.encodeToString(out.toByteArray(),android.util.Base64.NO_WRAP);
+        }finally{compressor.end();}
+    }
+    private static byte[] restoredTile(String encoded) throws Exception{
+        if(encoded==null||encoded.length()<4||encoded.length()>100000||
+            !encoded.matches("[A-Za-z0-9+/=]+"))
+            throw new Exception("Повреждённые данные кисти R4");
+        byte[] zipped=android.util.Base64.decode(encoded,android.util.Base64.NO_WRAP);
+        if(zipped.length==0||zipped.length>75000)throw new Exception("Размер слоя неверен");
+        java.util.zip.Inflater compressor=new java.util.zip.Inflater();
+        try{
+            compressor.setInput(zipped);
+            byte[] out=new byte[PAINT_TILE_BYTES];
+            int pos=0;
+            while(!compressor.finished()&&pos<out.length){
+                int n=compressor.inflate(out,pos,out.length-pos);
+                if(n<=0)throw new Exception("Повреждённый сжатый слой земли");
+                pos+=n;
+            }
+            if(!compressor.finished()||pos!=out.length||compressor.getRemaining()!=0)
+                throw new Exception("Неверный объём текстурного слоя");
+            return out;
+        }finally{compressor.end();}
+    }
     private String snapshotWithGuide() throws Exception{
         final JSONObject json=new JSONObject(nativeSceneSnapshot());
         final MapGuide guide=mapGuide;
@@ -652,7 +691,25 @@ public class EditorActivity extends Activity {
             json.put("version",3);
             json.put("mapReference",guide.toJson());
         }
-        return json.toString();
+        int[] locations=nativePaintTileCoords();
+        if(locations==null||locations.length%2!=0||locations.length>64)
+            throw new Exception("Слишком много участков кисти");
+        if(locations.length!=0){
+            JSONArray saved=new JSONArray();
+            for(int i=0;i<locations.length/2;i++){
+                JSONArray tile=new JSONArray();
+                tile.put(locations[2*i]);
+                tile.put(locations[2*i+1]);
+                tile.put(compressedTile(nativePaintTileData(i)));
+                saved.put(tile);
+            }
+            json.put("paintTiles",saved);
+            json.put("version",4);
+        }
+        String result=json.toString();
+        if(result.getBytes(StandardCharsets.UTF_8).length>ProjectArchive.MAX_SCENE_BYTES)
+            throw new Exception("Рисунок R4 превысил безопасный размер проекта");
+        return result;
     }
     private File referenceDir() throws Exception{
         File dir=new File(getFilesDir(),"references");
@@ -1489,7 +1546,7 @@ public class EditorActivity extends Activity {
                 byte[] buffer=new byte[4096];
                 int count;
                 while((count=in.read(buffer))!=-1){
-                    if(jsonBytes.size()+count>200000)throw new Exception("Файл сцены слишком большой");
+                    if(jsonBytes.size()+count>ProjectArchive.MAX_SCENE_BYTES)throw new Exception("Файл сцены слишком большой");
                     jsonBytes.write(buffer,0,count);
                 }
             }catch(java.io.FileNotFoundException missing){
@@ -1497,8 +1554,8 @@ public class EditorActivity extends Activity {
             }
             JSONObject document=new JSONObject(new String(jsonBytes.toByteArray(),StandardCharsets.UTF_8));
             final int sceneVersion=document.optInt("version",-1);
-            if(sceneVersion<1||sceneVersion>3)
-                throw new Exception("Неверная версия сцены (нужна 1, 2 или 3)");
+            if(sceneVersion<1||sceneVersion>4)
+                throw new Exception("Неверная версия сцены (нужна 1–4)");
             final boolean demoRoads=document.optBoolean("demoRoads",false);
             final int worldSize=document.optInt("worldSize",1024);
             if(worldSize!=1024&&worldSize!=2048&&worldSize!=4096&&worldSize!=8192&&worldSize!=16384)
@@ -1540,6 +1597,27 @@ public class EditorActivity extends Activity {
             }else{
                 parsedGuide=null;
                 parsedMapImage=null;
+            }
+            // R4 tiles are independently compressed; reject corruption before GLES swap.
+            JSONArray paintTilesJson=document.optJSONArray("paintTiles");
+            if((sceneVersion==4&&paintTilesJson==null)||
+               (sceneVersion<4&&document.has("paintTiles"))||
+               (document.has("paintTiles")&&paintTilesJson==null))
+                throw new Exception("Неверная версия данных кисти R4");
+            final int tileCount=paintTilesJson==null?0:paintTilesJson.length();
+            if(tileCount>32)throw new Exception("Слишком много текстурных участков");
+            int[] preciseTileCoords=new int[tileCount*2];
+            byte[][] preciseTileBytes=new byte[tileCount][];
+            HashSet<String> tilePairs=new HashSet<>();
+            for(int i=0;i<tileCount;i++){
+                JSONArray tile=paintTilesJson.getJSONArray(i);
+                if(tile.length()!=3)throw new Exception("Неверный участок текстуры R4");
+                int x=tile.getInt(0),z=tile.getInt(1);
+                if(x*64>=worldSize/2||x*64+64<=-worldSize/2||
+                   z*64>=worldSize/2||z*64+64<=-worldSize/2||
+                   !tilePairs.add(x+":"+z))throw new Exception("Повтор или неверный участок");
+                preciseTileCoords[2*i]=x;preciseTileCoords[2*i+1]=z;
+                preciseTileBytes[i]=restoredTile(tile.getString(2));
             }
             JSONArray arr=document.getJSONArray("items");
             if(arr.length()>300)throw new Exception("Слишком много объектов");
@@ -1821,7 +1899,8 @@ public class EditorActivity extends Activity {
                     }
                     if(!nativeReplaceScene(worldSize,demoRoads,kinds,transforms,modelKeys,
                             terrainBrushes,objectPaintKeys,paintBrushes,paintBrushKeys,
-                            roadIds,roadNames,roadMaterials,roadWidths,roadPaths))
+                            roadIds,roadNames,roadMaterials,roadWidths,roadPaths,
+                            preciseTileCoords,preciseTileBytes))
                         throw new Exception("Сцена не прошла полную проверку в движке");
                     if(parsedGuide!=null){
                         if(!nativeMapCommit(parsedGuide.centerX,parsedGuide.centerZ,
@@ -1831,7 +1910,7 @@ public class EditorActivity extends Activity {
                     mapGuide=parsedGuide;
                     mapTopViewActive=false;
                     committed=true;
-                    roadMode=false;
+                    roadMode=false;precisionPaintMode=false;
                     surface.requestRender();
                     refreshSelected();
                     message("Сцена загружена · "+items.length+" объектов, текстур "+referencedPaint.size()+", GLB "+assets.size()+

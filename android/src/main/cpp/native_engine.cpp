@@ -1628,6 +1628,11 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadSelect(
  gSelectedRoad=roads[static_cast<size_t>(index)].id;
  gActiveRoad=0;gRoadPending=false;return JNI_TRUE;
 }
+JNIEXPORT jdouble JNICALL Java_game_oe_editor_EditorActivity_nativeRoadSelectedWidth(
+ JNIEnv*,jclass){
+ const auto* road=gRoads.find(gSelectedRoad);
+ return road?static_cast<jdouble>(road->widthMetres):static_cast<jdouble>(gRoadWidth);
+}
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadSetWidth(
  JNIEnv*,jclass,jdouble width){
  if(!std::isfinite(width)||width<oe::roads::kMinRoadWidth||

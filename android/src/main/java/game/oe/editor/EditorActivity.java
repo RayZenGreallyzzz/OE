@@ -93,7 +93,7 @@ public class EditorActivity extends Activity {
             int[] kinds, float[] transforms, String[] modelKeys, float[] terrain,
             String[] objectPaintKeys, float[] painting, String[] terrainPaintKeys,
             long[] roadIds, String[] roadNames, String[] roadMaterials,
-            double[] roadWidths, double[][] roadPoints);
+            double[] roadWidths, double[][] roadPoints,int[] tileCoords,byte[][] tileData);
     private static native boolean nativeRegisterPaintTexture(String key, byte[] rgba,int width,int height);
     private static native boolean nativePaintSelected(String key);
     private static native int nativePaintTerrainAtScreen(float x,float y,float radius,String key);
@@ -119,6 +119,13 @@ public class EditorActivity extends Activity {
     private static native boolean nativeRoadSetMaterial(int choice);
     private static native boolean nativeRoadRemoveLastPoint();
     private static native boolean nativeRoadDeleteSelected();
+    private static native int[] nativePaintTileCoords();
+    private static native byte[] nativePaintTileData(int index);
+    private static native boolean nativePaintCursor(float x,float y,float radius);
+    private static native boolean nativePaintStrokeBegin(float x,float y,float radius,float opacity,
+            String texture,boolean erase);
+    private static native boolean nativePaintStrokeMove(float x,float y);
+    private static native void nativePaintStrokeEnd();
     private static native double[] nativeMapTarget();
     private static native boolean nativeMapStage(byte[] rgba,int width,int height);
     private static native boolean nativeMapCommit(double x,double z,double width,float opacity,boolean visible);
@@ -139,6 +146,9 @@ public class EditorActivity extends Activity {
     private volatile int gizmoMode=0;
     private volatile String activePaintKey="";
     private volatile boolean paintTerrainMode=false;
+    private volatile boolean precisionPaintMode=false;
+    private volatile boolean precisionPaintErase=false;
+    private volatile float precisionPaintRadius=2f,precisionPaintOpacity=.75f;
     private volatile boolean roadMode=false;
     private volatile boolean mapTopViewActive=false;
     private volatile MapGuide mapGuide=null;
@@ -249,7 +259,7 @@ public class EditorActivity extends Activity {
         top.setPadding(dp(5),dp(2),dp(5),dp(2));
         top.setBackgroundColor(Color.argb(220,14,21,32));
         TextView title=new TextView(this);
-        title.setText("OE ROAD EDITOR R3 / PNG MAP TEST");
+        title.setText("OE TERRAIN PAINT R4 / PRECISION TEST");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
         title.setTextSize(12);
@@ -394,7 +404,7 @@ public class EditorActivity extends Activity {
         Button b=button(label,()->{
             action.run();
             // Start placing directly on the exposed 3D world.
-            if(placingKind>=0||terrainMode!=0||paintTerrainMode||roadMode)toggleDrawer(false);
+            if(placingKind>=0||terrainMode!=0||paintTerrainMode||roadMode||precisionPaintMode)toggleDrawer(false);
         });
         LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,dp(43));
         p.setMargins(dp(4),dp(2),dp(4),dp(2));
@@ -454,7 +464,11 @@ public class EditorActivity extends Activity {
             addPaletteOption("🎨 Мои текстуры",this::choosePaintTexture);
             addPaletteOption("🧱 Нанести на выбранную деталь",this::applyPaintToSelected);
             addPaletteOption("🧽 Очистить текстуру детали",()->edit(()->nativePaintSelected("")));
-            addPaletteOption("🖌 Покрасить землю",this::activateTerrainPainting);
+            addPaletteOption("🖌 Точная кисть R4 · рисовать",()->activatePrecisionPaint(false));
+            addPaletteOption("🧽 Точная кисть R4 · стереть",()->activatePrecisionPaint(true));
+            addPaletteOption("📏 Размер и прозрачность R4",this::choosePrecisionPaint);
+            addPaletteOption("✕ Завершить точную кисть",this::cancelPlace);
+            addPaletteOption("○ Старые пятна · совместимость",this::activateTerrainPainting);
             addPaletteOption("📏 Радиус кисти земли",this::choosePaintRadius);
             addPaletteOption("✕ Завершить покраску",this::cancelPlace);
             addPaletteOption("Импорт модели: GLB / glTF / VOX",this::pickGlb);
@@ -491,7 +505,8 @@ public class EditorActivity extends Activity {
     }
     private void enterPlaceMode(int kind, String asset) {
         if(importing) { message("Сначала дождись завершения импорта"); return; }
-        terrainMode=0;paintTerrainMode=false;roadMode=false;
+        terrainMode=0;paintTerrainMode=false;roadMode=false;precisionPaintMode=false;
+        surface.queueEvent(EditorActivity::nativePaintStrokeEnd);
         surface.queueEvent(EditorActivity::nativeRoadFinish);
         placingKind = kind;
         placingGlb = asset;
@@ -499,8 +514,8 @@ public class EditorActivity extends Activity {
         message("Коснись места на карте для размещения");
     }
     private void cancelPlace() {
-        paintTerrainMode=false;roadMode=false;
-        surface.queueEvent(EditorActivity::nativeRoadFinish);
+        paintTerrainMode=false;roadMode=false;precisionPaintMode=false;
+        surface.queueEvent(()->{nativeRoadFinish();nativePaintStrokeEnd();});
         terrainMode=0;
         placingKind = -1;
         placingGlb = null;
@@ -510,7 +525,8 @@ public class EditorActivity extends Activity {
     private void enterTerrainMode(int direction){
         if(importing){message("Дождись завершения операции");return;}
         placingKind=-1;placingGlb=null;paintTerrainMode=false;roadMode=false;
-        surface.queueEvent(EditorActivity::nativeRoadFinish);
+        precisionPaintMode=false;
+        surface.queueEvent(()->{nativeRoadFinish();nativePaintStrokeEnd();});
         terrainMode=direction;
         statusText.setText(direction>0?
             "ГОРА: коснись земли. Кисть радиус "+(int)terrainRadius+" м, высота +"+(int)terrainStrength+" м. Отмена ↶ работает.":
@@ -539,7 +555,7 @@ public class EditorActivity extends Activity {
 
     private void beginNewRoad(){
         if(importing){message("Дождись завершения импорта");return;}
-        placingKind=-1;placingGlb=null;terrainMode=0;paintTerrainMode=false;roadMode=true;
+        placingKind=-1;placingGlb=null;terrainMode=0;paintTerrainMode=false;precisionPaintMode=false;roadMode=true;
         surface.queueEvent(()->{nativeRoadBegin();surface.requestRender();});
         statusText.setText("ДОРОГА: коснись земли для 1-й точки, затем для 2-й. "
             +"Следующие касания продолжают дорогу. Два пальца — камера.");
@@ -627,6 +643,45 @@ public class EditorActivity extends Activity {
             return new MapGuide(key,widthPx,heightPx,x,z,width,alpha,show);
         }
     }
+
+    private static final int PAINT_TILE_BYTES=128*128*4;
+    private static String compressedTile(byte[] raw) throws Exception{
+        if(raw==null||raw.length!=PAINT_TILE_BYTES)throw new Exception("Неполная кисть R4");
+        java.util.zip.Deflater compressor=new java.util.zip.Deflater(3);
+        try{
+            compressor.setInput(raw);compressor.finish();
+            ByteArrayOutputStream out=new ByteArrayOutputStream(2048);
+            byte[] buffer=new byte[8192];
+            while(!compressor.finished()){
+                int n=compressor.deflate(buffer);
+                if(n<=0)throw new Exception("Не удалось сжать слой земли");
+                if(out.size()+n>75000)throw new Exception("Слишком сложный текстурный слой");
+                out.write(buffer,0,n);
+            }
+            return android.util.Base64.encodeToString(out.toByteArray(),android.util.Base64.NO_WRAP);
+        }finally{compressor.end();}
+    }
+    private static byte[] restoredTile(String encoded) throws Exception{
+        if(encoded==null||encoded.length()<4||encoded.length()>100000||
+            !encoded.matches("[A-Za-z0-9+/=]+"))
+            throw new Exception("Повреждённые данные кисти R4");
+        byte[] zipped=android.util.Base64.decode(encoded,android.util.Base64.NO_WRAP);
+        if(zipped.length==0||zipped.length>75000)throw new Exception("Размер слоя неверен");
+        java.util.zip.Inflater compressor=new java.util.zip.Inflater();
+        try{
+            compressor.setInput(zipped);
+            byte[] out=new byte[PAINT_TILE_BYTES];
+            int pos=0;
+            while(!compressor.finished()&&pos<out.length){
+                int n=compressor.inflate(out,pos,out.length-pos);
+                if(n<=0)throw new Exception("Повреждённый сжатый слой земли");
+                pos+=n;
+            }
+            if(!compressor.finished()||pos!=out.length||compressor.getRemaining()!=0)
+                throw new Exception("Неверный объём текстурного слоя");
+            return out;
+        }finally{compressor.end();}
+    }
     private String snapshotWithGuide() throws Exception{
         final JSONObject json=new JSONObject(nativeSceneSnapshot());
         final MapGuide guide=mapGuide;
@@ -636,7 +691,25 @@ public class EditorActivity extends Activity {
             json.put("version",3);
             json.put("mapReference",guide.toJson());
         }
-        return json.toString();
+        int[] locations=nativePaintTileCoords();
+        if(locations==null||locations.length%2!=0||locations.length>64)
+            throw new Exception("Слишком много участков кисти");
+        if(locations.length!=0){
+            JSONArray saved=new JSONArray();
+            for(int i=0;i<locations.length/2;i++){
+                JSONArray tile=new JSONArray();
+                tile.put(locations[2*i]);
+                tile.put(locations[2*i+1]);
+                tile.put(compressedTile(nativePaintTileData(i)));
+                saved.put(tile);
+            }
+            json.put("paintTiles",saved);
+            json.put("version",4);
+        }
+        String result=json.toString();
+        if(result.getBytes(StandardCharsets.UTF_8).length>ProjectArchive.MAX_SCENE_BYTES)
+            throw new Exception("Рисунок R4 превысил безопасный размер проекта");
+        return result;
     }
     private File referenceDir() throws Exception{
         File dir=new File(getFilesDir(),"references");
@@ -1227,11 +1300,42 @@ public class EditorActivity extends Activity {
         if(activePaintKey.isEmpty()){
             message("Сначала загрузи и выбери PNG/JPG");return;
         }
-        terrainMode=0;placingKind=-1;placingGlb=null;roadMode=false;
-        surface.queueEvent(EditorActivity::nativeRoadFinish);
+        terrainMode=0;placingKind=-1;placingGlb=null;roadMode=false;precisionPaintMode=false;
+        surface.queueEvent(()->{nativeRoadFinish();nativePaintStrokeEnd();});
         paintTerrainMode=true;
         statusText.setText("КИСТЬ ТЕКСТУР: касайся земли · радиус "+(int)paintRadius+
             "м · до 48 мазков · ↶ отменить");
+    }
+
+    private void activatePrecisionPaint(boolean erase){
+        if(importing){message("Дождись окончания загрузки");return;}
+        if(!erase&&activePaintKey.isEmpty()){
+            message("Сначала загрузи и выбери текстуру PNG/JPG");return;
+        }
+        paintTerrainMode=false;terrainMode=0;placingKind=-1;placingGlb=null;roadMode=false;
+        precisionPaintErase=erase;precisionPaintMode=true;
+        surface.queueEvent(()->{nativeRoadFinish();nativePaintStrokeEnd();});
+        statusText.setText(erase?"ЛАСТИК R4: веди пальцем · курсор на 70 dp выше пальца":
+             "КИСТЬ R4: веди пальцем непрерывно · круг на 70 dp выше пальца. "
+             +"Размер "+precisionPaintRadius+" м, двухпальцевый зум.");
+        message(erase?"Режим стирания покрытия":"Непрерывная кисть · одно касание рисует линию");
+    }
+    private void choosePrecisionPaint(){
+        final String[] sizes={"0,5 м — точная","1 м — узкая","2 м — дорога",
+            "4 м — широкая","8 м — площадь","16 м — большой участок"};
+        final float[] values={.5f,1f,2f,4f,8f,16f};
+        new AlertDialog.Builder(this).setTitle("Радиус кисти R4")
+            .setItems(sizes,(dialog,index)->{
+                precisionPaintRadius=values[index];
+                final String[] strengths={"30% — прозрачнее","60%","85%","100% — плотное"};
+                final float[] alpha={.3f,.6f,.85f,1f};
+                new AlertDialog.Builder(this).setTitle("Сила нанесения")
+                    .setItems(strengths,(d,k)->{
+                        precisionPaintOpacity=alpha[k];
+                        message("Кисть R4: радиус "+precisionPaintRadius+
+                            " м · сила "+Math.round(100*precisionPaintOpacity)+"%");
+                    }).setNegativeButton("Отмена",null).show();
+            }).setNegativeButton("Отмена",null).show();
     }
     private void choosePaintRadius(){
         final String[] labels={"Маленькая · 4м","8м","16м","32м","64м"};
@@ -1442,7 +1546,7 @@ public class EditorActivity extends Activity {
                 byte[] buffer=new byte[4096];
                 int count;
                 while((count=in.read(buffer))!=-1){
-                    if(jsonBytes.size()+count>200000)throw new Exception("Файл сцены слишком большой");
+                    if(jsonBytes.size()+count>ProjectArchive.MAX_SCENE_BYTES)throw new Exception("Файл сцены слишком большой");
                     jsonBytes.write(buffer,0,count);
                 }
             }catch(java.io.FileNotFoundException missing){
@@ -1450,8 +1554,8 @@ public class EditorActivity extends Activity {
             }
             JSONObject document=new JSONObject(new String(jsonBytes.toByteArray(),StandardCharsets.UTF_8));
             final int sceneVersion=document.optInt("version",-1);
-            if(sceneVersion<1||sceneVersion>3)
-                throw new Exception("Неверная версия сцены (нужна 1, 2 или 3)");
+            if(sceneVersion<1||sceneVersion>4)
+                throw new Exception("Неверная версия сцены (нужна 1–4)");
             final boolean demoRoads=document.optBoolean("demoRoads",false);
             final int worldSize=document.optInt("worldSize",1024);
             if(worldSize!=1024&&worldSize!=2048&&worldSize!=4096&&worldSize!=8192&&worldSize!=16384)
@@ -1493,6 +1597,27 @@ public class EditorActivity extends Activity {
             }else{
                 parsedGuide=null;
                 parsedMapImage=null;
+            }
+            // R4 tiles are independently compressed; reject corruption before GLES swap.
+            JSONArray paintTilesJson=document.optJSONArray("paintTiles");
+            if((sceneVersion==4&&paintTilesJson==null)||
+               (sceneVersion<4&&document.has("paintTiles"))||
+               (document.has("paintTiles")&&paintTilesJson==null))
+                throw new Exception("Неверная версия данных кисти R4");
+            final int tileCount=paintTilesJson==null?0:paintTilesJson.length();
+            if(tileCount>32)throw new Exception("Слишком много текстурных участков");
+            int[] preciseTileCoords=new int[tileCount*2];
+            byte[][] preciseTileBytes=new byte[tileCount][];
+            HashSet<String> tilePairs=new HashSet<>();
+            for(int i=0;i<tileCount;i++){
+                JSONArray tile=paintTilesJson.getJSONArray(i);
+                if(tile.length()!=3)throw new Exception("Неверный участок текстуры R4");
+                int x=tile.getInt(0),z=tile.getInt(1);
+                if(x*64>=worldSize/2||x*64+64<=-worldSize/2||
+                   z*64>=worldSize/2||z*64+64<=-worldSize/2||
+                   !tilePairs.add(x+":"+z))throw new Exception("Повтор или неверный участок");
+                preciseTileCoords[2*i]=x;preciseTileCoords[2*i+1]=z;
+                preciseTileBytes[i]=restoredTile(tile.getString(2));
             }
             JSONArray arr=document.getJSONArray("items");
             if(arr.length()>300)throw new Exception("Слишком много объектов");
@@ -1774,7 +1899,8 @@ public class EditorActivity extends Activity {
                     }
                     if(!nativeReplaceScene(worldSize,demoRoads,kinds,transforms,modelKeys,
                             terrainBrushes,objectPaintKeys,paintBrushes,paintBrushKeys,
-                            roadIds,roadNames,roadMaterials,roadWidths,roadPaths))
+                            roadIds,roadNames,roadMaterials,roadWidths,roadPaths,
+                            preciseTileCoords,preciseTileBytes))
                         throw new Exception("Сцена не прошла полную проверку в движке");
                     if(parsedGuide!=null){
                         if(!nativeMapCommit(parsedGuide.centerX,parsedGuide.centerZ,
@@ -1784,7 +1910,7 @@ public class EditorActivity extends Activity {
                     mapGuide=parsedGuide;
                     mapTopViewActive=false;
                     committed=true;
-                    roadMode=false;
+                    roadMode=false;precisionPaintMode=false;
                     surface.requestRender();
                     refreshSelected();
                     message("Сцена загружена · "+items.length+" объектов, текстур "+referencedPaint.size()+", GLB "+assets.size()+
@@ -1835,6 +1961,10 @@ public class EditorActivity extends Activity {
         private boolean multiTouch = false;
         private volatile int touchedGizmoAxis=-1;
         private boolean gizmoEditStarted=false; // GL thread only.
+        private volatile boolean paintStrokeFailed=false;
+        private float precisionScreenY(float y){
+            return surfaceY(Math.max(0.f,y-dp(70))); // visible cursor ABOVE the finger
+        }
         // Render into a scaled GLES buffer, keep touch/viewport full screen.
         private volatile float renderScale=.70f;
         void applyRenderScale(float newScale){
@@ -1913,6 +2043,20 @@ public class EditorActivity extends Activity {
                 downX=lastX=e.getX();downY=lastY=e.getY();multiTouch=false;lastPinch=0;
                 touchedGizmoAxis=-1;
                 final float px=surfaceX(downX),py=surfaceY(downY);
+                if(precisionPaintMode){
+                    paintStrokeFailed=false;
+                    final float cy=precisionScreenY(downY);
+                    final String paintKey=activePaintKey;
+                    final boolean eraser=precisionPaintErase;
+                    final float rad=precisionPaintRadius, strength=precisionPaintOpacity;
+                    queueEvent(()->{
+                        nativePaintCursor(px,cy,rad);
+                        if(!nativePaintStrokeBegin(px,cy,rad,strength,paintKey,eraser))
+                            paintStrokeFailed=true;
+                        requestRender();
+                    });
+                    return true;
+                }
                 queueEvent(() -> {
                     nativeGizmoEnd();gizmoEditStarted=false;
                     if(placingKind==-1&&terrainMode==0&&!paintTerrainMode&&!roadMode)
@@ -1923,7 +2067,8 @@ public class EditorActivity extends Activity {
             if(action==MotionEvent.ACTION_POINTER_DOWN) {
                 multiTouch=true;
                 touchedGizmoAxis=-1;
-                queueEvent(()->{nativeGizmoEnd();gizmoEditStarted=false;});
+                queueEvent(()->{nativeGizmoEnd();gizmoEditStarted=false;
+                    nativePaintStrokeEnd();requestRender();});
                 if(e.getPointerCount()>=2){
                     lastPinch=pinch(e);
                     lastMidX=(e.getX(0)+e.getX(1))*.5f;
@@ -1943,6 +2088,15 @@ public class EditorActivity extends Activity {
                     lastPinch=p;lastMidX=midX;lastMidY=midY;
                 } else if(!multiTouch) {
                     float x=e.getX(),y=e.getY();
+                    if(precisionPaintMode){
+                        final float px=surfaceX(x),py=precisionScreenY(y);
+                        queueEvent(()->{
+                            if(!nativePaintStrokeMove(px,py))paintStrokeFailed=true;
+                            interactiveRender();
+                        });
+                        lastX=x;lastY=y;
+                        return true;
+                    }
                     final float dx=x-lastX,dy=y-lastY;
                     if(dx!=0||dy!=0){
                         final float sx=surfaceX(dx),sy=surfaceY(dy);
@@ -1966,6 +2120,17 @@ public class EditorActivity extends Activity {
             }
             if(action==MotionEvent.ACTION_POINTER_UP) {multiTouch=true;lastPinch=0;return true;}
             if(action==MotionEvent.ACTION_UP) {
+                if(precisionPaintMode){
+                    final float px=surfaceX(e.getX()),py=precisionScreenY(e.getY());
+                    final boolean wasMultiTouch=multiTouch;
+                    queueEvent(()->{
+                        if(!wasMultiTouch&&!nativePaintStrokeMove(px,py))paintStrokeFailed=true;
+                        nativePaintStrokeEnd();requestRender();
+                        if(paintStrokeFailed)message("Рисование остановлено: край карты, текстура или предел 32 участков");
+                    });
+                    multiTouch=false;
+                    return true;
+                }
                 if(!multiTouch){
                     // Decide after the queued DOWN hit-test; don't accidentally
                     // pick another entity when tapping a gizmo handle.
@@ -2027,7 +2192,8 @@ public class EditorActivity extends Activity {
             }
             if(action==MotionEvent.ACTION_CANCEL) {
                 multiTouch=false;touchedGizmoAxis=-1;
-                queueEvent(()->{nativeGizmoEnd();gizmoEditStarted=false;});
+                queueEvent(()->{nativeGizmoEnd();gizmoEditStarted=false;
+                    nativePaintStrokeEnd();requestRender();});
                 return true;
             }
             return true;

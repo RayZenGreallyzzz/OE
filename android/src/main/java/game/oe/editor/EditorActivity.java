@@ -1955,7 +1955,8 @@ public class EditorActivity extends Activity {
                                 if(!gizmoEditStarted&&movedEnough)
                                     gizmoEditStarted=nativeGizmoBegin(axis);
                                 if(gizmoEditStarted)nativeGizmoDrag(axis,sx,sy);
-                            }else nativeOrbit(dx,dy,1);
+                            }else if(mapTopViewActive)nativePan(dx,dy);
+                            else nativeOrbit(dx,dy,1);
                             interactiveRender();
                         });
                     }
@@ -2011,7 +2012,7 @@ public class EditorActivity extends Activity {
                             refreshSelected();
                         }else{
                             final float dx=upX-lastX,dy=upY-lastY;
-                            if(dx!=0||dy!=0)nativeOrbit(dx,dy,1);
+                            if(dx!=0||dy!=0){if(mapTopViewActive)nativePan(dx,dy);else nativeOrbit(dx,dy,1);}
                         }
                         requestRender();touchedGizmoAxis=-1;
                     });

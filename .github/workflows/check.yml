@@ -46,6 +46,17 @@ jobs:
           g++ -std=c++17 -O2 -Wall -Wextra -Werror \
             tests/device_quality_profiles_smoke.cpp -o /tmp/oe-quality-test
           /tmp/oe-quality-test
+  terrain-paint-tiles:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate continuous tile painting and bounded data
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -pedantic \
+            tests/terrainpaint_smoke.cpp \
+            android/src/main/cpp/terrainpaint/paint_tiles.cpp \
+            -o /tmp/oe-terrain-paint
+          /tmp/oe-terrain-paint
   road-network:
     runs-on: ubuntu-latest
     steps:

@@ -1060,10 +1060,10 @@ public class EditorActivity extends Activity {
     private void saveScene() {
         if(importing){message("Дождись завершения загрузки сцены");return;}
         surface.queueEvent(() -> {
-            String json=nativeSceneSnapshot();
             AtomicFile atomic=new AtomicFile(saveFile());
             FileOutputStream stream=null;
             try {
+                String json=snapshotWithGuide();
                 stream=atomic.startWrite();
                 stream.write(json.getBytes(StandardCharsets.UTF_8));
                 atomic.finishWrite(stream);
@@ -1263,14 +1263,18 @@ public class EditorActivity extends Activity {
         if(importing)return;
         importing=true;
         surface.queueEvent(() -> {
-            final String scene=nativeSceneSnapshot();
+            final String scene;
+            try{scene=snapshotWithGuide();}
+            catch(Exception error){
+                importing=false;message("Нельзя экспортировать сцену: "+error.getMessage());return;
+            }
             new Thread(() -> {
                 try{
                     try(OutputStream stream=getContentResolver().openOutputStream(uri,"w")){
                         if(stream==null)throw new Exception("Нет доступа к файлу");
-                        ProjectArchive.exportProject(scene,modelDir(),textureDir(),originalDir(),stream);
+                        ProjectArchive.exportProject(scene,modelDir(),textureDir(),originalDir(),referenceDir(),stream);
                     }
-                    message("Проект экспортирован со всеми используемыми GLB");
+                    message("Проект экспортирован · дороги и PNG-подложка сохранены");
                 }catch(Exception e){
                     message("Ошибка экспорта: "+e.getMessage());
                 }finally{importing=false;}
@@ -1291,7 +1295,7 @@ public class EditorActivity extends Activity {
                 surface.queueEvent(() -> {
                     final HashSet<String> cached=new HashSet<>(Arrays.asList(nativeLoadedAssetKeys()));
                     new Thread(() -> readAndPrepareScene(cached,staged.sceneFile,staged.modelDir,
-                    staged.textureDir,staged.sourceDir,staged.root),
+                    staged.textureDir,staged.sourceDir,staged.referenceDir,staged.root),
                         "oe-project-validate").start();
                 });
             }catch(Exception e){
@@ -1425,12 +1429,12 @@ public class EditorActivity extends Activity {
         // thread can skip expensive decode work for those immutable GLBs.
         surface.queueEvent(() -> {
             final HashSet<String> cached=new HashSet<>(Arrays.asList(nativeLoadedAssetKeys()));
-            new Thread(() -> readAndPrepareScene(cached,null,null,null,null,null),"oe-scene-load").start();
+            new Thread(() -> readAndPrepareScene(cached,null,null,null,null,null,null),"oe-scene-load").start();
         });
     }
     private void readAndPrepareScene(HashSet<String> cached,File sourceScene,
             File sourceModels,File sourceTextures,File sourceOriginals,
-            File stagingRoot) {
+            File sourceReferences,File stagingRoot) {
         try {
             File file=sourceScene==null?saveFile():sourceScene;
             ByteArrayOutputStream jsonBytes=new ByteArrayOutputStream();
@@ -1446,12 +1450,50 @@ public class EditorActivity extends Activity {
             }
             JSONObject document=new JSONObject(new String(jsonBytes.toByteArray(),StandardCharsets.UTF_8));
             final int sceneVersion=document.optInt("version",-1);
-            if(sceneVersion!=1&&sceneVersion!=2)
-                throw new Exception("Неверная версия сцены (нужен 1 или 2)");
+            if(sceneVersion<1||sceneVersion>3)
+                throw new Exception("Неверная версия сцены (нужна 1, 2 или 3)");
             final boolean demoRoads=document.optBoolean("demoRoads",false);
             final int worldSize=document.optInt("worldSize",1024);
             if(worldSize!=1024&&worldSize!=2048&&worldSize!=4096&&worldSize!=8192&&worldSize!=16384)
                 throw new Exception("Неподдерживаемый размер карты");
+
+            JSONObject mapObject=document.optJSONObject("mapReference");
+            if((sceneVersion==3&&mapObject==null)||
+               (sceneVersion<3&&document.has("mapReference"))||
+               (document.has("mapReference")&&mapObject==null))
+                throw new Exception("Некорректная PNG-карта в версии сцены");
+            final MapGuide parsedGuide;
+            final TextureReader.Image parsedMapImage;
+            if(mapObject!=null){
+                String key=mapObject.getString("key");
+                if(!key.matches("ref_[0-9a-f]{24}\\.png"))
+                    throw new Exception("Неверное имя PNG-подложки");
+                double x=mapObject.getDouble("centerX");
+                double z=mapObject.getDouble("centerZ");
+                double width=mapObject.getDouble("widthMetres");
+                double opacity=mapObject.getDouble("opacity");
+                boolean visible=mapObject.getBoolean("visible");
+                File png=new File(sourceReferences==null?referenceDir():sourceReferences,key);
+                if(!png.isFile()||png.length()<=0||
+                   png.length()>ProjectArchive.MAX_REFERENCE_BYTES)
+                    throw new Exception("PNG-подложка отсутствует");
+                byte[] original=Files.readAllBytes(png.toPath());
+                if(!"image/png".equals(textureType(original))||!key.equals(mapKey(original)))
+                    throw new Exception("Повреждена исходная PNG-подложка");
+                parsedMapImage=TextureReader.decode(original,"image/png",2048);
+                double height=width*parsedMapImage.height/parsedMapImage.width;
+                if(!Double.isFinite(x)||!Double.isFinite(z)||
+                   !Double.isFinite(width)||!Double.isFinite(opacity)||
+                   Math.abs(x)>worldSize/2.0||Math.abs(z)>worldSize/2.0||
+                   width<8||width>worldSize||height<8||height>worldSize||
+                   opacity<.05||opacity>.95)
+                    throw new Exception("PNG-подложка не соответствует размеру мира");
+                parsedGuide=new MapGuide(key,parsedMapImage.width,parsedMapImage.height,
+                                         x,z,width,(float)opacity,visible);
+            }else{
+                parsedGuide=null;
+                parsedMapImage=null;
+            }
             JSONArray arr=document.getJSONArray("items");
             if(arr.length()>300)throw new Exception("Слишком много объектов");
             SavedEntity[] items=new SavedEntity[arr.length()];
@@ -1693,10 +1735,28 @@ public class EditorActivity extends Activity {
                     }
                 }
             }
+            if(sourceReferences!=null&&parsedGuide!=null){
+                File destination=new File(referenceDir(),parsedGuide.key);
+                if(destination.exists()){
+                    if(!parsedGuide.key.equals(mapKey(Files.readAllBytes(destination.toPath()))))
+                        throw new Exception("Повреждён локальный PNG-план города");
+                }else{
+                    File partial=new File(referenceDir(),parsedGuide.key+".part");
+                    try{
+                        Files.copy(new File(sourceReferences,parsedGuide.key).toPath(),
+                            partial.toPath(),StandardCopyOption.REPLACE_EXISTING);
+                        Files.move(partial.toPath(),destination.toPath(),
+                            StandardCopyOption.REPLACE_EXISTING);
+                    }finally{Files.deleteIfExists(partial.toPath());}
+                }
+            }
             surface.queueEvent(() -> {
                 ArrayList<String> uploaded=new ArrayList<>();
                 boolean committed=false;
                 try {
+                    if(parsedGuide!=null&&!nativeMapStage(parsedMapImage.bytes,
+                            parsedMapImage.width,parsedMapImage.height))
+                        throw new Exception("Нельзя загрузить PNG-подложку в видеопамять");
                     for(Map.Entry<String,TextureReader.Image> entry:paintImages.entrySet()){
                         TextureReader.Image img=entry.getValue();
                         if(!nativeRegisterPaintTexture(entry.getKey(),img.bytes,img.width,img.height))
@@ -1716,6 +1776,13 @@ public class EditorActivity extends Activity {
                             terrainBrushes,objectPaintKeys,paintBrushes,paintBrushKeys,
                             roadIds,roadNames,roadMaterials,roadWidths,roadPaths))
                         throw new Exception("Сцена не прошла полную проверку в движке");
+                    if(parsedGuide!=null){
+                        if(!nativeMapCommit(parsedGuide.centerX,parsedGuide.centerZ,
+                                parsedGuide.widthMetres,parsedGuide.opacity,parsedGuide.visible))
+                            throw new Exception("PNG-подложка не подошла к новому размеру мира");
+                    }else nativeMapClear();
+                    mapGuide=parsedGuide;
+                    mapTopViewActive=false;
                     committed=true;
                     roadMode=false;
                     surface.requestRender();
@@ -1726,6 +1793,7 @@ public class EditorActivity extends Activity {
                     message("Сцена НЕ изменена: "+e.getMessage());
                 }finally{
                     if(!committed){
+                        nativeMapAbort();
                         // Roll back newly uploaded resources without touching
                         // assets referenced by the currently open scene.
                         for(String asset:uploaded)

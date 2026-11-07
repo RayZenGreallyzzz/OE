@@ -988,6 +988,108 @@ void drawTerrainPaint(const Mat4&vp){
 }
 
 
+
+// A single composited RGBA texture per painted 64m tile: no per-stamp draw calls.
+// Source paint images are baked once on CPU when the brush moves.
+void drawPrecisionPaint(const Mat4& vp){
+ if(gPaintTiles.tiles().empty()||!gPaintMesh.vao)return;
+ const float view=quality().viewRangeMetres+oe::terrainpaint::kTileMetres;
+ glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+ glDepthMask(GL_FALSE);
+ glUniformMatrix4fv(gShader.locMvp,1,GL_FALSE,vp.m);
+ const Mat4 model=identity();
+ glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
+ glUniform3f(gShader.locColor,1,1,1);
+ glUniform1f(gShader.locLight,0.f);
+ glUniform1f(gShader.locTextured,1.f);
+ glUniform1f(gShader.locPaintOverride,1.f);
+ glUniform1f(gShader.locGuide,1.f);
+ glUniform1f(gShader.locOpacity,1.f);
+ glUniform1f(gShader.locOverlay,0.f);
+ glBindVertexArray(gPaintMesh.vao);
+ std::vector<float> verts;verts.reserve(16*16*6*11);
+ for(const auto& tile:gPaintTiles.tiles()){
+  const float ox=tile.x*oe::terrainpaint::kTileMetres,
+              oz=tile.z*oe::terrainpaint::kTileMetres;
+  if(std::abs(ox+32.f-gTarget.x)>view||
+     std::abs(oz+32.f-gTarget.z)>view)continue;
+  const auto id=std::make_pair(tile.x,tile.z);
+  auto& gpu=gPaintTileGpu[id];
+  if(!gpu.texture){
+   glGenTextures(1,&gpu.texture);
+   if(!gpu.texture)continue;
+   glBindTexture(GL_TEXTURE_2D,gpu.texture);
+   glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+   glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+   glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+   glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+   glPixelStorei(GL_UNPACK_ALIGNMENT,1);
+   glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,oe::terrainpaint::kResolution,
+       oe::terrainpaint::kResolution,0,GL_RGBA,GL_UNSIGNED_BYTE,tile.pixels.data());
+   glPixelStorei(GL_UNPACK_ALIGNMENT,4);
+   gpu.revision=tile.revision;
+  }else{
+   glBindTexture(GL_TEXTURE_2D,gpu.texture);
+   if(gpu.revision!=tile.revision){
+    glPixelStorei(GL_UNPACK_ALIGNMENT,1);
+    glTexSubImage2D(GL_TEXTURE_2D,0,0,0,oe::terrainpaint::kResolution,
+       oe::terrainpaint::kResolution,GL_RGBA,GL_UNSIGNED_BYTE,tile.pixels.data());
+    glPixelStorei(GL_UNPACK_ALIGNMENT,4);
+    gpu.revision=tile.revision;
+   }
+  }
+  verts.clear();
+  auto append=[&](float x,float z){
+   const float y=terrainHeightAt(x,z)+.075f;
+   verts.insert(verts.end(),{x,y,z,0.f,1.f,0.f,1.f,1.f,1.f,
+     (x-ox)/oe::terrainpaint::kTileMetres,(z-oz)/oe::terrainpaint::kTileMetres});
+  };
+  for(int iz=0;iz<16;iz++)for(int ix=0;ix<16;ix++){
+   const float x0=ox+ix*4.f,x1=x0+4.f,z0=oz+iz*4.f,z1=z0+4.f;
+   append(x0,z0);append(x0,z1);append(x1,z0);
+   append(x1,z0);append(x0,z1);append(x1,z1);
+  }
+  glBindBuffer(GL_ARRAY_BUFFER,gPaintMesh.buffer);
+  glBufferData(GL_ARRAY_BUFFER,static_cast<GLsizeiptr>(verts.size()*sizeof(float)),
+               verts.data(),GL_DYNAMIC_DRAW);
+  glDrawArrays(GL_TRIANGLES,0,static_cast<GLsizei>(verts.size()/11));
+  ++gDrawCalls;gTriangles+=static_cast<int>(verts.size()/33);
+ }
+ glBindVertexArray(0);glBindTexture(GL_TEXTURE_2D,0);
+ glDepthMask(GL_TRUE);glDisable(GL_BLEND);
+ glUniform1f(gShader.locGuide,0.f);glUniform1f(gShader.locTextured,0.f);
+ glUniform1f(gShader.locPaintOverride,0.f);
+}
+void drawPrecisionCursor(const Mat4& vp){
+ if(!gPaintCursorVisible||!gPaintMesh.vao)return;
+ constexpr int segments=48;
+ std::vector<float> vertices;vertices.reserve(segments*11);
+ for(int i=0;i<segments;++i){
+  const float angle=(2.f*PI*i)/segments;
+  const float x=gPaintCursorX+std::cos(angle)*gPaintCursorRadius;
+  const float z=gPaintCursorZ+std::sin(angle)*gPaintCursorRadius;
+  vertices.insert(vertices.end(),{x,terrainHeightAt(x,z)+.25f,z,0.f,1.f,0.f,
+    1.f,.76f,.18f,0.f,0.f});
+ }
+ const Mat4 model=identity();
+ glUniformMatrix4fv(gShader.locMvp,1,GL_FALSE,vp.m);
+ glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
+ glUniform3f(gShader.locColor,1,1,1);
+ glUniform1f(gShader.locLight,0.f);
+ glUniform1f(gShader.locTextured,0.f);
+ glUniform1f(gShader.locOverlay,0.f);
+ glUniform1f(gShader.locPaintOverride,0.f);
+ glDisable(GL_DEPTH_TEST);
+ glBindVertexArray(gPaintMesh.vao);
+ glBindBuffer(GL_ARRAY_BUFFER,gPaintMesh.buffer);
+ glBufferData(GL_ARRAY_BUFFER,static_cast<GLsizeiptr>(vertices.size()*sizeof(float)),
+              vertices.data(),GL_DYNAMIC_DRAW);
+ glDrawArrays(GL_LINE_LOOP,0,segments);
+ glBindVertexArray(0);
+ glEnable(GL_DEPTH_TEST);
+ ++gDrawCalls;
+}
+
 bool rebuildMapMesh(){
  if(!gMapGuide.texture||!gMapGuide.visible)return false;
  const int gx=static_cast<int>(std::floor(gTarget.x/16.f));
@@ -1519,11 +1621,13 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDraw(JNIEnv*,jcl
  const Frustum frustum=makeFrustum(vp);
  drawWorld(vp);
  drawTerrainPaint(vp);
+ drawPrecisionPaint(vp);
  drawMapGuide(vp);
  drawRoads(vp);
  for(const auto&e:gEntities)drawEntity(vp,frustum,e);
  drawGizmo(vp);
  drawRoadHandles(vp);
+ drawPrecisionCursor(vp);
  glBindVertexArray(0);
  const auto end=std::chrono::steady_clock::now();
  gSubmitCpuMs=std::chrono::duration<float,std::milli>(end-begin).count();

@@ -911,6 +911,98 @@ void drawTerrainPaint(const Mat4&vp){
  glUniform1f(gShader.locTextured,0.f);
  glBindTexture(GL_TEXTURE_2D,0);
 }
+
+Color roadPreviewColor(const std::string& material){
+ if(material=="builtin:dirt")return {.50f,.33f,.19f};
+ if(material=="builtin:sand")return {.77f,.68f,.43f};
+ if(material=="builtin:grass")return {.28f,.47f,.25f};
+ return {.71f,.67f,.59f}; // Placeholder until image material library is connected.
+}
+bool rebuildRoadGpu(){
+ if(gRoadGpuRevision==gRoadRevision&&gRoadGpuTerrainRevision==gTerrainRevision)return true;
+ std::vector<float> vertices;vertices.reserve(16000);
+ std::vector<RoadDrawRange> draws;
+ const auto height=[](double x,double z)->double{
+  return terrainHeightAt(static_cast<float>(x),static_cast<float>(z));
+ };
+ for(const auto& road:gRoads.all()){
+  oe::roads::SurfaceMesh strip;
+  if(!oe::roads::buildSurfaceMesh(road,height,strip))return false;
+  if(vertices.size()/11>MAX_ROAD_GPU_VERTICES||
+     strip.triangles.size()>MAX_ROAD_GPU_VERTICES-vertices.size()/11)return false;
+  const GLint first=static_cast<GLint>(vertices.size()/11);
+  const Color color=roadPreviewColor(road.material);
+  for(const auto& point:strip.triangles){
+   const float x=point.x,z=point.z;
+   const float dx=terrainHeightAt(x+0.5f,z)-terrainHeightAt(x-0.5f,z);
+   const float dz=terrainHeightAt(x,z+0.5f)-terrainHeightAt(x,z-0.5f);
+   const Vec3 normal=unit({-dx,1.0f,-dz});
+   vertices.insert(vertices.end(),{x,point.y,z,normal.x,normal.y,normal.z,
+      color.r,color.g,color.b,point.u,point.v});
+  }
+  draws.push_back({first,static_cast<GLsizei>(strip.triangles.size()),road.id});
+ }
+ if(!gRoadGpu.vao){
+  glGenVertexArrays(1,&gRoadGpu.vao);
+  glGenBuffers(1,&gRoadGpu.buffer);
+ }
+ if(!gRoadGpu.vao||!gRoadGpu.buffer)return false;
+ glBindVertexArray(gRoadGpu.vao);
+ glBindBuffer(GL_ARRAY_BUFFER,gRoadGpu.buffer);
+ glBufferData(GL_ARRAY_BUFFER,static_cast<GLsizeiptr>(vertices.size()*sizeof(float)),
+              vertices.empty()?nullptr:vertices.data(),GL_DYNAMIC_DRAW);
+ for(int a=0;a<3;a++){
+  glEnableVertexAttribArray(static_cast<GLuint>(a));
+  glVertexAttribPointer(static_cast<GLuint>(a),3,GL_FLOAT,GL_FALSE,11*sizeof(float),
+   reinterpret_cast<void*>(static_cast<uintptr_t>(a*3*sizeof(float))));
+ }
+ glEnableVertexAttribArray(3);
+ glVertexAttribPointer(3,2,GL_FLOAT,GL_FALSE,11*sizeof(float),
+                      reinterpret_cast<void*>(9*sizeof(float)));
+ glBindVertexArray(0);
+ if(glGetError()!=GL_NO_ERROR)return false;
+ gRoadGpu.count=static_cast<GLsizei>(vertices.size()/11);
+ gRoadRanges.swap(draws);
+ gRoadGpuRevision=gRoadRevision;gRoadGpuTerrainRevision=gTerrainRevision;
+ return true;
+}
+void drawRoads(const Mat4& vp){
+ if(gRoads.all().empty()||!rebuildRoadGpu()||!gRoadGpu.vao)return;
+ const Mat4 model=identity();
+ glUniformMatrix4fv(gShader.locMvp,1,GL_FALSE,vp.m);
+ glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
+ glUniform3f(gShader.locColor,1.f,1.f,1.f);
+ glUniform1f(gShader.locTextured,0.f);
+ glUniform1f(gShader.locOverlay,0.f);
+ glUniform1f(gShader.locPaintOverride,0.f);
+ glBindVertexArray(gRoadGpu.vao);
+ for(const auto& range:gRoadRanges){
+  glUniform1f(gShader.locLight,range.id==gSelectedRoad?1.f:0.f);
+  glDrawArrays(GL_TRIANGLES,range.first,range.count);
+  ++gDrawCalls;gTriangles+=range.count/3;
+ }
+ glBindVertexArray(0);
+ glUniform1f(gShader.locLight,0.f);
+}
+void drawRoadHandles(const Mat4& vp){
+ const auto* road=gRoads.find(gSelectedRoad);
+ const float marker=clampf(gDistance*.013f,.22f,.9f);
+ if(road){
+  const size_t stride=std::max<size_t>(1,(road->controlPoints.size()+63)/64);
+  for(size_t i=0;i<road->controlPoints.size();i+=stride){
+   const auto& p=road->controlPoints[i];
+   const float x=static_cast<float>(p.x),z=static_cast<float>(p.z);
+   draw(vp,0,{x,terrainHeightAt(x,z)+.25f,z},
+        {marker,marker*.6f,marker},0,{.99f,.75f,.18f});
+  }
+ }
+ if(gRoadPending){
+  const float x=static_cast<float>(gRoadFirstPoint.x),z=static_cast<float>(gRoadFirstPoint.z);
+  draw(vp,0,{x,terrainHeightAt(x,z)+.26f,z},
+       {marker*1.5f,marker*.7f,marker*1.5f},0,{.97f,.27f,.24f});
+ }
+}
+
 bool groundPoint(float px,float py,float &x,float &z){
  const Vec3 eye=cameraEye(),forward=unit(sub(gTarget,eye));
  const Vec3 right=unit(cross(forward,{0,1,0})),up=cross(right,forward);
@@ -1254,8 +1346,10 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDraw(JNIEnv*,jcl
  const Frustum frustum=makeFrustum(vp);
  drawWorld(vp);
  drawTerrainPaint(vp);
+ drawRoads(vp);
  for(const auto&e:gEntities)drawEntity(vp,frustum,e);
  drawGizmo(vp);
+ drawRoadHandles(vp);
  glBindVertexArray(0);
  const auto end=std::chrono::steady_clock::now();
  gSubmitCpuMs=std::chrono::duration<float,std::milli>(end-begin).count();

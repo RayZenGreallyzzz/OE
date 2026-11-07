@@ -3,6 +3,7 @@
 #include "vendor/meshoptimizer/meshoptimizer.h"
 #include "quality_profiles.h"
 #include "runtime/oe_runtime.h"
+#include "roads/road_network.h"
 #include "vendor/basisu/transcoder/basisu_transcoder.h"
 #include <GLES3/gl3.h>
 #include <android/log.h>
@@ -110,6 +111,20 @@ static constexpr size_t MAX_TERRAIN_PAINT=48;
 static std::vector<TerrainBrush> gBrushes;
 static int gTerrainRevision=0;
 static constexpr size_t MAX_TERRAIN_BRUSHES=64;
+
+// Edit-time road network, independent from portable game runtime.
+static oe::roads::Network gRoads;
+static std::uint64_t gSelectedRoad=0,gActiveRoad=0;
+static bool gRoadPending=false;
+static oe::roads::Point gRoadFirstPoint{};
+static double gRoadWidth=6.0;
+static std::string gRoadMaterial="builtin:cobblestone";
+static int gRoadRevision=1,gRoadGpuRevision=-1,gRoadGpuTerrainRevision=-1;
+static Mesh gRoadGpu;
+struct RoadDrawRange {GLint first=0;GLsizei count=0;std::uint64_t id=0;};
+static std::vector<RoadDrawRange> gRoadRanges;
+static constexpr size_t MAX_ROAD_GPU_VERTICES=120000;
+
 float terrainHeightAt(float x,float z){
  float h=0;
  for(const auto&b:gBrushes){
@@ -129,15 +144,20 @@ struct SceneSnapshot {
  float cameraDistance=28.f;
  std::vector<TerrainBrush> terrain;
  std::vector<TerrainPaint> paints;
+ std::vector<oe::roads::Road> roads;
+ std::uint64_t selectedRoad=0;
 };
 static std::vector<SceneSnapshot> gUndo,gRedo;
 static bool gSuspendHistory=false;
 static constexpr size_t HISTORY_LIMIT=40;
-SceneSnapshot captureScene(){return {gEntities,gNextId,gSelected,gWorldSize,gDemoRoads,gTarget,gDistance,gBrushes,gTerrainPaint};}
+SceneSnapshot captureScene(){return {gEntities,gNextId,gSelected,gWorldSize,gDemoRoads,
+    gTarget,gDistance,gBrushes,gTerrainPaint,gRoads.all(),gSelectedRoad};}
 void restoreScene(const SceneSnapshot&s){
  gEntities=s.entities;gNextId=s.nextId;gSelected=s.selected;gWorldSize=s.worldSize;
  gDemoRoads=s.demoRoads;gTarget=s.target;gDistance=s.cameraDistance;
  gBrushes=s.terrain;gTerrainPaint=s.paints;gTerrainRevision++;gSceneInitialized=true;
+ gRoads.replaceAll(s.roads);gSelectedRoad=s.selectedRoad;
+ gRoadPending=false;gActiveRoad=0;++gRoadRevision;
 }
 void pushBounded(std::vector<SceneSnapshot>&stack,SceneSnapshot value){
  if(stack.size()>=HISTORY_LIMIT)stack.erase(stack.begin());
@@ -160,6 +180,30 @@ bool redoEdit(){
  restoreScene(snapshot);return true;
 }
 float worldHalf(){return static_cast<float>(gWorldSize)*.5f;}
+bool roadWithinWorld(const oe::roads::Road& road,int worldSize){
+ if(!oe::roads::validRoad(road))return false;
+ const double bound=worldSize*.5-road.widthMetres*2.0;
+ for(auto p:road.controlPoints)if(std::abs(p.x)>bound||std::abs(p.z)>bound)return false;
+ return true;
+}
+bool roadBudget(const std::vector<oe::roads::Road>& roads,int size){
+ if(roads.size()>oe::roads::kMaxRoads)return false;
+ size_t verts=0;
+ for(const auto& r:roads){
+  if(!roadWithinWorld(r,size))return false;
+  for(size_t i=1;i<r.controlPoints.size();++i){
+   const auto a=r.controlPoints[i-1],b=r.controlPoints[i];
+   const double len=std::hypot(a.x-b.x,a.z-b.z);
+   const size_t steps=static_cast<size_t>(std::ceil(len/oe::roads::kDefaultMeshStep));
+   if(steps>oe::roads::kMaxMeshSamples||
+      verts>MAX_ROAD_GPU_VERTICES||
+      steps>(MAX_ROAD_GPU_VERTICES-verts)/6)return false;
+   verts+=steps*6;
+  }
+ }
+ return true;
+}
+
 bool allowedWorldSize(int size){
  return size==1024||size==2048||size==4096||size==8192||size==16384;
 }
@@ -364,6 +408,7 @@ GLuint shader(GLenum kind,const char*src){
  return s;
 }
 void setupGL(){
+ gRoadGpu={};gRoadRanges.clear();gRoadGpuRevision=-1;gRoadGpuTerrainRevision=-1;
  const char*vert=R"(#version 300 es
  layout(location=0) in vec3 aPos;
  layout(location=1) in vec3 aNormal;
@@ -945,6 +990,7 @@ void reset(bool demo){
  const bool wasMuted=gSuspendHistory;
  gSuspendHistory=true;
  gEntities.clear();gBrushes.clear();gTerrainPaint.clear();gTerrainRevision++;gNextId=1;gSelected=0;
+ gRoads.clear();gSelectedRoad=0;gActiveRoad=0;gRoadPending=false;++gRoadRevision;
  gSceneInitialized=true;gDemoRoads=demo;
  gTarget={0,1.2f,1.3f};gDistance=28.f;
  if(demo){
@@ -1422,6 +1468,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeSetWorldSize
  float half=static_cast<float>(newSize)*.5f;
  // Never silently hide buildings when shrinking the world.
  for(const auto&e:gEntities)if(std::abs(e.x)>half-1.f||std::abs(e.z)>half-1.f)return JNI_FALSE;
+ if(!roadBudget(gRoads.all(),newSize))return JNI_FALSE;
  if(gWorldSize==newSize)return JNI_TRUE;
  recordEdit();
  gWorldSize=newSize;

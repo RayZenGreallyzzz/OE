@@ -1882,6 +1882,10 @@ public class EditorActivity extends Activity {
         private boolean multiTouch = false;
         private volatile int touchedGizmoAxis=-1;
         private boolean gizmoEditStarted=false; // GL thread only.
+        private volatile boolean paintStrokeFailed=false;
+        private float precisionScreenY(float y){
+            return surfaceY(Math.max(0.f,y-dp(70))); // visible cursor ABOVE the finger
+        }
         // Render into a scaled GLES buffer, keep touch/viewport full screen.
         private volatile float renderScale=.70f;
         void applyRenderScale(float newScale){
@@ -1960,6 +1964,20 @@ public class EditorActivity extends Activity {
                 downX=lastX=e.getX();downY=lastY=e.getY();multiTouch=false;lastPinch=0;
                 touchedGizmoAxis=-1;
                 final float px=surfaceX(downX),py=surfaceY(downY);
+                if(precisionPaintMode){
+                    paintStrokeFailed=false;
+                    final float cy=precisionScreenY(downY);
+                    final String paintKey=activePaintKey;
+                    final boolean eraser=precisionPaintErase;
+                    final float rad=precisionPaintRadius, strength=precisionPaintOpacity;
+                    queueEvent(()->{
+                        nativePaintCursor(px,cy,rad);
+                        if(!nativePaintStrokeBegin(px,cy,rad,strength,paintKey,eraser))
+                            paintStrokeFailed=true;
+                        requestRender();
+                    });
+                    return true;
+                }
                 queueEvent(() -> {
                     nativeGizmoEnd();gizmoEditStarted=false;
                     if(placingKind==-1&&terrainMode==0&&!paintTerrainMode&&!roadMode)
@@ -1970,7 +1988,8 @@ public class EditorActivity extends Activity {
             if(action==MotionEvent.ACTION_POINTER_DOWN) {
                 multiTouch=true;
                 touchedGizmoAxis=-1;
-                queueEvent(()->{nativeGizmoEnd();gizmoEditStarted=false;});
+                queueEvent(()->{nativeGizmoEnd();gizmoEditStarted=false;
+                    nativePaintStrokeEnd();requestRender();});
                 if(e.getPointerCount()>=2){
                     lastPinch=pinch(e);
                     lastMidX=(e.getX(0)+e.getX(1))*.5f;
@@ -1990,6 +2009,15 @@ public class EditorActivity extends Activity {
                     lastPinch=p;lastMidX=midX;lastMidY=midY;
                 } else if(!multiTouch) {
                     float x=e.getX(),y=e.getY();
+                    if(precisionPaintMode){
+                        final float px=surfaceX(x),py=precisionScreenY(y);
+                        queueEvent(()->{
+                            if(!nativePaintStrokeMove(px,py))paintStrokeFailed=true;
+                            interactiveRender();
+                        });
+                        lastX=x;lastY=y;
+                        return true;
+                    }
                     final float dx=x-lastX,dy=y-lastY;
                     if(dx!=0||dy!=0){
                         final float sx=surfaceX(dx),sy=surfaceY(dy);
@@ -2013,6 +2041,16 @@ public class EditorActivity extends Activity {
             }
             if(action==MotionEvent.ACTION_POINTER_UP) {multiTouch=true;lastPinch=0;return true;}
             if(action==MotionEvent.ACTION_UP) {
+                if(precisionPaintMode){
+                    final float px=surfaceX(e.getX()),py=precisionScreenY(e.getY());
+                    queueEvent(()->{
+                        if(!multiTouch&&!nativePaintStrokeMove(px,py))paintStrokeFailed=true;
+                        nativePaintStrokeEnd();requestRender();
+                        if(paintStrokeFailed)message("Рисование остановлено: край карты, текстура или предел 32 участков");
+                    });
+                    multiTouch=false;
+                    return true;
+                }
                 if(!multiTouch){
                     // Decide after the queued DOWN hit-test; don't accidentally
                     // pick another entity when tapping a gizmo handle.
@@ -2074,7 +2112,8 @@ public class EditorActivity extends Activity {
             }
             if(action==MotionEvent.ACTION_CANCEL) {
                 multiTouch=false;touchedGizmoAxis=-1;
-                queueEvent(()->{nativeGizmoEnd();gizmoEditStarted=false;});
+                queueEvent(()->{nativeGizmoEnd();gizmoEditStarted=false;
+                    nativePaintStrokeEnd();requestRender();});
                 return true;
             }
             return true;

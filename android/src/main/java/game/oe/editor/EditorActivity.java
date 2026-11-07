@@ -115,6 +115,7 @@ public class EditorActivity extends Activity {
     private static native String[] nativeRoadLabels();
     private static native boolean nativeRoadSelect(int index);
     private static native boolean nativeRoadSetWidth(double width);
+    private static native double nativeRoadSelectedWidth();
     private static native boolean nativeRoadSetMaterial(int choice);
     private static native boolean nativeRoadRemoveLastPoint();
     private static native boolean nativeRoadDeleteSelected();
@@ -555,6 +556,7 @@ public class EditorActivity extends Activity {
                         edit(()->{
                             nativeRoadFinish();
                             nativeRoadSelect(index);
+                            selectedRoadWidth=nativeRoadSelectedWidth();
                             message("Дорога выделена: можно менять ширину, покрытие и точки");
                         });
                     }).setNegativeButton("Отмена",null).show();
@@ -1339,6 +1341,10 @@ public class EditorActivity extends Activity {
             // Version 1 archives have no roads. Version 2 stores authoring centerlines,
             // not generated rendering triangles. Validate before native atomic scene swap.
             JSONArray savedRoads=document.optJSONArray("roads");
+            if((sceneVersion==2 && savedRoads==null)||
+               (sceneVersion==1 && document.has("roads"))||
+               (document.has("roads")&&savedRoads==null))
+                throw new Exception("Некорректная версия или раздел дорог в сцене");
             final int roadCount=savedRoads==null?0:savedRoads.length();
             if(roadCount>256)throw new Exception("Слишком много дорог");
             long[] roadIds=new long[roadCount];

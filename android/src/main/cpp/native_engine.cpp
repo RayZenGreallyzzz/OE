@@ -1590,6 +1590,93 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativePaintSelecte
  if(selected()->paint==key)return JNI_TRUE;
  recordEdit();selected()->paint=key;return JNI_TRUE;
 }
+
+// Continuous brush composited into 64m tiles, rather than one draw per stamp.
+JNIEXPORT jintArray JNICALL Java_game_oe_editor_EditorActivity_nativePaintTileCoords(
+ JNIEnv*env,jclass){
+ const auto& list=gPaintTiles.tiles();
+ jintArray result=env->NewIntArray(static_cast<jsize>(list.size()*2));
+ if(!result)return nullptr;
+ std::vector<jint> coords;coords.reserve(list.size()*2);
+ for(const auto& tile:list){coords.push_back(tile.x);coords.push_back(tile.z);}
+ if(!coords.empty())env->SetIntArrayRegion(result,0,static_cast<jsize>(coords.size()),coords.data());
+ return result;
+}
+JNIEXPORT jbyteArray JNICALL Java_game_oe_editor_EditorActivity_nativePaintTileData(
+ JNIEnv*env,jclass,jint index){
+ const auto& tiles=gPaintTiles.tiles();
+ if(index<0||static_cast<size_t>(index)>=tiles.size())return nullptr;
+ const auto& src=tiles[static_cast<size_t>(index)].pixels;
+ jbyteArray out=env->NewByteArray(static_cast<jsize>(src.size()));
+ if(out)env->SetByteArrayRegion(out,0,static_cast<jsize>(src.size()),
+     reinterpret_cast<const jbyte*>(src.data()));
+ return out;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativePaintCursor(
+ JNIEnv*,jclass,jfloat x,jfloat y,jfloat radius){
+ if(!std::isfinite(radius)||radius<.5f||radius>16.f)return JNI_FALSE;
+ float gx,gz;
+ if(!groundPoint(x,y,gx,gz)){gPaintCursorVisible=false;return JNI_FALSE;}
+ gPaintCursorVisible=true;gPaintCursorX=gx;gPaintCursorZ=gz;gPaintCursorRadius=radius;
+ return JNI_TRUE;
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativePaintStrokeEnd(
+ JNIEnv*,jclass){
+ gPrecisionPaintActive=false;gPaintCursorVisible=false;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativePaintStrokeBegin(
+ JNIEnv*env,jclass,jfloat px,jfloat py,jfloat radius,jfloat opacity,
+ jstring selectedTexture,jboolean erase){
+ gPrecisionPaintActive=false;gPaintCursorVisible=false;
+ if(!std::isfinite(radius)||radius<.5f||radius>16.f||
+    !std::isfinite(opacity)||opacity<.05f||opacity>1.f)return JNI_FALSE;
+ float x,z;
+ if(!groundPoint(px,py,x,z))return JNI_FALSE;
+ const bool remove=erase==JNI_TRUE;
+ std::string textureKey;
+ oe::terrainpaint::Image source;
+ if(!remove){
+  if(!selectedTexture)return JNI_FALSE;
+  const char*key=env->GetStringUTFChars(selectedTexture,nullptr);
+  if(!key)return JNI_FALSE;
+  textureKey=key;env->ReleaseStringUTFChars(selectedTexture,key);
+  const TextureResource* tex=paintTexture(textureKey);
+  if(!tex||tex->format!=0||!tex->width||!tex->height||
+     tex->bytes.size()!=static_cast<size_t>(tex->width)*tex->height*4)
+     return JNI_FALSE;
+  source={tex->width,tex->height,tex->bytes.data()};
+ }
+ // One undo record per uninterrupted stroke; no per-move history allocation.
+ recordEdit();
+ if(!gPaintTiles.paint(x,z,x,z,radius,opacity,remove,source,gWorldSize)){
+  if(!gUndo.empty())gUndo.pop_back();
+  return JNI_FALSE;
+ }
+ gPrecisionPaintActive=true;
+ gStrokeX=x;gStrokeZ=z;gStrokeRadius=radius;gStrokeOpacity=opacity;
+ gPaintEraser=remove;gStrokeTexture=std::move(textureKey);
+ gPaintCursorVisible=true;gPaintCursorX=x;gPaintCursorZ=z;gPaintCursorRadius=radius;
+ return JNI_TRUE;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativePaintStrokeMove(
+ JNIEnv*,jclass,jfloat px,jfloat py){
+ if(!gPrecisionPaintActive)return JNI_FALSE;
+ float x,z;
+ if(!groundPoint(px,py,x,z))return JNI_FALSE;
+ oe::terrainpaint::Image source;
+ if(!gPaintEraser){
+  const TextureResource*tex=paintTexture(gStrokeTexture);
+  if(!tex||tex->format!=0||
+     tex->bytes.size()!=static_cast<size_t>(tex->width)*tex->height*4)return JNI_FALSE;
+  source={tex->width,tex->height,tex->bytes.data()};
+ }
+ if(!gPaintTiles.paint(gStrokeX,gStrokeZ,x,z,gStrokeRadius,gStrokeOpacity,
+                       gPaintEraser,source,gWorldSize))return JNI_FALSE;
+ gStrokeX=x;gStrokeZ=z;
+ gPaintCursorVisible=true;gPaintCursorX=x;gPaintCursorZ=z;gPaintCursorRadius=gStrokeRadius;
+ return JNI_TRUE;
+}
+
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePaintTerrainAtScreen(
  JNIEnv*env,jclass,jfloat px,jfloat py,jfloat radius,jstring name){
  if(!name||!std::isfinite(radius)||radius<4.f||radius>64.f||
@@ -2426,10 +2513,10 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  jobjectArray modelKeys,jfloatArray terrainData,jobjectArray objectPaintKeys,
  jfloatArray painting,jobjectArray terrainPaintKeys,jlongArray roadIds,
  jobjectArray roadNames,jobjectArray roadMaterials,jdoubleArray roadWidths,
- jobjectArray roadPoints){
+ jobjectArray roadPoints,jintArray tileCoords,jobjectArray tileData){
  if(!allowedWorldSize(size)||!kinds||!transforms||!modelKeys||!terrainData||
     !objectPaintKeys||!painting||!terrainPaintKeys||!roadIds||!roadNames||
-    !roadMaterials||!roadWidths||!roadPoints)return JNI_FALSE;
+    !roadMaterials||!roadWidths||!roadPoints||!tileCoords||!tileData)return JNI_FALSE;
  const jsize n=env->GetArrayLength(kinds);
  if(n<0||n>MAX_ENTITIES||env->GetArrayLength(transforms)!=n*8||
     env->GetArrayLength(modelKeys)!=n||env->GetArrayLength(objectPaintKeys)!=n)return JNI_FALSE;
@@ -2573,10 +2660,40 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  }
  oe::roads::Network nextRoads;
  if(!nextRoads.replaceAll(stagedRoads)||!roadBudget(stagedRoads,size))return JNI_FALSE;
+ // Construct paint layers before committing objects or terrain.
+ const jsize tilePairs=env->GetArrayLength(tileCoords);
+ if(tilePairs<0||tilePairs%2!=0||
+    tilePairs>static_cast<jsize>(oe::terrainpaint::kMaxTiles*2)||
+    env->GetArrayLength(tileData)!=tilePairs/2)return JNI_FALSE;
+ std::vector<jint> tileLocations(static_cast<size_t>(tilePairs));
+ if(tilePairs)env->GetIntArrayRegion(tileCoords,0,tilePairs,tileLocations.data());
+ if(env->ExceptionCheck())return JNI_FALSE;
+ std::vector<oe::terrainpaint::Tile> restoredTiles;
+ restoredTiles.reserve(static_cast<size_t>(tilePairs/2));
+ for(jsize i=0;i<tilePairs/2;i++){
+  jbyteArray pixels=static_cast<jbyteArray>(env->GetObjectArrayElement(tileData,i));
+  if(!pixels||env->ExceptionCheck())return JNI_FALSE;
+  const jsize sizeBytes=env->GetArrayLength(pixels);
+  if(sizeBytes!=oe::terrainpaint::kBytesPerTile){env->DeleteLocalRef(pixels);return JNI_FALSE;}
+  oe::terrainpaint::Tile tile;
+  tile.x=tileLocations[static_cast<size_t>(i)*2];
+  tile.z=tileLocations[static_cast<size_t>(i)*2+1];
+  tile.pixels.resize(oe::terrainpaint::kBytesPerTile);
+  env->GetByteArrayRegion(pixels,0,sizeBytes,reinterpret_cast<jbyte*>(tile.pixels.data()));
+  env->DeleteLocalRef(pixels);
+  if(env->ExceptionCheck())return JNI_FALSE;
+  restoredTiles.push_back(std::move(tile));
+ }
+ oe::terrainpaint::Canvas nextPaintTiles;
+ if(!nextPaintTiles.replaceAll(std::move(restoredTiles),size))return JNI_FALSE;
  // Commit: no validation or allocation failures below this point.
  gEntities.swap(staged);gBrushes.swap(stagedBrushes);
  gTerrainPaint.swap(stagedPaint);gTerrainRevision++;
  gRoads=std::move(nextRoads);gSelectedRoad=0;gActiveRoad=0;gRoadPending=false;
+ for(auto& gpu:gPaintTileGpu)if(gpu.second.texture)glDeleteTextures(1,&gpu.second.texture);
+ gPaintTileGpu.clear();
+ gPaintTiles=std::move(nextPaintTiles);
+ gPrecisionPaintActive=false;gPaintCursorVisible=false;
  ++gRoadRevision;
  gWorldSize=size;gDemoRoads=demo==JNI_TRUE;
  gNextId=static_cast<int>(n)+1;gSelected=0;

@@ -25,7 +25,7 @@ public final class ProjectArchive {
     private ProjectArchive() {}
     public static final long MAX_UNPACKED_BYTES=128L*1024*1024;
     public static final int MAX_MODELS=12;
-    public static final int MAX_SCENE_BYTES=200000;
+    public static final int MAX_SCENE_BYTES=4*1024*1024; // bounded compressed R4 tile data
     public static final int MAX_TEXTURES=8,MAX_TEXTURE_BYTES=8*1024*1024;
     public static final int MAX_REFERENCE_BYTES=8*1024*1024;
 
@@ -51,12 +51,17 @@ public final class ProjectArchive {
         JSONObject json=new JSONObject(scene);
         int version=json.optInt("version",-1);
         JSONObject guide=json.optJSONObject("mapReference");
-        check(version==1||version==2||version==3,"Неподдерживаемая версия сцены");
-        if(version!=3){
-            check(!json.has("mapReference"),"Подложка требует сцену версии 3");
+        check(version>=1&&version<=4,"Неподдерживаемая версия сцены");
+        if(version<3){
+            check(!json.has("mapReference"),"Подложка требует сцену версии 3+");
             return null;
         }
-        check(guide!=null,"В сцене версии 3 нет карты-подложки");
+        if(version==3)check(guide!=null,"В сцене версии 3 нет карты-подложки");
+        if(version==4&&guide==null){
+            check(!json.has("mapReference"),"Повреждённые данные карты");
+            return null;
+        }
+        check(guide!=null,"Неверная PNG-карта");
         String key=guide.getString("key");
         check(validReference(key),"Неверное имя PNG-подложки");
         double x=guide.getDouble("centerX"),z=guide.getDouble("centerZ"),
@@ -127,9 +132,25 @@ public final class ProjectArchive {
         check(scene.getBytes(StandardCharsets.UTF_8).length<=MAX_SCENE_BYTES,"Сцена больше 200 КБ");
         JSONObject json=new JSONObject(scene);
         int version=json.optInt("version",-1);
-        check(version>=1&&version<=3,"Неподдерживаемая версия сцены");
+        check(version>=1&&version<=4,"Неподдерживаемая версия сцены");
         check(version==1||json.optJSONArray("roads")!=null,"Нет дорожной сети");
         referenceName(scene);
+        JSONArray tileData=json.optJSONArray("paintTiles");
+        if(version==4){
+            check(tileData!=null&&tileData.length()<=32,
+                  "В сцене R4 отсутствуют или превышены текстурные участки");
+            Set<String> seenTiles=new HashSet<>();
+            for(int i=0;i<tileData.length();i++){
+                JSONArray tile=tileData.getJSONArray(i);
+                check(tile.length()==3,"Неверный формат R4");
+                int tx=tile.getInt(0),tz=tile.getInt(1);
+                String bytes=tile.getString(2);
+                check(tx>=-128&&tx<=127&&tz>=-128&&tz<=127&&
+                      seenTiles.add(tx+":"+tz)&&bytes.length()>=4&&
+                      bytes.length()<=100000&&bytes.matches("[A-Za-z0-9+/=]+"),
+                      "Неверный участок кисти R4");
+            }
+        }else check(!json.has("paintTiles"),"Участки кисти требуют формат v4");
         JSONArray items=json.getJSONArray("items");
         check(items.length()<=300,"Слишком много объектов");
         Set<String> names=new HashSet<>();

@@ -2043,8 +2043,9 @@ public class EditorActivity extends Activity {
             if(action==MotionEvent.ACTION_UP) {
                 if(precisionPaintMode){
                     final float px=surfaceX(e.getX()),py=precisionScreenY(e.getY());
+                    final boolean wasMultiTouch=multiTouch;
                     queueEvent(()->{
-                        if(!multiTouch&&!nativePaintStrokeMove(px,py))paintStrokeFailed=true;
+                        if(!wasMultiTouch&&!nativePaintStrokeMove(px,py))paintStrokeFailed=true;
                         nativePaintStrokeEnd();requestRender();
                         if(paintStrokeFailed)message("Рисование остановлено: край карты, текстура или предел 32 участков");
                     });

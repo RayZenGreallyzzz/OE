@@ -3,6 +3,8 @@
 **Branch:** `test/road-editor-074`; **base:** `test/basisu-ktx2-073`.
 Isolated editor feature. Does **not** merge into `main` or the game runtime PRs.
 
+**Installation safety:** the Android test app has its own application ID `game.oe.editor.roadstest` and launcher name **OE ROADS 0.7.5 TEST**. It installs alongside stable OE and the BasisU test. Existing locally stored projects remain in the original app; export a `.oezip` archive there and import it into this test app to try roads on a copy. Do not rely on test-only storage as your only backup.
+
 ## Use on Android
 
 1. Open **☰ Каталог → Дороги → 🛣 Новая дорога**.

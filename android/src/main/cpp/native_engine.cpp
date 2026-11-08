@@ -6,6 +6,7 @@
 #include "roads/road_model.h"
 #include "roads/road_network.h"
 #include "roads/road_junction_geometry.h"
+#include "roads/road_pedestrian_geometry.h"
 #include <GLES3/gl3.h>
 #include <android/log.h>
 #include <algorithm>
@@ -108,6 +109,7 @@ static bool gSceneInitialized=false, gDemoRoads=false;
 static std::vector<oe::roads::Road> gRoads;
 // Derived (not serialized): crossings, T-joins and connectivity, rebuilt with road mesh.
 static oe::roads::Network gRoadNetwork;
+static bool gRoadSidewalks=true, gRoadCrosswalks=true;
 static int gNextRoadId=1, gSelectedRoad=0, gRoadEditMode=0;
 static int gRoadRevision=0, gRoadUploadedRevision=-1, gRoadUploadedTerrainRevision=-1;
 static int gRoadDragId=0, gRoadDragPoint=-1;
@@ -142,19 +144,22 @@ struct SceneSnapshot {
  std::vector<TerrainPaint> paints;
  std::vector<oe::roads::Road> roads;
  int nextRoadId=1, selectedRoad=0;
+ bool roadSidewalks=true,roadCrosswalks=true;
 };
 static std::vector<SceneSnapshot> gUndo,gRedo;
 static bool gSuspendHistory=false;
 static constexpr size_t HISTORY_LIMIT=40;
 SceneSnapshot captureScene(){
  return {gEntities,gNextId,gSelected,gWorldSize,gDemoRoads,gTarget,gDistance,
-         gBrushes,gTerrainPaint,gRoads,gNextRoadId,gSelectedRoad};
+         gBrushes,gTerrainPaint,gRoads,gNextRoadId,gSelectedRoad,
+         gRoadSidewalks,gRoadCrosswalks};
 }
 void restoreScene(const SceneSnapshot&s){
  gEntities=s.entities;gNextId=s.nextId;gSelected=s.selected;gWorldSize=s.worldSize;
  gDemoRoads=s.demoRoads;gTarget=s.target;gDistance=s.cameraDistance;
  gBrushes=s.terrain;gTerrainPaint=s.paints;gTerrainRevision++;
  gRoads=s.roads;gNextRoadId=s.nextRoadId;gSelectedRoad=s.selectedRoad;
+ gRoadSidewalks=s.roadSidewalks;gRoadCrosswalks=s.roadCrosswalks;
  gRoadRevision++;gRoadDragId=0;gRoadDragPoint=-1;gSceneInitialized=true;
 }
 void pushBounded(std::vector<SceneSnapshot>&stack,SceneSnapshot value){
@@ -1101,7 +1106,8 @@ void reset(bool demo){
  const bool wasMuted=gSuspendHistory;
  gSuspendHistory=true;
  gEntities.clear();gBrushes.clear();gTerrainPaint.clear();gTerrainRevision++;
- gRoads.clear();gNextRoadId=1;gSelectedRoad=0;gRoadRevision++;
+ gRoads.clear();gNextRoadId=1;gSelectedRoad=0;
+ gRoadSidewalks=true;gRoadCrosswalks=true;gRoadRevision++;
  gRoadDragId=0;gRoadDragPoint=-1;gNextId=1;gSelected=0;
  gSceneInitialized=true;gDemoRoads=demo;
  gTarget={0,1.2f,1.3f};gDistance=28.f;
@@ -1468,6 +1474,15 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadSetMarki
  const bool value=enabled==JNI_TRUE;
  if(road->markings==value)return JNI_TRUE;
  recordEdit();road->markings=value;++gRoadRevision;return JNI_TRUE;
+}
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeRoadTogglePedestrian(
+ JNIEnv*,jclass,jint feature){
+ bool*value=feature==0?&gRoadSidewalks:feature==1?&gRoadCrosswalks:nullptr;
+ if(!value)return -1;
+ recordEdit();
+ *value=!*value;
+ ++gRoadRevision;
+ return *value?1:0;
 }
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadDelete(
  JNIEnv*,jclass){
@@ -1868,7 +1883,9 @@ JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSelectedInfo(
  return env->NewStringUTF(out.str().c_str());
 }
 JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSceneSnapshot(JNIEnv*env,jclass){
- std::ostringstream out;out<<std::fixed<<std::setprecision(6)<<"{\"version\":1,\"worldSize\":"<<gWorldSize<<",\"demoRoads\":"<<(gDemoRoads?"true":"false")<<",\"items\":[";
+ std::ostringstream out;out<<std::fixed<<std::setprecision(6)<<"{\"version\":1,\"worldSize\":"<<gWorldSize<<",\"demoRoads\":"<<(gDemoRoads?"true":"false")<<",\"roadSidewalks\":"<<(gRoadSidewalks?"true":"false")
+  <<",\"roadCrosswalks\":"<<(gRoadCrosswalks?"true":"false")
+  <<",\"items\":[";
  for(size_t i=0;i<gEntities.size();i++){
   const auto&e=gEntities[i];if(i)out<<",";
   out<<"{\"type\":"<<e.type<<",\"x\":"<<e.x<<",\"z\":"<<e.z
@@ -2073,7 +2090,8 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  jobjectArray modelKeys,jfloatArray terrainData,jobjectArray objectPaintKeys,
  jfloatArray painting,jobjectArray terrainPaintKeys,
  jintArray roadIds,jfloatArray roadWidths,jbooleanArray roadMarkings,
- jintArray roadCounts,jfloatArray roadCoordinates){
+ jintArray roadCounts,jfloatArray roadCoordinates,
+ jboolean roadSidewalks,jboolean roadCrosswalks){
  if(!allowedWorldSize(size)||!kinds||!transforms||!modelKeys||!terrainData||
     !objectPaintKeys||!painting||!terrainPaintKeys||
     !roadIds||!roadWidths||!roadMarkings||!roadCounts||!roadCoordinates)
@@ -2210,6 +2228,8 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  gEntities.swap(staged);gBrushes.swap(stagedBrushes);
  gTerrainPaint.swap(stagedPaint);gTerrainRevision++;
  gRoads.swap(stagedRoads);gNextRoadId=nextRoadId;gSelectedRoad=0;
+ gRoadSidewalks=roadSidewalks==JNI_TRUE;
+ gRoadCrosswalks=roadCrosswalks==JNI_TRUE;
  gRoadDragId=0;gRoadDragPoint=-1;gRoadEditMode=0;++gRoadRevision;
  gWorldSize=size;gDemoRoads=demo==JNI_TRUE;
  gNextId=static_cast<int>(n)+1;gSelected=0;

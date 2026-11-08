@@ -5,6 +5,7 @@
 #include "quality_profiles.h"
 #include "roads/road_model.h"
 #include "roads/road_network.h"
+#include "roads/road_junction_geometry.h"
 #include <GLES3/gl3.h>
 #include <android/log.h>
 #include <algorithm>
@@ -903,7 +904,6 @@ void drawTerrainPaint(const Mat4&vp){
 void rebuildRoadMesh(){
  if(!gRoadMesh.vao)return;
  std::vector<float> vertices;
- // Upper bound ~7M floats (24 roads x 47 spans x 5 samples x 6 strips).
  vertices.reserve(64*1024);
  auto vertex=[&](float x,float z,float lift,Color c){
   vertices.insert(vertices.end(),{x,terrainHeightAt(x,z)+lift,z,
@@ -914,7 +914,11 @@ void rebuildRoadMesh(){
   vertex(a.x,a.z,lift,col);vertex(c.x,c.z,lift,col);vertex(d.x,d.z,lift,col);
  };
  const Color asphalt{.22f,.23f,.24f},border{.88f,.85f,.73f},
-             center{.98f,.86f,.44f};
+             center{.98f,.86f,.44f},junctionAsphalt{.245f,.255f,.26f};
+ // Geometry and line clipping share one width/direction-aware junction graph.
+ gRoadNetwork=oe::roads::buildNetwork(gRoads);
+ const auto junctions=oe::roads::makeJunctionSurfaces(
+     gRoads,gRoadNetwork,worldHalf());
  for(const auto&road:gRoads){
   if(road.points.size()<2)continue;
   const auto samples=oe::roads::sample(road);
@@ -928,44 +932,56 @@ void rebuildRoadMesh(){
    return {clampf(samples[idx].x-dz*xOffset,-worldHalf(),worldHalf()),0.f,
            clampf(samples[idx].z+dx*xOffset,-worldHalf(),worldHalf())};
   };
+  auto paintStripe=[&](std::size_t i,float start,float end,Color col){
+   const Vec3 left0=offset(i-1,start),right0=offset(i-1,end);
+   const Vec3 left1=offset(i,start),right1=offset(i,end);
+   // Clip along the actual stripe centre, not the road centreline, so
+   // side markings stop at the *real polygon edge* of each intersection.
+   const auto visible=oe::roads::markingOutsideJunctions(
+       {(left0.x+right0.x)*.5f,(left0.z+right0.z)*.5f},
+       {(left1.x+right1.x)*.5f,(left1.z+right1.z)*.5f},junctions);
+   auto between=[](Vec3 a,Vec3 b,float t)->Vec3 {
+    return {a.x+(b.x-a.x)*t,0.f,a.z+(b.z-a.z)*t};
+   };
+   for(const auto span:visible){
+    if(span.end-span.begin<.0005f)continue;
+    quad(between(left0,left1,span.begin),between(right0,right1,span.begin),
+         between(right0,right1,span.end),between(left0,left1,span.end),
+         .126f,col);
+   }
+  };
   for(std::size_t i=1;i<samples.size();++i){
    const float half=road.width*.5f;
    const Vec3 left0=offset(i-1,-half),left1=offset(i,-half);
    const Vec3 right0=offset(i-1,half),right1=offset(i,half);
    quad(left0,right0,right1,left1,.105f,asphalt);
-   if(road.markings){
-    const float line=.12f;
-    quad(offset(i-1,-half+line),offset(i-1,-half+line*2),
-         offset(i,-half+line*2),offset(i,-half+line),.122f,border);
-    quad(offset(i-1,half-line*2),offset(i-1,half-line),
-         offset(i,half-line),offset(i,half-line*2),.122f,border);
-    // Dashed centreline with a small stable pattern along the sampled road.
-    if((i/3)%2==0){
-     quad(offset(i-1,-.065f),offset(i-1,.065f),
-          offset(i,.065f),offset(i,-.065f),.125f,center);
-    }
-   }
+   if(!road.markings)continue;
+   const float line=.12f;
+   paintStripe(i,-half+line,-half+line*2,border);
+   paintStripe(i,half-line*2,half-line,border);
+   if((i/3)%2==0)paintStripe(i,-.065f,.065f,center);
   }
  }
- // Build graph from the same sampled road paths used for rendering.
- // Junction asphalt is slightly raised above road paint/markings to avoid
- // central-line stripes continuing through the crossing.
- gRoadNetwork=oe::roads::buildNetwork(gRoads);
- const Color junctionAsphalt{.245f,.255f,.26f};
- constexpr int junctionSides=20;
- for(const auto&junction:gRoadNetwork.junctions){
-  const auto&p=junction.position;
-  // Do not camera-cull baked junctions: camera movement does not rebuild VBO.
-  for(int sector=0;sector<junctionSides;++sector){
-   const float a=2.f*PI*sector/junctionSides;
-   const float b=2.f*PI*(sector+1)/junctionSides;
-   vertex(p.x,p.z,.175f,junctionAsphalt);
-   vertex(clampf(p.x+std::cos(a)*junction.radius,-worldHalf(),worldHalf()),
-          clampf(p.z+std::sin(a)*junction.radius,-worldHalf(),worldHalf()),
-          .175f,junctionAsphalt);
-   vertex(clampf(p.x+std::cos(b)*junction.radius,-worldHalf(),worldHalf()),
-          clampf(p.z+std::sin(b)*junction.radius,-worldHalf(),worldHalf()),
-          .175f,junctionAsphalt);
+ // Replace the old round overlays with convex asphalt polygons built
+ // from each road's left/right mouth cross-section. Tessellate each edge
+ // approximately every 2 m for tighter conformance to sculpted terrain.
+ for(const auto&junction:junctions){
+  const auto&outline=junction.outline;
+  if(outline.size()<3)continue;
+  oe::roads::Point centre{0.f,0.f};
+  for(const auto p:outline){centre.x+=p.x;centre.z+=p.z;}
+  centre.x/=outline.size();centre.z/=outline.size();
+  for(std::size_t i=0;i<outline.size();++i){
+   const auto a=outline[i],b=outline[(i+1)%outline.size()];
+   const float length=std::sqrt(oe::roads::distanceSquared(a,b));
+   const int cuts=std::max(1,std::min(16,(int)std::ceil(length/2.f)));
+   for(int k=0;k<cuts;++k){
+    const auto p=oe::roads::mix2(a,b,(float)k/cuts);
+    const auto q=oe::roads::mix2(a,b,(float)(k+1)/cuts);
+    vertex(centre.x,centre.z,.175f,junctionAsphalt);
+    vertex(p.x,p.z,.175f,junctionAsphalt);
+    vertex(q.x,q.z,.175f,junctionAsphalt);
+   }
   }
  }
  gRoadMesh.count=static_cast<GLsizei>(vertices.size()/11);

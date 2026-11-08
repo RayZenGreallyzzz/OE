@@ -82,6 +82,7 @@ public class EditorActivity extends Activity {
     private static native void nativeRoadEndDrag();
     private static native boolean nativeRoadSetWidth(float width);
     private static native boolean nativeRoadSetMarkings(boolean markings);
+    private static native int nativeRoadTogglePedestrian(int feature);
     private static native boolean nativeRoadDelete();
     private static native void nativeRoadSelect(int roadId);
     private static native int[] nativeRoadIds();
@@ -107,7 +108,8 @@ public class EditorActivity extends Activity {
             int[] kinds, float[] transforms, String[] modelKeys, float[] terrain,
             String[] objectPaintKeys, float[] painting, String[] terrainPaintKeys,
             int[] roadIds, float[] roadWidths, boolean[] roadMarkings,
-            int[] roadCounts, float[] roadCoordinates);
+            int[] roadCounts, float[] roadCoordinates,
+            boolean roadSidewalks, boolean roadCrosswalks);
     private static native boolean nativeRegisterPaintTexture(String key, byte[] rgba,int width,int height);
     private static native boolean nativePaintSelected(String key);
     private static native int nativePaintTerrainAtScreen(float x,float y,float radius,String key);
@@ -436,6 +438,10 @@ public class EditorActivity extends Activity {
             addPaletteOption("〰 Разметка · включить/выключить",this::toggleRoadMarkings);
             addPaletteOption("📋 Список дорог и выбор",this::showRoadList);
             addPaletteOption("🔗 Соединения и перекрёстки",this::showRoadConnections);
+            addPaletteOption("🚶 Тротуары и бордюры · включить/выключить",
+                ()->toggleRoadPedestrian(0));
+            addPaletteOption("🚸 Пешеходные переходы · включить/выключить",
+                ()->toggleRoadPedestrian(1));
             addPaletteOption("🗑 Удалить выбранную дорогу",this::deleteRoad);
             addPaletteOption("✓ Завершить / выйти",this::finishRoadMode);
         }else if("Текстуры".equals(category)){
@@ -536,6 +542,16 @@ public class EditorActivity extends Activity {
             surface.requestRender();
         });
         message(enabled?"Разметка включена":"Разметка выключена");
+    }
+    private void toggleRoadPedestrian(int feature){
+        if(importing||surface==null){message("Дождись загрузки сцены");return;}
+        surface.queueEvent(()->{
+            final int enabled=nativeRoadTogglePedestrian(feature);
+            surface.requestRender();
+            if(enabled>=0)
+                message((feature==0?"Тротуары и бордюры":"Пешеходные переходы")+
+                        (enabled==1?" включены":" выключены")+" · сохранится с проектом");
+        });
     }
     private void showRoadConnections(){
         if(importing||surface==null)return;
@@ -1255,6 +1271,14 @@ public class EditorActivity extends Activity {
             JSONObject document=new JSONObject(new String(jsonBytes.toByteArray(),StandardCharsets.UTF_8));
             if(document.optInt("version",-1)!=1)throw new Exception("Неверная версия сцены");
             final boolean demoRoads=document.optBoolean("demoRoads",false);
+            // Strict validation; old OE v1 scenes omit these settings and default to on.
+            if((document.has("roadSidewalks")&&
+                !(document.get("roadSidewalks") instanceof Boolean))||
+               (document.has("roadCrosswalks")&&
+                !(document.get("roadCrosswalks") instanceof Boolean)))
+                throw new Exception("Неверные параметры тротуаров или переходов");
+            final boolean roadSidewalks=document.optBoolean("roadSidewalks",true);
+            final boolean roadCrosswalks=document.optBoolean("roadCrosswalks",true);
             final int worldSize=document.optInt("worldSize",1024);
             if(worldSize!=1024&&worldSize!=2048&&worldSize!=4096&&worldSize!=8192&&worldSize!=16384)
                 throw new Exception("Неподдерживаемый размер карты");
@@ -1498,7 +1522,8 @@ public class EditorActivity extends Activity {
                     }
                     if(!nativeReplaceScene(worldSize,demoRoads,kinds,transforms,modelKeys,
                             terrainBrushes,objectPaintKeys,paintBrushes,paintBrushKeys,
-                            roadIds,roadWidths,roadMarkings,roadCounts,roadCoordinates))
+                            roadIds,roadWidths,roadMarkings,roadCounts,roadCoordinates,
+                            roadSidewalks,roadCrosswalks))
                         throw new Exception("Сцена не прошла полную проверку в движке");
                     committed=true;
                     ui(()->{

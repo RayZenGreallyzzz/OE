@@ -9,9 +9,16 @@
 #include <vector>
 
 namespace oe { namespace roads {
+struct JunctionMouth {
+    int roadId=0;
+    Point centre{},left{},right{},outward{};
+    float width=0.f;
+    float remaining=0.f; // approach length beyond the mouth
+};
 struct JunctionSurface {
     Point centre{};
     std::vector<Point> outline; // CCW convex polygon
+    std::vector<JunctionMouth> mouths; // oriented road mouths at the boundary
     std::size_t approaches=0;
     float minX=0.f,maxX=0.f,minZ=0.f,maxZ=0.f;
 };
@@ -71,6 +78,7 @@ inline std::vector<JunctionSurface> makeJunctionSurfaces(
     surfaces.reserve(network.junctions.size());
     for(const Junction&j:network.junctions){
         std::vector<Point> corners;
+        std::vector<JunctionMouth> mouths;
         std::vector<Point> bearings;
         std::size_t approaches=0;
         for(int id:j.roadIds){
@@ -105,8 +113,13 @@ inline std::vector<JunctionSurface> makeJunctionSurfaces(
                 direction=unit2(direction);
                 const Point normal{-direction.z,direction.x};
                 const float half=found->width*.5f+.12f;
-                corners.push_back({mouth.x+normal.x*half,mouth.z+normal.z*half});
-                corners.push_back({mouth.x-normal.x*half,mouth.z-normal.z*half});
+                const Point left{mouth.x+normal.x*half,mouth.z+normal.z*half};
+                const Point right{mouth.x-normal.x*half,mouth.z-normal.z*half};
+                corners.push_back(left);
+                corners.push_back(right);
+                const float remaining=side>0?lengths.back()-dest:dest;
+                mouths.push_back({id,mouth,left,right,direction,
+                                  found->width,remaining});
                 bearings.push_back(direction);
                 ++approaches;
             }
@@ -127,9 +140,16 @@ inline std::vector<JunctionSurface> makeJunctionSurfaces(
         JunctionSurface surface;
         surface.centre=j.position;
         surface.outline=std::move(hull);
+        surface.mouths=std::move(mouths);
         surface.approaches=approaches;
         surface.minX=surface.maxX=surface.outline[0].x;
         surface.minZ=surface.maxZ=surface.outline[0].z;
+        for(JunctionMouth&mouth:surface.mouths){
+            for(Point* p:{&mouth.left,&mouth.right,&mouth.centre}){
+                p->x=std::max(-worldHalf,std::min(worldHalf,p->x));
+                p->z=std::max(-worldHalf,std::min(worldHalf,p->z));
+            }
+        }
         for(Point p:surface.outline){
             surface.minX=std::min(surface.minX,p.x);
             surface.maxX=std::max(surface.maxX,p.x);

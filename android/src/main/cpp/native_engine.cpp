@@ -1813,7 +1813,7 @@ JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSceneSnapshot
   const auto&paint=gTerrainPaint[i];if(i)out<<",";
   out<<"["<<paint.x<<","<<paint.z<<","<<paint.radius<<",\""<<paint.texture<<"\"]";
  }
- out<<"],\\"roads\\":[";
+ out<<"],\"roads\":[";
  bool firstRoad=true;
  for(const auto&road:gRoads){
   // An unfinished one-point stroke is intentionally excluded from saved scenes.

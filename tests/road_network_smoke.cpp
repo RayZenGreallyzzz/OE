@@ -36,7 +36,7 @@ int main(){
     assert(triple.connectedPairs==3);
     assert(triple.junctions[0].roadIds.size()==3);
 
-    Road branch{4,4.f,true,{{8,-15},{8,2.4f}}};
+    Road branch{4,4.f,true,{{8,-15},{8,-2.4f}}};
     auto noSnap=buildNetwork({eastWest,branch});
     assert(noSnap.junctions.empty());
     const auto snap=snapEndpoint(branch,false,{eastWest,branch},512.f);
@@ -48,9 +48,9 @@ int main(){
     assert(tjunction.junctions.size()==1);
     assert(hasLink(tjunction,1,4));
 
-    Road noJoin{5,4.f,false,{{12,-15},{12,3.5f}}};
+    Road noJoin{5,4.f,false,{{12,-15},{12,-3.5f}}};
     assert(!snapEndpoint(noJoin,false,{eastWest},512.f).snapped);
-    assert(near(noJoin.points.back().z,3.5f));
+    assert(near(noJoin.points.back().z,-3.5f));
 
     Road startBranch{6,4.f,false,{{-2,2.8f},{-2,17}}};
     assert(snapEndpoint(startBranch,true,{eastWest},512.f).snapped);
@@ -68,7 +68,7 @@ int main(){
     assert(buildNetwork({eastWest,parallel}).junctions.empty());
 
     // Handles that would collide with neighbours are not snapped.
-    Road nearTiny{10,4.f,false,{{10,1},{10,2}}};
+    Road nearTiny{10,4.f,false,{{10,1},{10,.1f}}};
     assert(!snapEndpoint(nearTiny,true,{eastWest},512.f).snapped);
 
     // A proper second crossing produces a separate junction, not a duplicate.

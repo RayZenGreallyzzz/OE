@@ -55,3 +55,7 @@ jobs:
         run: |
           g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/road_model_smoke.cpp -o /tmp/oe-roads-test
           /tmp/oe-roads-test
+      - name: Test junction graph, auto-snap and X/T intersection invariants
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/road_network_smoke.cpp -o /tmp/oe-junctions-test
+          /tmp/oe-junctions-test

@@ -3,6 +3,7 @@
 #include "vendor/meshoptimizer/meshoptimizer.h"
 #include "vendor/basisu/transcoder/basisu_transcoder.h"
 #include "quality_profiles.h"
+#include "roads/road_model.h"
 #include <GLES3/gl3.h>
 #include <android/log.h>
 #include <algorithm>
@@ -56,6 +57,7 @@ struct Asset {
 static Mesh gMeshes[3];
 static Mesh gStaticMeshes[17];
 static Mesh gPaintMesh; // Every decorative object is a single combined draw.
+static Mesh gRoadMesh; // Cached terrain-conforming road splines.
 void bakeStaticMesh(int type);
 // Cached, combined flat terrain: one GLES draw call per frame instead of one per tile.
 struct TerrainGpu {
@@ -100,6 +102,12 @@ static int gGizmoActiveId=0;
 static float gYaw=.55f, gPitch=.45f, gDistance=28.f;
 static Vec3 gTarget{0,1.2f,1.3f};
 static bool gSceneInitialized=false, gDemoRoads=false;
+// Road graph is independent of scene entities; all access stays on the GLES thread.
+static std::vector<oe::roads::Road> gRoads;
+static int gNextRoadId=1, gSelectedRoad=0, gRoadEditMode=0;
+static int gRoadRevision=0, gRoadUploadedRevision=-1, gRoadUploadedTerrainRevision=-1;
+static int gRoadDragId=0, gRoadDragPoint=-1;
+static bool gRoadDragChanged=false;
 constexpr float WORLD_TILE=64.0f;
 static int gWorldSize=1024; // Set in app to 1024/2048/4096/8192/16384 meters.
 struct TerrainBrush {float x,z,radius,strength;};
@@ -128,15 +136,22 @@ struct SceneSnapshot {
  float cameraDistance=28.f;
  std::vector<TerrainBrush> terrain;
  std::vector<TerrainPaint> paints;
+ std::vector<oe::roads::Road> roads;
+ int nextRoadId=1, selectedRoad=0;
 };
 static std::vector<SceneSnapshot> gUndo,gRedo;
 static bool gSuspendHistory=false;
 static constexpr size_t HISTORY_LIMIT=40;
-SceneSnapshot captureScene(){return {gEntities,gNextId,gSelected,gWorldSize,gDemoRoads,gTarget,gDistance,gBrushes,gTerrainPaint};}
+SceneSnapshot captureScene(){
+ return {gEntities,gNextId,gSelected,gWorldSize,gDemoRoads,gTarget,gDistance,
+         gBrushes,gTerrainPaint,gRoads,gNextRoadId,gSelectedRoad};
+}
 void restoreScene(const SceneSnapshot&s){
  gEntities=s.entities;gNextId=s.nextId;gSelected=s.selected;gWorldSize=s.worldSize;
  gDemoRoads=s.demoRoads;gTarget=s.target;gDistance=s.cameraDistance;
- gBrushes=s.terrain;gTerrainPaint=s.paints;gTerrainRevision++;gSceneInitialized=true;
+ gBrushes=s.terrain;gTerrainPaint=s.paints;gTerrainRevision++;
+ gRoads=s.roads;gNextRoadId=s.nextRoadId;gSelectedRoad=s.selectedRoad;
+ gRoadRevision++;gRoadDragId=0;gRoadDragPoint=-1;gSceneInitialized=true;
 }
 void pushBounded(std::vector<SceneSnapshot>&stack,SceneSnapshot value){
  if(stack.size()>=HISTORY_LIMIT)stack.erase(stack.begin());
@@ -474,6 +489,21 @@ void setupGL(){
  glEnableVertexAttribArray(3);
  glVertexAttribPointer(3,2,GL_FLOAT,GL_FALSE,11*sizeof(float),
   reinterpret_cast<void*>(9*sizeof(float)));
+ glBindVertexArray(0);
+ // Curved roads use the same 11-float vertex layout as painted terrain.
+ gRoadMesh={};gRoadUploadedRevision=-1;gRoadUploadedTerrainRevision=-1;
+ glGenVertexArrays(1,&gRoadMesh.vao);
+ glGenBuffers(1,&gRoadMesh.buffer);
+ glBindVertexArray(gRoadMesh.vao);
+ glBindBuffer(GL_ARRAY_BUFFER,gRoadMesh.buffer);
+ for(int a=0;a<3;++a){
+  glEnableVertexAttribArray(a);
+  glVertexAttribPointer(a,3,GL_FLOAT,GL_FALSE,11*sizeof(float),
+      reinterpret_cast<void*>(static_cast<uintptr_t>(a*3*sizeof(float))));
+ }
+ glEnableVertexAttribArray(3);
+ glVertexAttribPointer(3,2,GL_FLOAT,GL_FALSE,11*sizeof(float),
+      reinterpret_cast<void*>(9*sizeof(float)));
  glBindVertexArray(0);
  glVertexAttrib3f(2,1,1,1);
  glEnable(GL_DEPTH_TEST);
@@ -865,6 +895,93 @@ void drawTerrainPaint(const Mat4&vp){
  glUniform1f(gShader.locTextured,0.f);
  glBindTexture(GL_TEXTURE_2D,0);
 }
+// One cached VBO for all roads. Rebuilt on geometry/terrain edits or EGL recreation,
+// not on every camera frame. Each strip samples the sculpted terrain independently.
+void rebuildRoadMesh(){
+ if(!gRoadMesh.vao)return;
+ std::vector<float> vertices;
+ // Upper bound ~7M floats (24 roads x 47 spans x 5 samples x 6 strips).
+ vertices.reserve(64*1024);
+ auto vertex=[&](float x,float z,float lift,Color c){
+  vertices.insert(vertices.end(),{x,terrainHeightAt(x,z)+lift,z,
+    0.f,1.f,0.f,c.r,c.g,c.b,0.f,0.f});
+ };
+ auto quad=[&](Vec3 a,Vec3 b,Vec3 c,Vec3 d,float lift,Color col){
+  vertex(a.x,a.z,lift,col);vertex(b.x,b.z,lift,col);vertex(c.x,c.z,lift,col);
+  vertex(a.x,a.z,lift,col);vertex(c.x,c.z,lift,col);vertex(d.x,d.z,lift,col);
+ };
+ const Color asphalt{.22f,.23f,.24f},border{.88f,.85f,.73f},
+             center{.98f,.86f,.44f};
+ for(const auto&road:gRoads){
+  if(road.points.size()<2)continue;
+  const auto samples=oe::roads::sample(road);
+  if(samples.size()<2)continue;
+  auto offset=[&](std::size_t idx,float xOffset)->Vec3 {
+   const std::size_t prev=idx?idx-1:0,next=std::min(idx+1,samples.size()-1);
+   float dx=samples[next].x-samples[prev].x;
+   float dz=samples[next].z-samples[prev].z;
+   const float inv=1.f/std::max(.0001f,std::hypot(dx,dz));
+   dx*=inv;dz*=inv;
+   return {clampf(samples[idx].x-dz*xOffset,-worldHalf(),worldHalf()),0.f,
+           clampf(samples[idx].z+dx*xOffset,-worldHalf(),worldHalf())};
+  };
+  for(std::size_t i=1;i<samples.size();++i){
+   const float half=road.width*.5f;
+   const Vec3 left0=offset(i-1,-half),left1=offset(i,-half);
+   const Vec3 right0=offset(i-1,half),right1=offset(i,half);
+   quad(left0,right0,right1,left1,.105f,asphalt);
+   if(road.markings){
+    const float line=.12f;
+    quad(offset(i-1,-half+line),offset(i-1,-half+line*2),
+         offset(i,-half+line*2),offset(i,-half+line),.122f,border);
+    quad(offset(i-1,half-line*2),offset(i-1,half-line),
+         offset(i,half-line),offset(i,half-line*2),.122f,border);
+    // Dashed centreline with a small stable pattern along the sampled road.
+    if((i/3)%2==0){
+     quad(offset(i-1,-.065f),offset(i-1,.065f),
+          offset(i,.065f),offset(i,-.065f),.125f,center);
+    }
+   }
+  }
+ }
+ gRoadMesh.count=static_cast<GLsizei>(vertices.size()/11);
+ glBindBuffer(GL_ARRAY_BUFFER,gRoadMesh.buffer);
+ glBufferData(GL_ARRAY_BUFFER,
+      static_cast<GLsizeiptr>(vertices.size()*sizeof(float)),
+      vertices.empty()?nullptr:vertices.data(),GL_DYNAMIC_DRAW);
+ gRoadUploadedRevision=gRoadRevision;
+ gRoadUploadedTerrainRevision=gTerrainRevision;
+}
+void drawRoads(const Mat4&vp){
+ if(!gRoadMesh.vao)return;
+ if(gRoadUploadedRevision!=gRoadRevision||
+    gRoadUploadedTerrainRevision!=gTerrainRevision)rebuildRoadMesh();
+ if(gRoadMesh.count){
+  const Mat4 model=identity();
+  glUniformMatrix4fv(gShader.locMvp,1,GL_FALSE,vp.m);
+  glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
+  glUniform3f(gShader.locColor,1,1,1);
+  glUniform1f(gShader.locLight,0.f);
+  glUniform1f(gShader.locPaintOverride,0.f);
+  glUniform1f(gShader.locOverlay,0.f);
+  glUniform1f(gShader.locTextured,0.f);
+  glBindVertexArray(gRoadMesh.vao);
+  glDrawArrays(GL_TRIANGLES,0,gRoadMesh.count);
+  ++gDrawCalls;gTriangles+=gRoadMesh.count/3;
+  glBindVertexArray(0);
+ }
+ // Highlight only selected control points; does not change the 3D scene.
+ if(gRoadEditMode){
+  for(const auto&road:gRoads)if(road.id==gSelectedRoad){
+   for(const auto&p:road.points){
+    if(std::abs(p.x-gTarget.x)>quality().viewRangeMetres+8.f||
+       std::abs(p.z-gTarget.z)>quality().viewRangeMetres+8.f)continue;
+    draw(vp,0,{p.x,terrainHeightAt(p.x,p.z)+.27f,p.z},
+       {.65f,.42f,.65f},0.f,{.98f,.62f,.17f});
+   }
+  }
+ }
+}
 bool groundPoint(float px,float py,float &x,float &z){
  const Vec3 eye=cameraEye(),forward=unit(sub(gTarget,eye));
  const Vec3 right=unit(cross(forward,{0,1,0})),up=cross(right,forward);
@@ -943,7 +1060,9 @@ void reset(bool demo){
  recordEdit(); // demo generation is a single undoable change
  const bool wasMuted=gSuspendHistory;
  gSuspendHistory=true;
- gEntities.clear();gBrushes.clear();gTerrainPaint.clear();gTerrainRevision++;gNextId=1;gSelected=0;
+ gEntities.clear();gBrushes.clear();gTerrainPaint.clear();gTerrainRevision++;
+ gRoads.clear();gNextRoadId=1;gSelectedRoad=0;gRoadRevision++;
+ gRoadDragId=0;gRoadDragPoint=-1;gNextId=1;gSelected=0;
  gSceneInitialized=true;gDemoRoads=demo;
  gTarget={0,1.2f,1.3f};gDistance=28.f;
  if(demo){
@@ -1207,6 +1326,7 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDraw(JNIEnv*,jcl
  const Frustum frustum=makeFrustum(vp);
  drawWorld(vp);
  drawTerrainPaint(vp);
+ drawRoads(vp);
  for(const auto&e:gEntities)drawEntity(vp,frustum,e);
  drawGizmo(vp);
  glBindVertexArray(0);

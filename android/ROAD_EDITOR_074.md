@@ -1,9 +1,9 @@
-# OE 0.7.4–0.7.6 — experimental 3D Road Editor
+# OE 0.7.4–0.7.7 — experimental 3D Road Editor
 
 **Branch:** `test/road-editor-074`; **base:** `test/basisu-ktx2-073`.
 Isolated editor feature. Does **not** merge into `main` or the game runtime PRs.
 
-**Installation safety:** the Android test app has its own application ID `game.oe.editor.roadstest` and launcher name **OE ROADS 0.7.6 TEST**. It installs alongside stable OE and the BasisU test. Existing locally stored projects remain in the original app; export a `.oezip` archive there and import it into this test app to try roads on a copy. Do not rely on test-only storage as your only backup.
+**Installation safety:** the Android test app has its own application ID `game.oe.editor.roadstest` and launcher name **OE ROADS 0.7.7 TEST**. It installs alongside stable OE and the BasisU test. Existing locally stored projects remain in the original app; export a `.oezip` archive there and import it into this test app to try roads on a copy. Do not rely on test-only storage as your only backup.
 
 ## Use on Android
 
@@ -42,10 +42,21 @@ Roads are curved through control points (Catmull-Rom cubic Hermite), drawn in on
 - This is still a **stylized convex intersection envelope**, not exact curb-radius geometry, turn lanes, stop bars, zebra crossings, priority signs, pedestrian routing or car simulation. Very acute angles and close neighbouring junctions need on-device QA.
 - Geometry checks: `tests/road_junction_geometry_smoke.cpp` verifies X/T/diagonal/multiway widths, clipping and nearby distinct crossings.
 
+## 0.7.7 — Sidewalks, curbs and pedestrian crossings
+
+- **Sidewalks:** 1.8-metre concrete strips along both sides of every editable road, following the same sculpted terrain samples as the asphalt. They do not change original terrain and never enter the game physics system.
+- **Curbs:** raised vertical kerb faces along the inner sidewalk edge, and exterior pavement side walls; all geometry uses a single cached road GLES 3 VBO.
+- **Intersection corners:** polygonal sidewalk aprons are generated around only the non-driving boundary edges of an X/T intersection. Approach mouths remain free of sidewalks and curbs.
+- **Crosswalks:** white zebra stripes are placed perpendicular to each open approach, 1 m outside the polygon mouth, with 1.35 m depth. Too-short dead-end arms and placements touching another intersection/map edge are skipped rather than render floating stripes.
+- **Settings:** ☰ Каталог → Дороги → **🚶 Тротуары и бордюры** or **🚸 Пешеходные переходы** toggles all scene roads; choices are persisted in version-1 JSON using optional booleans `roadSidewalks` and `roadCrosswalks`. Old scenes default to both enabled. Undo/Redo records toggles.
+- **Performance:** features are generated only when scene roads, terrain, or the settings change (or EGL context is restored); no independent animation loop. Limits on roads and crossing counts remain in place.
+- **Boundaries:** this is *visual* street furniture, not walkable collision meshes or accessible curb ramps. No zebra traffic signals, traffic controls, NPC route planning, tactile paving, slope engineering, or real-world road standard certification.
+- **Tests:** `tests/road_pedestrian_geometry_smoke.cpp` validates four-way and T crossings, corner curbs avoiding road mouths, crossing bar widths/orientation, short roads, old/no junctions and map borders.
+
 ## Persistence
 
 - Scene JSON remains **version 1**, with optional `roads` array.
-- Old scenes without `roads` import as before.
+- Old scenes without `roads` import as before. Scenes without `roadSidewalks` / `roadCrosswalks` default to enabled.
 - Roads are saved in local scene JSON and in existing `.oezip` project archives.
 - Road data participates in the **atomic** scene replacement: invalid road data rejects the whole scene and leaves the current scene unchanged.
 - Road edits are included in Undo/Redo snapshots; a freehand stroke records a single Undo step.
@@ -63,7 +74,7 @@ Example schema:
 - Up to 24 roads; 48 control points per road; width 2–18 metres.
 - The engine still displays its old built-in **demo roads** when enabled; custom road splines are separate and editable. Demo road geometry is *not* converted into editable paths.
 - Intersecting roads have width-aware convex asphalt intersection surfaces with clipped lane markings; production curb-radius engineering and traffic-grade lanes are not implemented.
-- Traffic rules/lanes, sidewalks, bridges, tunnels, vehicles, physics collisions, and NPC pathfinding are **not** implemented.
+- Traffic rules/lanes, accessible curb ramps, bridges, tunnels, vehicles, physics collisions, and NPC pathfinding are **not** implemented.
 - JNI/GLES interaction stays on the GL thread. No continuous frame loop when the app is idle.
 - Device testing is required, especially on Allwinner A523/4 GB RAM.
 
@@ -75,9 +86,12 @@ Example schema:
 - Load a pre-0.7.4 project; then test malformed JSON roads and verify no partial replacement.
 - Shrink the world with roads near its edge (must reject when needed).
 - Test X, T, 3-way junctions, exact collinear endpoints, and roads running close but not intersecting. Verify that lines stop across junction patches.
+- Verify both road sidewalks and raised curb faces follow sculpted hills without covering the vehicle approach.
+- Verify zebra stripes appear ahead of X/T road mouths, and no crossings float beyond a road end, on neighbouring intersections, or outside the map.
+- Turn sidewalks and crossings off independently, Undo/Redo, save/load local JSON, and export/import `.oezip`. Test old scene v1 files with settings omitted.
 - Test a gap <3 metres before/after completing a road, and a gap >3 metres (must remain separate).
 - Drag an endpoint toward another road; Undo and Redo the snap; remove one of the connected roads; save/reload the graph.
 - Verify selection and gizmo manipulation after exit, frame time, memory, EGL loss and orientation changes.
-- Run `tests/road_model_smoke.cpp`, `tests/road_network_smoke.cpp`, `tests/road_junction_geometry_smoke.cpp` and the GitHub Android APK workflow.
+- Run `tests/road_model_smoke.cpp`, `tests/road_network_smoke.cpp`, `tests/road_junction_geometry_smoke.cpp`, `tests/road_pedestrian_geometry_smoke.cpp` and the GitHub Android APK workflow.
 
 **Never merge or release without reviewing CI and testing on device.**

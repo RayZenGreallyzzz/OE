@@ -46,3 +46,12 @@ jobs:
           g++ -std=c++17 -O2 -Wall -Wextra -Werror \
             tests/device_quality_profiles_smoke.cpp -o /tmp/oe-quality-test
           /tmp/oe-quality-test
+
+  road-model:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and test bounded spline road model
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/road_model_smoke.cpp -o /tmp/oe-roads-test
+          /tmp/oe-roads-test

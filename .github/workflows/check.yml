@@ -63,3 +63,7 @@ jobs:
         run: |
           g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/road_junction_geometry_smoke.cpp -o /tmp/oe-junction-geometry-test
           /tmp/oe-junction-geometry-test
+      - name: Validate sidewalk corners, curbs, crosswalk geometry and map edges
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/road_pedestrian_geometry_smoke.cpp -o /tmp/oe-pedestrian-test
+          /tmp/oe-pedestrian-test

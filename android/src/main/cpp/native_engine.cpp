@@ -12,6 +12,7 @@
 #include <chrono>
 #include <limits>
 #include <mutex>
+#include <memory>
 #include <iomanip>
 #include <sstream>
 #include <string>
@@ -101,6 +102,14 @@ static int gGizmoActiveId=0;
 static float gYaw=.55f, gPitch=.45f, gDistance=28.f;
 static Vec3 gTarget{0,1.2f,1.3f};
 static bool gSceneInitialized=false, gDemoRoads=false;
+// Play world is GL-thread-owned and never writes to editor scene.
+static std::unique_ptr<oe::runtime::World> gPlayWorld;
+static oe::runtime::EntityId gPlayActor;
+static std::vector<Entity> gPlayEntities;
+static Vec3 gEditorCameraTarget{};
+static float gEditorYaw=0.f,gEditorPitch=0.f,gEditorDistance=0.f;
+static float gPlayForward=0.f,gPlayStrafe=0.f;
+static std::chrono::steady_clock::time_point gPlayLastFrame{};
 constexpr float WORLD_TILE=64.0f;
 static int gWorldSize=1024; // Set in app to 1024/2048/4096/8192/16384 meters.
 struct TerrainBrush {float x,z,radius,strength;};
@@ -1199,6 +1208,27 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeResize(JNIEnv*,j
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDraw(JNIEnv*,jclass){
  const auto begin=std::chrono::steady_clock::now();
+ if(gPlayWorld){
+  const double dt=std::chrono::duration<double>(begin-gPlayLastFrame).count();
+  gPlayLastFrame=begin;
+  if(gPlayWorld->transform(gPlayActor)){
+   const float f=clampf(gPlayForward,-1.f,1.f),r=clampf(gPlayStrafe,-1.f,1.f);
+   const float speed=4.0f/std::max(1.f,std::hypot(f,r));
+   gPlayWorld->setVelocity(gPlayActor,{{(-std::sin(gYaw)*f+std::cos(gYaw)*r)*speed,0.0,
+                                        (-std::cos(gYaw)*f-std::sin(gYaw)*r)*speed}});
+  }
+  gPlayWorld->advance(std::max(0.0,std::min(dt,0.25)));
+  if(const auto*t=gPlayWorld->transform(gPlayActor)){
+   oe::runtime::Transform clamped=*t;
+   clamped.position.x=clampf(static_cast<float>(t->position.x),-worldHalf()+2.f,worldHalf()-2.f);
+   clamped.position.z=clampf(static_cast<float>(t->position.z),-worldHalf()+2.f,worldHalf()-2.f);
+   clamped.position.y=terrainHeightAt(static_cast<float>(clamped.position.x),
+                                       static_cast<float>(clamped.position.z))+1.6;
+   gPlayWorld->setTransform(gPlayActor,clamped);
+   gTarget={static_cast<float>(clamped.position.x),static_cast<float>(clamped.position.y),
+            static_cast<float>(clamped.position.z)};
+  }
+ }
  glViewport(0,0,gWidth,gHeight);
  glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
  glUseProgram(gShader.program);
@@ -1208,8 +1238,8 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDraw(JNIEnv*,jcl
  const Frustum frustum=makeFrustum(vp);
  drawWorld(vp);
  drawTerrainPaint(vp);
- for(const auto&e:gEntities)drawEntity(vp,frustum,e);
- drawGizmo(vp);
+ for(const auto&e:(gPlayWorld?gPlayEntities:gEntities))drawEntity(vp,frustum,e);
+ if(!gPlayWorld)drawGizmo(vp);
  glBindVertexArray(0);
  const auto end=std::chrono::steady_clock::now();
  gSubmitCpuMs=std::chrono::duration<float,std::milli>(end-begin).count();
@@ -1344,6 +1374,47 @@ JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeRuntimeCoreRe
  return env->NewStringUTF(report.str().c_str());
 }
 
+// Play preview: independent runtime world and frozen copy of rendered objects.
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativePlayStart(JNIEnv*,jclass){
+ if(gPlayWorld)return JNI_TRUE;
+ std::vector<oe::runtime::SceneItem> items;items.reserve(gEntities.size());
+ for(const Entity&e:gEntities){
+  oe::runtime::SceneItem item;
+  item.name="entity-"+std::to_string(e.id);
+  item.transform.position={e.x,e.y,e.z};
+  const double half=e.yaw*RAD*.5;
+  item.transform.orientation={0.0,std::sin(half),0.0,std::cos(half)};
+  item.transform.scale={e.size*e.sx,e.size*e.sy,e.size*e.sz};
+  item.meshAsset=e.type==6?e.asset:"builtin:"+std::to_string(e.type);
+  items.push_back(std::move(item));
+ }
+ auto world=std::make_unique<oe::runtime::World>(MAX_ENTITIES+4);
+ if(!world->loadStaticScene(items))return JNI_FALSE;
+ const auto actor=world->create("preview-camera");
+ if(!world->alive(actor))return JNI_FALSE;
+ oe::runtime::Transform spawn;
+ spawn.position={gTarget.x,terrainHeightAt(gTarget.x,gTarget.z)+1.6,gTarget.z};
+ if(!world->setTransform(actor,spawn))return JNI_FALSE;
+ gPlayEntities=gEntities;
+ gEditorCameraTarget=gTarget;gEditorYaw=gYaw;gEditorPitch=gPitch;gEditorDistance=gDistance;
+ gPlayActor=actor;gPlayWorld=std::move(world);
+ gPlayForward=gPlayStrafe=0.f;
+ gPitch=.23f;gDistance=7.f;gGizmoActive=false;
+ gPlayLastFrame=std::chrono::steady_clock::now();
+ return JNI_TRUE;
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativePlayInput(
+ JNIEnv*,jclass,jfloat forward,jfloat strafe){
+ if(!gPlayWorld)return;
+ gPlayForward=std::isfinite(forward)?clampf(forward,-1.f,1.f):0.f;
+ gPlayStrafe=std::isfinite(strafe)?clampf(strafe,-1.f,1.f):0.f;
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativePlayStop(JNIEnv*,jclass){
+ if(!gPlayWorld)return;
+ gPlayWorld.reset();gPlayEntities.clear();
+ gPlayForward=gPlayStrafe=0.f;
+ gTarget=gEditorCameraTarget;gYaw=gEditorYaw;gPitch=gEditorPitch;gDistance=gEditorDistance;
+}
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeRecommendQuality(
  JNIEnv*,jclass,jint ramMiB){
  GLint maxTexture=0;

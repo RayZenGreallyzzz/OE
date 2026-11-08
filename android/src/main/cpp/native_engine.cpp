@@ -920,6 +920,20 @@ void rebuildRoadMesh(){
  };
  const Color asphalt{.22f,.23f,.24f},border{.88f,.85f,.73f},
              center{.98f,.86f,.44f},junctionAsphalt{.245f,.255f,.26f};
+ const Color sidewalk{.52f,.53f,.52f},curb{.68f,.68f,.65f},
+             sidewalkWall{.38f,.39f,.38f},crosswalkPaint{.97f,.96f,.86f};
+ auto between=[](Vec3 a,Vec3 b,float t)->Vec3 {
+  return {a.x+(b.x-a.x)*t,0.f,a.z+(b.z-a.z)*t};
+ };
+ auto asVec=[](oe::roads::Point p)->Vec3{return {p.x,0.f,p.z};};
+ // Vertical faces use terrain-relative heights so the curb rises above
+ // asphalt even when the terrain has been sculpted.
+ auto verticalFace=[&](Vec3 a,Vec3 b,float low,float high,Color color){
+  vertex(a.x,a.z,low,color);vertex(b.x,b.z,low,color);
+  vertex(b.x,b.z,high,color);
+  vertex(a.x,a.z,low,color);vertex(b.x,b.z,high,color);
+  vertex(a.x,a.z,high,color);
+ };
  // Geometry and line clipping share one width/direction-aware junction graph.
  gRoadNetwork=oe::roads::buildNetwork(gRoads);
  const auto junctions=oe::roads::makeJunctionSurfaces(
@@ -960,6 +974,27 @@ void rebuildRoadMesh(){
    const Vec3 left0=offset(i-1,-half),left1=offset(i,-half);
    const Vec3 right0=offset(i-1,half),right1=offset(i,half);
    quad(left0,right0,right1,left1,.105f,asphalt);
+   if(gRoadSidewalks){
+    // Two narrow pavements follow both sides of the spline. Clip at the
+    // actual intersection contour instead of blocking the driving mouths.
+    for(const float side:{-1.f,1.f}){
+     const float innerOffset=side*(half+.02f);
+     const float outerOffset=side*(half+.02f+oe::roads::kSidewalkWidth);
+     const Vec3 in0=offset(i-1,innerOffset),in1=offset(i,innerOffset);
+     const Vec3 out0=offset(i-1,outerOffset),out1=offset(i,outerOffset);
+     const auto visible=oe::roads::markingOutsideJunctions(
+           {in0.x,in0.z},{in1.x,in1.z},junctions);
+     for(const auto range:visible){
+      if(range.end-range.begin<.0005f)continue;
+      const Vec3 a=between(in0,in1,range.begin),d=between(in0,in1,range.end);
+      const Vec3 b=between(out0,out1,range.begin),c=between(out0,out1,range.end);
+      if(std::hypot(a.x-b.x,a.z-b.z)<.05f)continue;
+      quad(a,b,c,d,.275f,sidewalk);
+      verticalFace(a,d,.108f,.275f,curb);
+      verticalFace(b,c,.04f,.275f,sidewalkWall);
+     }
+    }
+   }
    if(!road.markings)continue;
    const float line=.12f;
    paintStripe(i,-half+line,-half+line*2,border);
@@ -986,6 +1021,31 @@ void rebuildRoadMesh(){
     vertex(centre.x,centre.z,.175f,junctionAsphalt);
     vertex(p.x,p.z,.175f,junctionAsphalt);
     vertex(q.x,q.z,.175f,junctionAsphalt);
+   }
+  }
+ }
+ // Convex corner aprons link the side pavements around an intersection.
+ // Mouth edges are deliberately skipped: no curb crosses vehicle lanes.
+ if(gRoadSidewalks){
+  for(const auto&junction:junctions){
+   for(const auto&apron:oe::roads::junctionCornerSidewalks(
+                             junction,worldHalf())){
+    const Vec3 a=asVec(apron.a),b=asVec(apron.b),
+               c=asVec(apron.c),d=asVec(apron.d);
+    quad(a,b,c,d,.275f,sidewalk);
+    verticalFace(a,b,.175f,.275f,curb);
+    verticalFace(d,c,.05f,.275f,sidewalkWall);
+   }
+  }
+ }
+ // Zebra bars lie *outside* each intersection mouth. The portable layout
+ // omits crossings if another junction or a map edge would cut them.
+ if(gRoadCrosswalks){
+  const auto crossings=oe::roads::makeCrosswalks(junctions,worldHalf());
+  for(const auto&crossing:crossings){
+   for(const auto&bar:crossing.bars){
+    quad(asVec(bar.a),asVec(bar.b),asVec(bar.c),asVec(bar.d),
+         .148f,crosswalkPaint);
    }
   }
  }

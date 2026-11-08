@@ -955,8 +955,7 @@ void rebuildRoadMesh(){
  constexpr int junctionSides=20;
  for(const auto&junction:gRoadNetwork.junctions){
   const auto&p=junction.position;
-  if(std::abs(p.x-gTarget.x)>quality().viewRangeMetres+junction.radius||
-     std::abs(p.z-gTarget.z)>quality().viewRangeMetres+junction.radius)continue;
+  // Do not camera-cull baked junctions: camera movement does not rebuild VBO.
   for(int sector=0;sector<junctionSides;++sector){
    const float a=2.f*PI*sector/junctionSides;
    const float b=2.f*PI*(sector+1)/junctionSides;

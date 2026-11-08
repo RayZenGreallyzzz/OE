@@ -1213,6 +1213,7 @@ public class EditorActivity extends Activity {
     }
     private void loadScene() {
         if(importing){message("Импорт или загрузка уже выполняется");return;}
+        if(roadMode!=0)finishRoadMode();
         importing=true;
         // Take a consistent snapshot of the registered GPU assets. The reader
         // thread can skip expensive decode work for those immutable GLBs.
@@ -1245,6 +1246,46 @@ public class EditorActivity extends Activity {
                 throw new Exception("Неподдерживаемый размер карты");
             JSONArray arr=document.getJSONArray("items");
             if(arr.length()>300)throw new Exception("Слишком много объектов");
+            // Backward-compatible version-1 scenes can omit the roads field.
+            JSONArray roadsJson=document.optJSONArray("roads");
+            if(document.has("roads")&&roadsJson==null)
+                throw new Exception("Неверный формат дорог");
+            final int roadTotal=roadsJson==null?0:roadsJson.length();
+            if(roadTotal>24)throw new Exception("Слишком много дорог (макс. 24)");
+            int[] roadIds=new int[roadTotal],roadCounts=new int[roadTotal];
+            float[] roadWidths=new float[roadTotal];
+            boolean[] roadMarkings=new boolean[roadTotal];
+            float[] roadsRaw=new float[24*48*2];
+            int roadRawCount=0;
+            HashSet<Integer> seenRoads=new HashSet<>();
+            for(int ri=0;ri<roadTotal;ri++){
+                JSONArray road=roadsJson.getJSONArray(ri);
+                if(road.length()!=4)throw new Exception("Неверная структура дороги "+ri);
+                final int id=road.getInt(0),flag=road.getInt(2);
+                final double width=road.getDouble(1);
+                JSONArray points=road.getJSONArray(3);
+                if(id<=0||id==Integer.MAX_VALUE||!seenRoads.add(id)||
+                   !Double.isFinite(width)||width<2||width>18||
+                   (flag!=0&&flag!=1)||points.length()<2||points.length()>48)
+                    throw new Exception("Неверные параметры дороги "+ri);
+                roadIds[ri]=id;roadWidths[ri]=(float)width;
+                roadMarkings[ri]=(flag==1);roadCounts[ri]=points.length();
+                double prevX=0,prevZ=0;
+                for(int j=0;j<points.length();j++){
+                    JSONArray point=points.getJSONArray(j);
+                    if(point.length()!=2)throw new Exception("Неверный узел дороги");
+                    double x=point.getDouble(0),z=point.getDouble(1);
+                    if(!Double.isFinite(x)||!Double.isFinite(z)||
+                       Math.abs(x)>worldSize/2.0||Math.abs(z)>worldSize/2.0)
+                        throw new Exception("Точка дороги за границей карты");
+                    if(j>0&&(x-prevX)*(x-prevX)+(z-prevZ)*(z-prevZ)<.25*.25)
+                        throw new Exception("Слишком близкие узлы дороги");
+                    roadsRaw[roadRawCount++]=(float)x;
+                    roadsRaw[roadRawCount++]=(float)z;
+                    prevX=x;prevZ=z;
+                }
+            }
+            final float[] roadCoordinates=Arrays.copyOf(roadsRaw,roadRawCount);
             SavedEntity[] items=new SavedEntity[arr.length()];
             HashSet<String> assets=new HashSet<>();
             int[] kinds=new int[arr.length()];
@@ -1442,9 +1483,14 @@ public class EditorActivity extends Activity {
                         uploaded.add(entry.getKey());
                     }
                     if(!nativeReplaceScene(worldSize,demoRoads,kinds,transforms,modelKeys,
-                            terrainBrushes,objectPaintKeys,paintBrushes,paintBrushKeys))
+                            terrainBrushes,objectPaintKeys,paintBrushes,paintBrushKeys,
+                            roadIds,roadWidths,roadMarkings,roadCounts,roadCoordinates))
                         throw new Exception("Сцена не прошла полную проверку в движке");
                     committed=true;
+                    ui(()->{
+                        roadMode=0;
+                        roadDoneButton.setVisibility(View.GONE);
+                    });
                     surface.requestRender();
                     refreshSelected();
                     message("Сцена загружена · "+items.length+" объектов, текстур "+referencedPaint.size()+", GLB "+assets.size()+

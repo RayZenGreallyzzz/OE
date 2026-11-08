@@ -1399,7 +1399,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativePlayStart(JN
  gEditorCameraTarget=gTarget;gEditorYaw=gYaw;gEditorPitch=gPitch;gEditorDistance=gDistance;
  gPlayActor=actor;gPlayWorld=std::move(world);
  gPlayForward=gPlayStrafe=0.f;
- gPitch=.23f;gDistance=7.f;gSelected=0;gGizmoActive=false;
+ gPitch=.23f;gDistance=7.f;gGizmoActive=false;
  gPlayLastFrame=std::chrono::steady_clock::now();
  return JNI_TRUE;
 }

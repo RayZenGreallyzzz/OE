@@ -1620,6 +1620,8 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeSetWorldSize
  float half=static_cast<float>(newSize)*.5f;
  // Never silently hide buildings when shrinking the world.
  for(const auto&e:gEntities)if(std::abs(e.x)>half-1.f||std::abs(e.z)>half-1.f)return JNI_FALSE;
+ for(const auto&road:gRoads)for(const auto&point:road.points)
+  if(std::abs(point.x)>half-1.f||std::abs(point.z)>half-1.f)return JNI_FALSE;
  if(gWorldSize==newSize)return JNI_TRUE;
  recordEdit();
  gWorldSize=newSize;
@@ -2136,7 +2138,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  gEntities.swap(staged);gBrushes.swap(stagedBrushes);
  gTerrainPaint.swap(stagedPaint);gTerrainRevision++;
  gRoads.swap(stagedRoads);gNextRoadId=nextRoadId;gSelectedRoad=0;
- gRoadDragId=0;gRoadDragPoint=-1;++gRoadRevision;
+ gRoadDragId=0;gRoadDragPoint=-1;gRoadEditMode=0;++gRoadRevision;
  gWorldSize=size;gDemoRoads=demo==JNI_TRUE;
  gNextId=static_cast<int>(n)+1;gSelected=0;
  gTarget={0,terrainHeightAt(0,1.3f)+1.2f,1.3f};gDistance=28.f;

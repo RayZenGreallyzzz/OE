@@ -4,6 +4,7 @@
 #include "vendor/basisu/transcoder/basisu_transcoder.h"
 #include "quality_profiles.h"
 #include "roads/road_model.h"
+#include "roads/road_network.h"
 #include <GLES3/gl3.h>
 #include <android/log.h>
 #include <algorithm>
@@ -104,6 +105,8 @@ static Vec3 gTarget{0,1.2f,1.3f};
 static bool gSceneInitialized=false, gDemoRoads=false;
 // Road graph is independent of scene entities; all access stays on the GLES thread.
 static std::vector<oe::roads::Road> gRoads;
+// Derived (not serialized): crossings, T-joins and connectivity, rebuilt with road mesh.
+static oe::roads::Network gRoadNetwork;
 static int gNextRoadId=1, gSelectedRoad=0, gRoadEditMode=0;
 static int gRoadRevision=0, gRoadUploadedRevision=-1, gRoadUploadedTerrainRevision=-1;
 static int gRoadDragId=0, gRoadDragPoint=-1;
@@ -944,6 +947,28 @@ void rebuildRoadMesh(){
    }
   }
  }
+ // Build graph from the same sampled road paths used for rendering.
+ // Junction asphalt is slightly raised above road paint/markings to avoid
+ // central-line stripes continuing through the crossing.
+ gRoadNetwork=oe::roads::buildNetwork(gRoads);
+ const Color junctionAsphalt{.245f,.255f,.26f};
+ constexpr int junctionSides=20;
+ for(const auto&junction:gRoadNetwork.junctions){
+  const auto&p=junction.position;
+  if(std::abs(p.x-gTarget.x)>quality().viewRangeMetres+junction.radius||
+     std::abs(p.z-gTarget.z)>quality().viewRangeMetres+junction.radius)continue;
+  for(int sector=0;sector<junctionSides;++sector){
+   const float a=2.f*PI*sector/junctionSides;
+   const float b=2.f*PI*(sector+1)/junctionSides;
+   vertex(p.x,p.z,.175f,junctionAsphalt);
+   vertex(clampf(p.x+std::cos(a)*junction.radius,-worldHalf(),worldHalf()),
+          clampf(p.z+std::sin(a)*junction.radius,-worldHalf(),worldHalf()),
+          .175f,junctionAsphalt);
+   vertex(clampf(p.x+std::cos(b)*junction.radius,-worldHalf(),worldHalf()),
+          clampf(p.z+std::sin(b)*junction.radius,-worldHalf(),worldHalf()),
+          .175f,junctionAsphalt);
+  }
+ }
  gRoadMesh.count=static_cast<GLsizei>(vertices.size()/11);
  glBindBuffer(GL_ARRAY_BUFFER,gRoadMesh.buffer);
  glBufferData(GL_ARRAY_BUFFER,
@@ -1346,6 +1371,13 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadFinish(
  auto*road=selectedRoad();
  if(!road||gRoadEditMode!=1)return JNI_FALSE;
  const bool valid=oe::roads::valid(*road,worldHalf());
+ if(valid){
+  // Finish-stage auto-snap: join either endpoint to the nearest existing
+  // spline within three metres, without changing source roads.
+  const auto start=oe::roads::snapEndpoint(*road,true,gRoads,worldHalf());
+  const auto end=oe::roads::snapEndpoint(*road,false,gRoads,worldHalf());
+  if(start.snapped||end.snapped)++gRoadRevision;
+ }
  if(!valid){
   const int id=road->id;
   gRoads.erase(std::remove_if(gRoads.begin(),gRoads.end(),
@@ -1393,6 +1425,17 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadDragHand
  return JNI_FALSE;
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeRoadEndDrag(JNIEnv*,jclass){
+ if(gRoadDragChanged&&gRoadDragId>0&&gRoadDragPoint>=0){
+  for(auto&road:gRoads)if(road.id==gRoadDragId){
+   const std::size_t index=static_cast<std::size_t>(gRoadDragPoint);
+   if(index==0||index+1==road.points.size()){
+    const auto snap=oe::roads::snapEndpoint(
+        road,index==0,gRoads,worldHalf());
+    if(snap.snapped)++gRoadRevision;
+   }
+   break;
+  }
+ }
  gRoadDragId=0;gRoadDragPoint=-1;gRoadDragChanged=false;
 }
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadSetWidth(
@@ -1449,6 +1492,20 @@ JNIEXPORT jobjectArray JNICALL Java_game_oe_editor_EditorActivity_nativeRoadLabe
   env->SetObjectArrayElement(result,i,item);env->DeleteLocalRef(item);
  }
  return result;
+}
+JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeRoadNetworkReport(
+ JNIEnv*env,jclass){
+ const auto graph=oe::roads::buildNetwork(gRoads);
+ std::ostringstream out;
+ out<<"Дорог: "<<gRoads.size()<<" / "<<oe::roads::kMaxRoads
+    <<"\nАвтоматических перекрёстков: "<<graph.junctions.size()
+    <<"\nПар связанных дорог: "<<graph.connectedPairs
+    <<"\nСоединение концов: до "<<oe::roads::kSnapDistance<<" м"
+    <<"\nПерекрёстки обновляются при изменении дороги.";
+ if(graph.overflow>0)
+  out<<"\nВнимание: достигнут лимит "<<oe::roads::kMaxJunctions
+     <<" узлов перекрёстков.";
+ return env->NewStringUTF(out.str().c_str());
 }
 JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeRoadInfo(
  JNIEnv*env,jclass){

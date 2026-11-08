@@ -87,6 +87,7 @@ public class EditorActivity extends Activity {
     private static native int[] nativeRoadIds();
     private static native String[] nativeRoadLabels();
     private static native String nativeRoadInfo();
+    private static native String nativeRoadNetworkReport();
     private static native String[] nativeLabels();
     private static native int[] nativeIds();
     private static native void nativeReset(boolean withDemo);
@@ -434,6 +435,7 @@ public class EditorActivity extends Activity {
             addPaletteOption("📏 Ширина дороги",this::chooseRoadWidth);
             addPaletteOption("〰 Разметка · включить/выключить",this::toggleRoadMarkings);
             addPaletteOption("📋 Список дорог и выбор",this::showRoadList);
+            addPaletteOption("🔗 Соединения и перекрёстки",this::showRoadConnections);
             addPaletteOption("🗑 Удалить выбранную дорогу",this::deleteRoad);
             addPaletteOption("✓ Завершить / выйти",this::finishRoadMode);
         }else if("Текстуры".equals(category)){
@@ -475,7 +477,7 @@ public class EditorActivity extends Activity {
         roadMode=1;
         roadDoneButton.setVisibility(View.VISIBLE);
         roadDoneButton.setText("✓ Завершить дорогу");
-        statusText.setText("ДОРОГА: веди пальцем по земле или ставь точки касаниями. Готово — ✓.");
+        statusText.setText("ДОРОГА: веди пальцем. Концы соединятся с соседней дорогой до 3 м. Готово — ✓.");
         surface.queueEvent(()->{
             int roadId=nativeRoadBegin(roadWidth,roadMarkings);
             if(roadId==0){
@@ -534,6 +536,18 @@ public class EditorActivity extends Activity {
             surface.requestRender();
         });
         message(enabled?"Разметка включена":"Разметка выключена");
+    }
+    private void showRoadConnections(){
+        if(importing||surface==null)return;
+        surface.queueEvent(()->{
+            final String report=nativeRoadNetworkReport();
+            ui(()->new AlertDialog.Builder(this)
+                .setTitle("OE · Автоматические перекрёстки")
+                .setMessage(report+"\n\nПересекающиеся дороги соединяются автоматически. "+
+                    "При завершении дороги её концы притягиваются к существующей "+
+                    "трассе на расстоянии до 3 метров.")
+                .setPositiveButton("Готово",null).show());
+        });
     }
     private void showRoadList(){
         if(importing)return;

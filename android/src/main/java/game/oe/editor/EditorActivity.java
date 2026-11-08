@@ -51,6 +51,9 @@ public class EditorActivity extends Activity {
     private static native void nativeDraw();
     private static native String nativeRenderStats();
     private static native String nativeRuntimeCoreReport();
+    private static native boolean nativePlayStart();
+    private static native void nativePlayInput(float forward,float strafe);
+    private static native void nativePlayStop();
     private static native int nativeRecommendQuality(int ramMiB);
     private static native boolean nativeSetQualityProfile(int tier);
     private static native float nativeQualityScale(int tier);
@@ -110,6 +113,10 @@ public class EditorActivity extends Activity {
     private static final int MAX_ASSETS = 12;
 
     private EditorSurface surface;
+    private LinearLayout editorTop, playControls;
+    private Button playStopButton;
+    private volatile boolean playing=false;
+    private boolean playUp=false,playDown=false,playLeft=false,playRight=false;
     private TextView selectionText;
     private TextView statusText;
     private TextView renderStatsText;
@@ -220,6 +227,7 @@ public class EditorActivity extends Activity {
         // All controls are OVERLAYS. The full-screen 3D surface is never
         // resized/covered by a permanent bottom editor panel.
         LinearLayout top = row();
+        editorTop=top;
         top.setGravity(Gravity.CENTER_VERTICAL);
         top.setPadding(dp(5),dp(2),dp(5),dp(2));
         top.setBackgroundColor(Color.argb(220,14,21,32));
@@ -231,6 +239,8 @@ public class EditorActivity extends Activity {
         title.setGravity(Gravity.CENTER_VERTICAL);
         title.setPadding(dp(8),0,dp(5),0);
         top.addView(title,new LinearLayout.LayoutParams(0,dp(45),1f));
+        Button play=button("▶ Играть",this::startPlay);
+        top.addView(play,new LinearLayout.LayoutParams(dp(90),dp(43)));
         Button menu=button("☰ Каталог",()->toggleDrawer(!drawerOpen));
         top.addView(menu,new LinearLayout.LayoutParams(dp(110),dp(43)));
         Button save=button("💾 Сохранить",this::saveScene);
@@ -359,6 +369,28 @@ public class EditorActivity extends Activity {
         infoParams.leftMargin=dp(6);
         infoParams.bottomMargin=dp(12);
         root.addView(info,infoParams);
+        playControls=new LinearLayout(this);
+        playControls.setOrientation(LinearLayout.VERTICAL);
+        playControls.setGravity(Gravity.CENTER);
+        LinearLayout upRow=row();upRow.setGravity(Gravity.CENTER);
+        addPlayDirection(upRow,"▲",1,0);
+        playControls.addView(upRow);
+        LinearLayout moveRowPlay=row();moveRowPlay.setGravity(Gravity.CENTER);
+        addPlayDirection(moveRowPlay,"◀",0,-1);
+        addPlayDirection(moveRowPlay,"▼",-1,0);
+        addPlayDirection(moveRowPlay,"▶",0,1);
+        playControls.addView(moveRowPlay);
+        FrameLayout.LayoutParams controlsParams=new FrameLayout.LayoutParams(
+            dp(300),dp(112),Gravity.BOTTOM|Gravity.CENTER_HORIZONTAL);
+        controlsParams.bottomMargin=dp(24);
+        root.addView(playControls,controlsParams);
+        playControls.setVisibility(View.GONE);
+        playStopButton=button("■ Остановить",this::stopPlay);
+        FrameLayout.LayoutParams stopParams=new FrameLayout.LayoutParams(dp(145),dp(48),
+            Gravity.TOP|Gravity.RIGHT);
+        stopParams.topMargin=dp(9);stopParams.rightMargin=dp(9);
+        root.addView(playStopButton,stopParams);
+        playStopButton.setVisibility(View.GONE);
         setContentView(root);
     }
     private void toggleDrawer(boolean open){
@@ -419,6 +451,7 @@ public class EditorActivity extends Activity {
                     +"Draco пока не поддерживается. KTX2 BasisU ETC1S/UASTC LDR -> ETC2 подключён (тест).")
                 .setPositiveButton("Понятно",null).show());
         }else if("Проект".equals(category)){
+            addPaletteOption("▶ Играть · предпросмотр",this::startPlay);
             addPaletteOption("🧠 Ядро игры · проверить",this::showRuntimeCoreStatus);
             addPaletteOption("⚡ Графика и качество",this::chooseDeviceProfile);
             addPaletteOption("🖥 Информация о GPU",this::showDeviceCapabilities);
@@ -494,6 +527,59 @@ public class EditorActivity extends Activity {
                 (dialog,which)->{selectDeviceQuality(which-1);dialog.dismiss();})
             .setNeutralButton("Видеочип",(dialog,which)->showDeviceCapabilities())
             .setNegativeButton("Отмена",null).show();
+    }
+    private void addPlayDirection(LinearLayout row,String caption,int forward,int strafe){
+        Button b=button(caption,()->{});
+        LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(dp(90),dp(48));
+        p.setMargins(dp(3),dp(2),dp(3),dp(2));
+        row.addView(b,p);
+        b.setOnTouchListener((v,event)->{
+            boolean down=event.getActionMasked()==MotionEvent.ACTION_DOWN;
+            boolean release=event.getActionMasked()==MotionEvent.ACTION_UP||
+                event.getActionMasked()==MotionEvent.ACTION_CANCEL;
+            if(!down&&!release)return true;
+            if(forward>0)playUp=down;
+            if(forward<0)playDown=down;
+            if(strafe>0)playRight=down;
+            if(strafe<0)playLeft=down;
+            float f=(playUp?1:0)-(playDown?1:0);
+            float r=(playRight?1:0)-(playLeft?1:0);
+            if(surface!=null)surface.queueEvent(()->nativePlayInput(f,r));
+            return true;
+        });
+    }
+    private void startPlay(){
+        if(playing||importing||surface==null){if(importing)message("Дождись загрузки сцены");return;}
+        toggleDrawer(false);
+        surface.queueEvent(()->{
+            final boolean ready=nativePlayStart();
+            ui(()->{
+                if(!ready){message("Не удалось создать отдельную игровую сцену");return;}
+                playing=true;playUp=playDown=playLeft=playRight=false;
+                editorTop.setVisibility(View.GONE);
+                inspectorPanel.setVisibility(View.GONE);
+                playControls.setVisibility(View.VISIBLE);
+                playStopButton.setVisibility(View.VISIBLE);
+                surface.setRenderMode(GLSurfaceView.RENDERMODE_CONTINUOUSLY);
+                statusText.setText("Предпросмотр: кнопки перемещения · свайп — камера");
+            });
+        });
+    }
+    private void stopPlay(){
+        if(!playing||surface==null)return;
+        playing=false;
+        playUp=playDown=playLeft=playRight=false;
+        playControls.setVisibility(View.GONE);
+        playStopButton.setVisibility(View.GONE);
+        editorTop.setVisibility(View.VISIBLE);
+        surface.queueEvent(()->{
+            nativePlayInput(0,0);
+            nativePlayStop();
+            surface.setRenderMode(GLSurfaceView.RENDERMODE_WHEN_DIRTY);
+            surface.requestRender();
+            refreshSelected();
+        });
+        statusText.setText("Редактор · исходная сцена не изменена");
     }
     private void showRuntimeCoreStatus(){
         if(importing){message("Сначала закончи загрузку проекта");return;}
@@ -1362,7 +1448,7 @@ public class EditorActivity extends Activity {
             .setNegativeButton("Отмена",null).show();
     }
     @Override protected void onResume() { super.onResume(); if (surface != null) surface.onResume(); }
-    @Override protected void onPause() { if (surface != null) surface.onPause(); super.onPause(); }
+    @Override protected void onPause() { if(playing)stopPlay(); if (surface != null) surface.onPause(); super.onPause(); }
 
     private final class EditorSurface extends GLSurfaceView {
         private float lastX, lastY, downX, downY, lastPinch, lastMidX, lastMidY;
@@ -1441,6 +1527,16 @@ public class EditorActivity extends Activity {
             return (float)Math.hypot(e.getX(0)-e.getX(1),e.getY(0)-e.getY(1));
         }
         @Override public boolean onTouchEvent(MotionEvent e) {
+            if(playing){
+                final int action=e.getActionMasked();
+                if(action==MotionEvent.ACTION_DOWN){lastX=e.getX();lastY=e.getY();return true;}
+                if(action==MotionEvent.ACTION_MOVE&&e.getPointerCount()==1){
+                    final float dx=e.getX()-lastX,dy=e.getY()-lastY;
+                    lastX=e.getX();lastY=e.getY();
+                    queueEvent(()->nativeOrbit(dx,dy,1f));
+                }
+                return true;
+            }
             if(importing)return true; // Prevent input changes during scene replacement.
             int action=e.getActionMasked();
             if(action==MotionEvent.ACTION_DOWN) {

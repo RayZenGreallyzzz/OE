@@ -59,3 +59,7 @@ jobs:
         run: |
           g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/road_network_smoke.cpp -o /tmp/oe-junctions-test
           /tmp/oe-junctions-test
+      - name: Verify width-aware X/T junction polygons and clipped markings
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/road_junction_geometry_smoke.cpp -o /tmp/oe-junction-geometry-test
+          /tmp/oe-junction-geometry-test

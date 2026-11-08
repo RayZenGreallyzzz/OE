@@ -73,6 +73,20 @@ public class EditorActivity extends Activity {
     private static native double[] nativeSelectedCoordinates();
     private static native boolean nativeSetSelectedCoordinates(double x,double y,double z);
     private static native String nativeSceneSnapshot();
+    private static native void nativeRoadMode(int mode);
+    private static native int nativeRoadBegin(float width,boolean markings);
+    private static native int nativeRoadAppend(float pixelX,float pixelY,float minSpacing);
+    private static native boolean nativeRoadFinish();
+    private static native boolean nativeRoadPickHandle(float pixelX,float pixelY);
+    private static native boolean nativeRoadDragHandle(float pixelX,float pixelY);
+    private static native void nativeRoadEndDrag();
+    private static native boolean nativeRoadSetWidth(float width);
+    private static native boolean nativeRoadSetMarkings(boolean markings);
+    private static native boolean nativeRoadDelete();
+    private static native void nativeRoadSelect(int roadId);
+    private static native int[] nativeRoadIds();
+    private static native String[] nativeRoadLabels();
+    private static native String nativeRoadInfo();
     private static native String[] nativeLabels();
     private static native int[] nativeIds();
     private static native void nativeReset(boolean withDemo);
@@ -90,7 +104,9 @@ public class EditorActivity extends Activity {
     private static native void nativeDiscardUnusedAsset(String key);
     private static native boolean nativeReplaceScene(int size, boolean demoRoads,
             int[] kinds, float[] transforms, String[] modelKeys, float[] terrain,
-            String[] objectPaintKeys, float[] painting, String[] terrainPaintKeys);
+            String[] objectPaintKeys, float[] painting, String[] terrainPaintKeys,
+            int[] roadIds, float[] roadWidths, boolean[] roadMarkings,
+            int[] roadCounts, float[] roadCoordinates);
     private static native boolean nativeRegisterPaintTexture(String key, byte[] rgba,int width,int height);
     private static native boolean nativePaintSelected(String key);
     private static native int nativePaintTerrainAtScreen(float x,float y,float radius,String key);
@@ -109,6 +125,10 @@ public class EditorActivity extends Activity {
     private static final int MAX_ASSETS = 12;
 
     private EditorSurface surface;
+    private Button roadDoneButton;
+    private volatile int roadMode=0; // 0=objects, 1=draw roads, 2=drag road points
+    private volatile float roadWidth=6f;
+    private volatile boolean roadMarkings=true;
     private TextView selectionText;
     private TextView statusText;
     private TextView renderStatsText;
@@ -223,7 +243,7 @@ public class EditorActivity extends Activity {
         top.setPadding(dp(5),dp(2),dp(5),dp(2));
         top.setBackgroundColor(Color.argb(220,14,21,32));
         TextView title=new TextView(this);
-        title.setText("OE 0.6.13  /  BASISU KTX2 TEST");
+        title.setText("OE 0.7.4 / ROAD EDITOR TEST");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
         title.setTextSize(12);
@@ -239,6 +259,13 @@ public class EditorActivity extends Activity {
         Button redo=button("↷",this::redoAction);
         top.addView(redo,new LinearLayout.LayoutParams(dp(45),dp(43)));
         root.addView(top,new FrameLayout.LayoutParams(-1,dp(49),Gravity.TOP));
+        roadDoneButton=button("✓ Завершить дорогу",this::finishRoadMode);
+        FrameLayout.LayoutParams doneParams=new FrameLayout.LayoutParams(dp(175),dp(46),
+                Gravity.TOP|Gravity.RIGHT);
+        doneParams.topMargin=dp(52);
+        doneParams.rightMargin=dp(8);
+        root.addView(roadDoneButton,doneParams);
+        roadDoneButton.setVisibility(View.GONE);
 
         // Left drawer opens on demand and is vertically scrollable.
         toolDrawer=new LinearLayout(this);
@@ -248,7 +275,7 @@ public class EditorActivity extends Activity {
         HorizontalScrollView categoryScroll=new HorizontalScrollView(this);
         categoryScroll.setHorizontalScrollBarEnabled(false);
         LinearLayout categoryRow=row();
-        for(String category:new String[]{"Здания","Детали","Декор","Рельеф","Текстуры","Проект"}){
+        for(String category:new String[]{"Здания","Детали","Декор","Рельеф","Дороги","Текстуры","Проект"}){
             Button tab=button(category,()->showPalette(category));
             LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(dp(98),dp(44));
             p.setMargins(dp(2),0,dp(2),0);categoryRow.addView(tab,p);
@@ -368,7 +395,7 @@ public class EditorActivity extends Activity {
         Button b=button(label,()->{
             action.run();
             // Start placing directly on the exposed 3D world.
-            if(placingKind>=0||terrainMode!=0||paintTerrainMode)toggleDrawer(false);
+            if(placingKind>=0||terrainMode!=0||paintTerrainMode||roadMode!=0)toggleDrawer(false);
         });
         LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,dp(43));
         p.setMargins(dp(4),dp(2),dp(4),dp(2));
@@ -401,6 +428,14 @@ public class EditorActivity extends Activity {
             addPaletteOption("⛰ Опустить землю",()->enterTerrainMode(-1));
             addPaletteOption("📐 Радиус и сила кисти",this::chooseTerrainBrush);
             addPaletteOption("✕ Завершить изменение",this::cancelPlace);
+        }else if("Дороги".equals(category)){
+            addPaletteOption("🛣 Новая дорога · рисовать пальцем",this::startRoadDrawing);
+            addPaletteOption("✏ Редактировать узлы дорог",this::startRoadEditing);
+            addPaletteOption("📏 Ширина дороги",this::chooseRoadWidth);
+            addPaletteOption("〰 Разметка · включить/выключить",this::toggleRoadMarkings);
+            addPaletteOption("📋 Список дорог и выбор",this::showRoadList);
+            addPaletteOption("🗑 Удалить выбранную дорогу",this::deleteRoad);
+            addPaletteOption("✓ Завершить / выйти",this::finishRoadMode);
         }else if("Текстуры".equals(category)){
             addPaletteOption("🖼 Загрузить свой PNG / JPG",this::pickPaintTexture);
             addPaletteOption("🎨 Мои текстуры",this::choosePaintTexture);
@@ -433,6 +468,106 @@ public class EditorActivity extends Activity {
             addPaletteOption("↷ Повтор",this::redoAction);
         }
     }
+    private void startRoadDrawing(){
+        if(importing){message("Заверши загрузку сцены");return;}
+        if(roadMode==1)finishRoadMode();
+        placingKind=-1;placingGlb=null;terrainMode=0;paintTerrainMode=false;
+        roadMode=1;
+        roadDoneButton.setVisibility(View.VISIBLE);
+        roadDoneButton.setText("✓ Завершить дорогу");
+        statusText.setText("ДОРОГА: веди пальцем по земле или ставь точки касаниями. Готово — ✓.");
+        surface.queueEvent(()->{
+            int roadId=nativeRoadBegin(roadWidth,roadMarkings);
+            if(roadId==0){
+                ui(()->{
+                    roadMode=0;roadDoneButton.setVisibility(View.GONE);
+                    message("Достигнут лимит 24 дорог");
+                });
+            }
+            surface.requestRender();
+        });
+    }
+    private void startRoadEditing(){
+        if(importing){message("Заверши загрузку сцены");return;}
+        if(roadMode==1)finishRoadMode();
+        placingKind=-1;placingGlb=null;terrainMode=0;paintTerrainMode=false;
+        roadMode=2;
+        roadDoneButton.setVisibility(View.VISIBLE);
+        roadDoneButton.setText("✓ Закрыть дороги");
+        statusText.setText("ДОРОГИ: тяни оранжевые узлы пальцем. Выбирай дороги через список.");
+        surface.queueEvent(()->{nativeRoadMode(2);surface.requestRender();});
+    }
+    private void finishRoadMode(){
+        final int previous=roadMode;
+        if(previous==0)return;
+        roadMode=0;roadDoneButton.setVisibility(View.GONE);
+        roadDoneButton.setText("✓ Завершить дорогу");
+        surface.queueEvent(()->{
+            if(previous==1&&!nativeRoadFinish())
+                message("Для дороги нужны хотя бы две разные точки; заготовка удалена");
+            nativeRoadMode(0);nativeRoadEndDrag();
+            surface.requestRender();
+        });
+        statusText.setText("Режим объектов · каталог → Дороги для редактирования");
+    }
+    private void chooseRoadWidth(){
+        final String[] labels={"2 м · тропинка","4 м · узкая улица","6 м · обычная дорога",
+                "8 м · широкая дорога","12 м · проспект","18 м · большая трасса"};
+        final float[] widths={2,4,6,8,12,18};
+        new AlertDialog.Builder(this).setTitle("Ширина дороги")
+            .setSingleChoiceItems(labels,-1,(dialog,index)->{
+                roadWidth=widths[index];
+                final float w=roadWidth;
+                surface.queueEvent(()->{
+                    nativeRoadSetWidth(w);
+                    surface.requestRender();
+                });
+                message("Ширина новых дорог: "+(int)roadWidth+" м");
+                dialog.dismiss();
+            }).setNegativeButton("Отмена",null).show();
+    }
+    private void toggleRoadMarkings(){
+        roadMarkings=!roadMarkings;
+        final boolean enabled=roadMarkings;
+        surface.queueEvent(()->{
+            nativeRoadSetMarkings(enabled);
+            surface.requestRender();
+        });
+        message(enabled?"Разметка включена":"Разметка выключена");
+    }
+    private void showRoadList(){
+        if(importing)return;
+        surface.queueEvent(()->{
+            final String[] labels=nativeRoadLabels();
+            final int[] ids=nativeRoadIds();
+            ui(()->{
+                if(labels==null||ids==null||ids.length!=labels.length||ids.length==0){
+                    message("Дорог пока нет. Начни с «Новая дорога»");
+                    return;
+                }
+                new AlertDialog.Builder(this).setTitle("Дороги сцены")
+                    .setItems(labels,(d,i)->{
+                        startRoadEditing();
+                        surface.queueEvent(()->{
+                            nativeRoadSelect(ids[i]);
+                            final String info=nativeRoadInfo();
+                            surface.requestRender();
+                            message(info.replace("\n"," · "));
+                        });
+                    }).setNegativeButton("Закрыть",null).show();
+            });
+        });
+    }
+    private void deleteRoad(){
+        if(importing){message("Дождись загрузки сцены");return;}
+        new AlertDialog.Builder(this).setTitle("Удалить выбранную дорогу?")
+            .setMessage("Удаляется только выбранная дорога. Действие можно отменить.")
+            .setPositiveButton("Удалить",(d,which)->edit(()->{
+                if(nativeRoadDelete())message("Дорога удалена");
+                else message("Сначала выбери дорогу через список");
+            }))
+            .setNegativeButton("Отмена",null).show();
+    }
     private void changeGizmoMode(int mode){
         gizmoMode=mode;
         surface.queueEvent(()->{nativeSetGizmoMode(mode);surface.requestRender();});
@@ -441,6 +576,7 @@ public class EditorActivity extends Activity {
                      "3D-оси: тяни цветной маркер для изменения масштаба по выбранной оси");
     }
     private void enterPlaceMode(int kind, String asset) {
+        if(roadMode!=0)finishRoadMode();
         if(importing) { message("Сначала дождись завершения импорта"); return; }
         terrainMode=0;paintTerrainMode=false;
         placingKind = kind;
@@ -449,6 +585,7 @@ public class EditorActivity extends Activity {
         message("Коснись места на карте для размещения");
     }
     private void cancelPlace() {
+        if(roadMode!=0)finishRoadMode();
         paintTerrainMode=false;
         terrainMode=0;
         placingKind = -1;
@@ -457,6 +594,7 @@ public class EditorActivity extends Activity {
         message("Размещение отменено");
     }
     private void enterTerrainMode(int direction){
+        if(roadMode!=0)finishRoadMode();
         if(importing){message("Дождись завершения операции");return;}
         placingKind=-1;placingGlb=null;paintTerrainMode=false;
         terrainMode=direction;
@@ -1424,8 +1562,71 @@ public class EditorActivity extends Activity {
         private float pinch(MotionEvent e) {
             return (float)Math.hypot(e.getX(0)-e.getX(1),e.getY(0)-e.getY(1));
         }
+        private boolean handleRoadTouch(MotionEvent e){
+            final int action=e.getActionMasked();
+            if(action==MotionEvent.ACTION_DOWN){
+                multiTouch=false;
+                lastX=downX=e.getX();lastY=downY=e.getY();
+                final float px=surfaceX(lastX),py=surfaceY(lastY);
+                if(roadMode==1)queueEvent(()->{
+                    nativeRoadAppend(px,py,.5f);interactiveRender();
+                });
+                else queueEvent(()->{
+                    nativeRoadPickHandle(px,py);interactiveRender();
+                });
+                return true;
+            }
+            if(action==MotionEvent.ACTION_POINTER_DOWN){
+                multiTouch=true;
+                queueEvent(EditorActivity::nativeRoadEndDrag);
+                if(e.getPointerCount()>=2){
+                    lastPinch=pinch(e);
+                    lastMidX=(e.getX(0)+e.getX(1))*.5f;
+                    lastMidY=(e.getY(0)+e.getY(1))*.5f;
+                }
+                return true;
+            }
+            if(action==MotionEvent.ACTION_MOVE){
+                if(e.getPointerCount()>=2){
+                    final float pinchValue=pinch(e);
+                    final float midX=(e.getX(0)+e.getX(1))*.5f;
+                    final float midY=(e.getY(0)+e.getY(1))*.5f;
+                    final float zoom=lastPinch>1.f&&pinchValue>1.f?
+                        Math.max(.7f,Math.min(1.3f,lastPinch/pinchValue)):1.f;
+                    final float dx=midX-lastMidX,dy=midY-lastMidY;
+                    queueEvent(()->{
+                        nativePan(dx,dy);nativeOrbit(0,0,zoom);interactiveRender();
+                    });
+                    lastPinch=pinchValue;lastMidX=midX;lastMidY=midY;
+                }else if(!multiTouch){
+                    final float px=surfaceX(e.getX()),py=surfaceY(e.getY());
+                    if(roadMode==1)queueEvent(()->{
+                        nativeRoadAppend(px,py,2.0f);interactiveRender();
+                    });
+                    else queueEvent(()->{
+                        nativeRoadDragHandle(px,py);interactiveRender();
+                    });
+                }
+                lastX=e.getX();lastY=e.getY();
+                return true;
+            }
+            if(action==MotionEvent.ACTION_POINTER_UP){
+                multiTouch=true;lastPinch=0.f;return true;
+            }
+            if(action==MotionEvent.ACTION_UP||action==MotionEvent.ACTION_CANCEL){
+                if(action==MotionEvent.ACTION_UP&&!multiTouch&&roadMode==1){
+                    final float px=surfaceX(e.getX()),py=surfaceY(e.getY());
+                    queueEvent(()->{
+                        nativeRoadAppend(px,py,.5f);requestRender();
+                    });
+                }else queueEvent(()->{nativeRoadEndDrag();requestRender();});
+                multiTouch=false;return true;
+            }
+            return true;
+        }
         @Override public boolean onTouchEvent(MotionEvent e) {
             if(importing)return true; // Prevent input changes during scene replacement.
+            if(roadMode!=0)return handleRoadTouch(e);
             int action=e.getActionMasked();
             if(action==MotionEvent.ACTION_DOWN) {
                 downX=lastX=e.getX();downY=lastY=e.getY();multiTouch=false;lastPinch=0;

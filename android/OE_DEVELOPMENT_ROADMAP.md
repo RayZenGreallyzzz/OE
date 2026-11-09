@@ -29,6 +29,13 @@ These features are implemented in experimental branches with successful automate
 - Terrain conformity and predictable vertex/draw-call budgets on A523.
 - Top-down PNG guide alignment and precise control-point editing validation.
 
+### R5.2a — lightweight medieval bridge and building foundation modules (experimental implementation; device QA pending)
+- Two short bridges: pre-baked stone span (8 m) and timber footbridge (8 m); modular stone base for existing 6×5 m buildings.
+- Place/rotate/scale directly from the editor; one action places a foundation aligned under the selected built-in building.
+- Constant-size shared C++17 geometry without new runtime shaders, separate per-object textures or internet access; all original editor controls and undo remain.
+- Scene v6 only when new object types are present; previous scene versions v1–v5 continue loading. Keep a .oezip backup before importing v6 into older editor builds.
+- Not water/terrain carving, automatic bridge-to-road endpoints, collision, physical stone arch construction or grouped parent-child building transforms.
+
 ### R5.3 — road navigation and collision-ready data
 - Build a separate road graph for future vehicles/NPCs, with junction and direction metadata.
 - Provide simplified collision mesh or collision shapes for road and sidewalk surfaces.

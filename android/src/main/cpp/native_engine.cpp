@@ -4,6 +4,7 @@
 #include "quality_profiles.h"
 #include "runtime/oe_runtime.h"
 #include "roads/road_network.h"
+#include "roads/road_junctions.h"
 #include "terrainpaint/paint_tiles.h"
 #include "terrainpaint/material_layers.h"
 #include "vendor/basisu/transcoder/basisu_transcoder.h"
@@ -161,6 +162,7 @@ static constexpr size_t MAX_TERRAIN_BRUSHES=64;
 // Edit-time road network, independent from portable game runtime.
 static oe::roads::Network gRoads;
 static std::uint64_t gSelectedRoad=0,gActiveRoad=0;
+static int gSelectedRoadPoint=-1;
 static bool gRoadPending=false;
 static oe::roads::Point gRoadFirstPoint{};
 static double gRoadWidth=6.0;
@@ -205,7 +207,7 @@ void restoreScene(const SceneSnapshot&s){
  gDemoRoads=s.demoRoads;gTarget=s.target;gDistance=s.cameraDistance;
  gBrushes=s.terrain;gTerrainPaint=s.paints;gTerrainRevision++;gSceneInitialized=true;
  gRoads.replaceAll(s.roads);gSelectedRoad=s.selectedRoad;
- gRoadPending=false;gActiveRoad=0;++gRoadRevision;
+ gRoadPending=false;gActiveRoad=0;gSelectedRoadPoint=-1;++gRoadRevision;
  gPaintTiles=s.precisePaint;
  gMaterialCanvas=s.materialPaint;clearMaterialGpu();gMaterialStrokeActive=false;
  for(auto& gpu:gPaintTileGpu)if(gpu.second.texture)glDeleteTextures(1,&gpu.second.texture);
@@ -1326,6 +1328,26 @@ bool rebuildRoadGpu(){
   }
   draws.push_back({first,static_cast<GLsizei>(strip.triangles.size()),road.id});
  }
+
+ // Derived, non-persistent intersection preview. At most 96 discs / 4.6k triangles.
+ // If the network exceeds R5 scan limits, roads still draw normally.
+ std::vector<oe::roads::Junction> crossings;
+ if(oe::roads::findJunctions(gRoads.all(),crossings)){
+  for(const auto& crossing:crossings){
+   oe::roads::SurfaceMesh patch;
+   if(!oe::roads::buildJunctionPreview(crossing,height,patch))continue;
+   if(vertices.size()/11>MAX_ROAD_GPU_VERTICES||
+      patch.triangles.size()>MAX_ROAD_GPU_VERTICES-vertices.size()/11)break;
+   const GLint first=static_cast<GLint>(vertices.size()/11);
+   const oe::roads::Road* parent=gRoads.find(crossing.roadA);
+   const Color color=parent?roadPreviewColor(parent->material):Color{.67f,.66f,.61f};
+   for(const auto& point:patch.triangles){
+    vertices.insert(vertices.end(),{point.x,point.y,point.z,0.f,1.f,0.f,
+         color.r,color.g,color.b,point.u,point.v});
+   }
+   draws.push_back({first,static_cast<GLsizei>(patch.triangles.size()),0});
+  }
+ }
  if(!gRoadGpu.vao){
   glGenVertexArrays(1,&gRoadGpu.vao);
   glGenBuffers(1,&gRoadGpu.buffer);
@@ -1374,10 +1396,12 @@ void drawRoadHandles(const Mat4& vp){
  if(road){
   const size_t stride=std::max<size_t>(1,(road->controlPoints.size()+63)/64);
   for(size_t i=0;i<road->controlPoints.size();i+=stride){
+   const bool active=static_cast<int>(i)==gSelectedRoadPoint;
    const auto& p=road->controlPoints[i];
    const float x=static_cast<float>(p.x),z=static_cast<float>(p.z);
    draw(vp,0,{x,terrainHeightAt(x,z)+.25f,z},
-        {marker,marker*.6f,marker},0,{.99f,.75f,.18f});
+        {marker*(active?1.7f:1.f),marker*.6f,marker*(active?1.7f:1.f)},
+        0,active?Color{.23f,.98f,.42f}:Color{.99f,.75f,.18f});
   }
  }
  if(gRoadPending){
@@ -1466,7 +1490,7 @@ void reset(bool demo){
  const bool wasMuted=gSuspendHistory;
  gSuspendHistory=true;
  gEntities.clear();gBrushes.clear();gTerrainPaint.clear();gTerrainRevision++;gNextId=1;gSelected=0;
- gRoads.clear();gSelectedRoad=0;gActiveRoad=0;gRoadPending=false;++gRoadRevision;
+ gRoads.clear();gSelectedRoad=0;gActiveRoad=0;gSelectedRoadPoint=-1;gRoadPending=false;++gRoadRevision;
  gPaintTiles.clear();gMaterialCanvas.clear();
  clearMaterialGpu();gMaterialStrokeActive=false;
  for(auto& gpu:gPaintTileGpu)if(gpu.second.texture)glDeleteTextures(1,&gpu.second.texture);

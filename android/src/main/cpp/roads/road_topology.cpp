@@ -75,6 +75,10 @@ bool snapEndpoints(std::vector<Road>& roads,double radius){
      const double t=clamp01(dot(sub(originalPoint,a),delta)/sq);
      const Point projected=add(a,mul(delta,t));
      const double separation=dist(projected,originalPoint);
+     // Canonical endpoint-to-endpoint snap: newer/higher ID yields to the
+     // older/lower ID. Otherwise both ends can swap and overlap on rebuild.
+     if(separation>kCloseToEndpoint&&(t<=.01||t>=.99)&&
+        original[roadIndex].id<original[other].id)continue;
      // A nearby parallel alley must NOT merge even if its endpoints line up.
      // Permit collinear end-to-end joining but not a sideways lane jump.
      if(separation>.20){

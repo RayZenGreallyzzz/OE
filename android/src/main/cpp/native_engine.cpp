@@ -1705,6 +1705,92 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativePaintSelecte
 }
 
 // Continuous brush composited into 64m tiles, rather than one draw per stamp.
+
+// R4.1 material-aware mask authoring JNI, all invoked on the GLES render queue.
+JNIEXPORT jintArray JNICALL Java_game_oe_editor_EditorActivity_nativeLayerCoords(
+ JNIEnv*env,jclass){
+ std::vector<jint> coords;
+ for(const auto&tile:gMaterialCanvas.tiles())
+  for(const auto&layer:tile.materials){
+   (void)layer;coords.push_back(tile.x);coords.push_back(tile.z);
+  }
+ jintArray array=env->NewIntArray(static_cast<jsize>(coords.size()));
+ if(array&&!coords.empty())
+  env->SetIntArrayRegion(array,0,static_cast<jsize>(coords.size()),coords.data());
+ return array;
+}
+JNIEXPORT jobjectArray JNICALL Java_game_oe_editor_EditorActivity_nativeLayerKeys(
+ JNIEnv*env,jclass){
+ jclass cls=env->FindClass("java/lang/String");
+ if(!cls)return nullptr;
+ jint count=0;
+ for(const auto&tile:gMaterialCanvas.tiles())
+  count+=static_cast<jint>(tile.materials.size());
+ jobjectArray array=env->NewObjectArray(count,cls,nullptr);
+ if(!array)return nullptr;
+ jint index=0;
+ for(const auto&tile:gMaterialCanvas.tiles())for(const auto&layer:tile.materials){
+  jstring key=env->NewStringUTF(layer.material.c_str());
+  if(!key)return nullptr;
+  env->SetObjectArrayElement(array,index++,key);
+  env->DeleteLocalRef(key);
+ }
+ return array;
+}
+JNIEXPORT jbyteArray JNICALL Java_game_oe_editor_EditorActivity_nativeLayerMask(
+ JNIEnv*env,jclass,jint index){
+ if(index<0)return nullptr;
+ for(const auto&tile:gMaterialCanvas.tiles())for(const auto&layer:tile.materials){
+  if(index--!=0)continue;
+  jbyteArray array=env->NewByteArray(static_cast<jsize>(layer.weights.size()));
+  if(array)env->SetByteArrayRegion(array,0,static_cast<jsize>(layer.weights.size()),
+     reinterpret_cast<const jbyte*>(layer.weights.data()));
+  return array;
+ }
+ return nullptr;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeLayerStrokeStart(
+ JNIEnv*env,jclass,jfloat px,jfloat py,jfloat radius,jfloat opacity,jstring key,jboolean erase){
+ gMaterialStrokeActive=false;
+ if(!key||!std::isfinite(radius)||radius<.5f||radius>16.f||
+    !std::isfinite(opacity)||opacity<.05f||opacity>1.f)return JNI_FALSE;
+ float x,z;
+ if(!groundPoint(px,py,x,z))return JNI_FALSE;
+ const char*raw=env->GetStringUTFChars(key,nullptr);
+ if(!raw)return JNI_FALSE;
+ const std::string material(raw);env->ReleaseStringUTFChars(key,raw);
+ if(!oe::terrainpaint::validMaterialKey(material))return JNI_FALSE;
+ if(erase!=JNI_TRUE&&!paintTexture(material))return JNI_FALSE;
+ // Preview on a copy: a failed tile/material budget cannot touch undo/redo.
+ oe::terrainpaint::MaterialCanvas candidate=gMaterialCanvas;
+ if(!candidate.stroke(x,z,x,z,radius,opacity,material,erase==JNI_TRUE,gWorldSize))
+  return JNI_FALSE;
+ recordEdit();
+ gMaterialCanvas=std::move(candidate);
+ if(erase==JNI_TRUE)clearMaterialGpu();
+ gMaterialStrokeActive=true;gMaterialEraser=erase==JNI_TRUE;
+ gLayerX=x;gLayerZ=z;gLayerRadius=radius;gLayerStrength=opacity;
+ gLayerTexture=material;
+ gPaintCursorVisible=true;gPaintCursorX=x;gPaintCursorZ=z;gPaintCursorRadius=radius;
+ return JNI_TRUE;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeLayerStrokeMove(
+ JNIEnv*,jclass,jfloat px,jfloat py){
+ if(!gMaterialStrokeActive)return JNI_FALSE;
+ float x,z;
+ if(!groundPoint(px,py,x,z))return JNI_FALSE;
+ if(!gMaterialCanvas.stroke(gLayerX,gLayerZ,x,z,gLayerRadius,gLayerStrength,
+                            gLayerTexture,gMaterialEraser,gWorldSize))return JNI_FALSE;
+ if(gMaterialEraser)clearMaterialGpu();
+ gLayerX=x;gLayerZ=z;
+ gPaintCursorVisible=true;gPaintCursorX=x;gPaintCursorZ=z;gPaintCursorRadius=gLayerRadius;
+ return JNI_TRUE;
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeLayerStrokeEnd(
+ JNIEnv*,jclass){
+ gMaterialStrokeActive=false;gPaintCursorVisible=false;
+}
+
 JNIEXPORT jintArray JNICALL Java_game_oe_editor_EditorActivity_nativePaintTileCoords(
  JNIEnv*env,jclass){
  const auto& list=gPaintTiles.tiles();
@@ -2629,10 +2715,12 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  jobjectArray modelKeys,jfloatArray terrainData,jobjectArray objectPaintKeys,
  jfloatArray painting,jobjectArray terrainPaintKeys,jlongArray roadIds,
  jobjectArray roadNames,jobjectArray roadMaterials,jdoubleArray roadWidths,
- jobjectArray roadPoints,jintArray tileCoords,jobjectArray tileData){
+ jobjectArray roadPoints,jintArray tileCoords,jobjectArray tileData,
+ jintArray layerCoords,jobjectArray layerKeys,jobjectArray layerMasks){
  if(!allowedWorldSize(size)||!kinds||!transforms||!modelKeys||!terrainData||
     !objectPaintKeys||!painting||!terrainPaintKeys||!roadIds||!roadNames||
-    !roadMaterials||!roadWidths||!roadPoints||!tileCoords||!tileData)return JNI_FALSE;
+    !roadMaterials||!roadWidths||!roadPoints||!tileCoords||!tileData||!layerCoords||!layerKeys||!layerMasks)
+    return JNI_FALSE;
  const jsize n=env->GetArrayLength(kinds);
  if(n<0||n>MAX_ENTITIES||env->GetArrayLength(transforms)!=n*8||
     env->GetArrayLength(modelKeys)!=n||env->GetArrayLength(objectPaintKeys)!=n)return JNI_FALSE;
@@ -2802,6 +2890,46 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  }
  oe::terrainpaint::Canvas nextPaintTiles;
  if(!nextPaintTiles.replaceAll(std::move(restoredTiles),size))return JNI_FALSE;
+ // Validate independent material masks, and verify every source texture is loaded.
+ const jsize layerPairs=env->GetArrayLength(layerCoords);
+ if(layerPairs<0||layerPairs%2!=0||
+    layerPairs>static_cast<jsize>(oe::terrainpaint::kMaxMaterialTiles*
+                                 oe::terrainpaint::kMaxMaterialsPerTile*2)||
+    env->GetArrayLength(layerKeys)!=layerPairs/2||
+    env->GetArrayLength(layerMasks)!=layerPairs/2)return JNI_FALSE;
+ std::vector<jint> materialLocations(static_cast<size_t>(layerPairs));
+ if(layerPairs)env->GetIntArrayRegion(layerCoords,0,layerPairs,materialLocations.data());
+ if(env->ExceptionCheck())return JNI_FALSE;
+ std::map<std::pair<int,int>,oe::terrainpaint::MaterialTile> stagedLayerTiles;
+ for(jsize i=0;i<layerPairs/2;++i){
+  jstring jkey=static_cast<jstring>(env->GetObjectArrayElement(layerKeys,i));
+  jbyteArray jmask=static_cast<jbyteArray>(env->GetObjectArrayElement(layerMasks,i));
+  if(env->ExceptionCheck()||!jkey||!jmask)return JNI_FALSE;
+  const char*text=env->GetStringUTFChars(jkey,nullptr);
+  if(!text)return JNI_FALSE;
+  const std::string name(text);
+  env->ReleaseStringUTFChars(jkey,text);
+  if(!oe::terrainpaint::validMaterialKey(name)||
+     paintTexture(name)==nullptr||
+     env->GetArrayLength(jmask)!=oe::terrainpaint::kMaterialMaskBytes)return JNI_FALSE;
+  oe::terrainpaint::MaterialMask layer;
+  layer.material=name;
+  layer.weights.resize(oe::terrainpaint::kMaterialMaskBytes);
+  env->GetByteArrayRegion(jmask,0,static_cast<jsize>(layer.weights.size()),
+     reinterpret_cast<jbyte*>(layer.weights.data()));
+  env->DeleteLocalRef(jmask);env->DeleteLocalRef(jkey);
+  if(env->ExceptionCheck())return JNI_FALSE;
+  const auto coords=std::make_pair(materialLocations[static_cast<size_t>(2*i)],
+                                   materialLocations[static_cast<size_t>(2*i+1)]);
+  auto&tile=stagedLayerTiles[coords];
+  tile.x=coords.first;tile.z=coords.second;
+  tile.materials.push_back(std::move(layer));
+ }
+ std::vector<oe::terrainpaint::MaterialTile> loadedLayers;
+ loadedLayers.reserve(stagedLayerTiles.size());
+ for(auto& entry:stagedLayerTiles)loadedLayers.push_back(std::move(entry.second));
+ oe::terrainpaint::MaterialCanvas nextLayerCanvas;
+ if(!nextLayerCanvas.replaceAll(std::move(loadedLayers),size))return JNI_FALSE;
  // Commit: no validation or allocation failures below this point.
  gEntities.swap(staged);gBrushes.swap(stagedBrushes);
  gTerrainPaint.swap(stagedPaint);gTerrainRevision++;
@@ -2809,6 +2937,8 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  for(auto& gpu:gPaintTileGpu)if(gpu.second.texture)glDeleteTextures(1,&gpu.second.texture);
  gPaintTileGpu.clear();
  gPaintTiles=std::move(nextPaintTiles);
+ clearMaterialGpu();gMaterialCanvas=std::move(nextLayerCanvas);
+ gMaterialStrokeActive=false;
  gPrecisionPaintActive=false;gPaintCursorVisible=false;
  ++gRoadRevision;
  gWorldSize=size;gDemoRoads=demo==JNI_TRUE;

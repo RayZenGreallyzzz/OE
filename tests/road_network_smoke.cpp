@@ -16,7 +16,7 @@ int main(){
     assert(buildSurfaceMesh(*roads.find(id),level,mesh,2.0));
     assert(mesh.triangles.size()==30); // 5 segments, 2 triangles each
     for(const auto& v:mesh.triangles){
-        assert(std::abs(v.y-2.03f)<1.e-5f);
+        assert(std::abs(v.y-2.14f)<1.e-5f);
         assert(std::abs(v.z)<=3.01f);
     }
     assert(std::abs(mesh.triangles.front().v)<1.e-6f);

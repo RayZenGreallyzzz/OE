@@ -205,7 +205,7 @@ std::vector<Part> moduleParts(int type){
                 .44f-.018f*(i%3),.30f-.015f*(i%3),.18f);
         }
         for(float x:{-3.80f,0.f,3.80f})for(float z:{-1.18f,1.18f}){
-            box(p,x,.39f,z,.33f,.85f,.32f,.28f,.21f,.14f);
+            box(p,x,.43f,z,.33f,.85f,.32f,.28f,.21f,.14f);
         }
         box(p,0,.91f,0,8.55f,.09f,2.85f,.31f,.22f,.15f);
     }

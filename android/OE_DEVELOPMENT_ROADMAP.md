@@ -17,7 +17,7 @@ These features are implemented in experimental branches with successful automate
 
 ## 1. FINISH THE ROADS FIRST (priority before game Runtime)
 
-### R5.1 — real connected road graph
+### R5.1 — real connected road graph (experimental code, tablet QA pending)
 - Split road centerline segments when new roads terminate or cross them; shared junction node IDs, stable editable road IDs and topology.
 - T, X, Y junctions; endpoint-to-segment snapping and validation of edge cases (parallel overlap, near crossings, sharp bends and tiny segments).
 - Bounded operations; accurate save/load and .oezip roundtrip; undo/redo of graph edits.
@@ -25,7 +25,7 @@ These features are implemented in experimental branches with successful automate
 
 ### R5.2 — seamless junction/sidewalk geometry
 - Replace approximate crossing patches with **stitched** meshes, avoiding gaps, overlaps and Z-fighting.
-- Correct widths, corner radii, per-road material transitions and UVs; optional pavement/curbs and pedestrian edge strips.
+- Correct widths, corner radii, worn cobblestones and dirt/gravel material transitions; medieval grass edges, wagon ruts and drainage ditches instead of modern asphalt, concrete curbs or sidewalks.
 - Terrain conformity and predictable vertex/draw-call budgets on A523.
 - Top-down PNG guide alignment and precise control-point editing validation.
 

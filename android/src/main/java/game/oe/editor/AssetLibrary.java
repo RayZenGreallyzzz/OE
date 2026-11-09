@@ -1,0 +1,243 @@
+package game.oe.editor;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.FileOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.security.MessageDigest;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.Enumeration;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
+
+/**
+ * Individual medieval library assets, with source images kept byte-identical.
+ * Installed packs remain compressed on disk; a selected GLB or shared-texture
+ * glTF is resolved on demand rather than unpacking 105+ GPU assets on launch.
+ *
+ * The lightweight tree archive has trees/*.gltf, trees/*.bin and shared
+ * textures/*.png|jpg. For each selected tree, we build a standard GLB whose
+ * BIN chunk contains the same geometric bytes and original image bytes.
+ * No JPEG/PNG resizing, transcoding, resampling or source ZIP rewrite.
+ */
+final class AssetLibrary {
+    static final int PICK_LIBRARY = 706;
+    static final long MAX_PACK_BYTES = 190L*1024*1024;
+    private static final long MAX_EXPANDED = 550L*1024*1024;
+    private static final int MAX_FILES = 650;
+    private static final int MAX_ASSET_ENTRIES = 250;
+    private static final int MAX_JSON_BYTES = 1024*1024;
+    private static final int MAX_SCAN_CACHE = 8;
+    static final String TREES="Деревья",HOUSES="Дома",FORTRESS="Крепость",
+                        DECOR="Декорации";
+    static final class Entry {
+        final File pack;
+        final String path,name,category;
+        Entry(File p,String path,String category){
+            this.pack=p;this.path=path;this.category=category;
+            final String file=path.substring(path.lastIndexOf('/')+1);
+            this.name=file.substring(0,file.lastIndexOf('.'));
+        }
+        String label(){return name.replace('-', ' ').replace('_',' ');}
+    }
+    private AssetLibrary(){}
+
+    static File directory(File filesRoot) throws Exception {
+        final File dir=new File(filesRoot,"medieval-libraries");
+        if(!dir.exists()&&!dir.mkdirs())throw new Exception("Не создать библиотеку объектов");
+        return dir;
+    }
+    private static boolean safeName(String name) {
+        if(name==null||name.length()==0||name.length()>180||
+           name.startsWith("/")||name.indexOf('\\')>=0||name.indexOf(':')>=0||
+           name.indexOf('\0')>=0)return false;
+        final Path normalized=Paths.get(name).normalize();
+        return !normalized.isAbsolute()&&!normalized.startsWith("..")&&
+               !name.startsWith("./");
+    }
+    private static String category(String path){
+        final String s=path.toLowerCase(java.util.Locale.ROOT);
+        if(s.startsWith("trees/")||s.contains("tree-")||s.contains("tree_")||
+           s.contains("shrub")||s.contains("bush")||s.contains("forest"))
+            return TREES;
+        if(s.contains("battlement")||s.contains("tower")||
+           s.contains("fortified")||s.contains("wall-gate")||
+           s.contains("wall-flat-gate")||s.contains("wall-fort")||
+           s.contains("gate"))return FORTRESS;
+        if(s.contains("roof")||s.contains("wall-pane")||
+           s.contains("floor")||s.contains("structure")||s.contains("house")||
+           s.contains("building")||s.contains("stairs")||s.contains("column"))
+            return HOUSES;
+        return DECOR;
+    }
+    static List<Entry> scan(File archive) throws Exception {
+        final List<Entry> result=new ArrayList<>();
+        try(ZipFile zip=new ZipFile(archive)){
+            final Enumeration<? extends ZipEntry> entries=zip.entries();
+            final Set<String> seen=new HashSet<>();
+            long uncompressed=0;
+            int fileCount=0;
+            while(entries.hasMoreElements()){
+                ZipEntry e=entries.nextElement();
+                if(e.isDirectory())continue;
+                if(++fileCount>MAX_FILES)throw new Exception("Слишком много файлов в ZIP");
+                String n=e.getName();
+                if(!safeName(n)||!seen.add(n))
+                    throw new Exception("Недопустимое или повторяющееся имя в ZIP");
+                long size=e.getSize();
+                if(size<0||size>MAX_EXPANDED||
+                   (uncompressed+=size)>MAX_EXPANDED)
+                    throw new Exception("ZIP превышает предел распаковки");
+                final String lower=n.toLowerCase(java.util.Locale.ROOT);
+                if(lower.endsWith(".glb")||lower.endsWith(".gltf")){
+                    if(result.size()>=MAX_ASSET_ENTRIES)
+                        throw new Exception("Больше 250 отдельных моделей в библиотеке");
+                    if(size<=0||size>GlbReader.MAX_BYTES)
+                        throw new Exception("Слишком большая модель: "+n);
+                    result.add(new Entry(archive,n,category(n)));
+                }
+            }
+        }
+        if(result.isEmpty())throw new Exception("В ZIP не найдено отдельных GLB / glTF");
+        result.sort(Comparator.comparing((Entry e)->e.category)
+                              .thenComparing(e->e.name));
+        return result;
+    }
+    static int install(InputStream stream,File root) throws Exception {
+        final File dir=directory(root);
+        final File temp=File.createTempFile(".import-", ".part",dir);
+        try{
+            final MessageDigest sha=MessageDigest.getInstance("SHA-256");
+            long count=0;
+            try(OutputStream out=new FileOutputStream(temp)){
+                byte[] buf=new byte[64*1024];
+                int n;
+                while((n=stream.read(buf))!=-1){
+                    count+=n;
+                    if(count>MAX_PACK_BYTES)
+                        throw new Exception("Архив больше 190 МиБ — выбери меньший набор");
+                    sha.update(buf,0,n);
+                    out.write(buf,0,n);
+                }
+            }
+            if(count==0)throw new Exception("Архив пуст");
+            final int items=scan(temp).size();
+            StringBuilder id=new StringBuilder();
+            for(byte b:sha.digest())id.append(String.format(java.util.Locale.ROOT,"%02x",b&255));
+            final File destination=new File(dir,"lib-"+id.substring(0,20)+".zip");
+            if(!destination.exists())
+                Files.move(temp.toPath(),destination.toPath(),StandardCopyOption.ATOMIC_MOVE);
+            return items;
+        }finally{Files.deleteIfExists(temp.toPath());}
+    }
+    static List<Entry> list(File root,String category) throws Exception {
+        final List<Entry> list=new ArrayList<>();
+        final File[] packs=directory(root).listFiles((d,name)->
+                 name.startsWith("lib-")&&name.endsWith(".zip"));
+        if(packs==null)return list;
+        if(packs.length>MAX_SCAN_CACHE)
+            throw new Exception("Слишком много библиотек; оставь не более 8 ZIP");
+        java.util.Arrays.sort(packs,Comparator.comparing(File::getName));
+        for(File pack:packs){
+            for(Entry entry:scan(pack))
+                if(category.equals(entry.category))list.add(entry);
+        }
+        return list;
+    }
+    private static byte[] read(ZipFile zip,ZipEntry item,int maxBytes)
+            throws Exception {
+        if(item==null||item.isDirectory()||item.getSize()<0||
+           item.getSize()>maxBytes)throw new Exception("Ресурс отсутствует или слишком большой");
+        try(InputStream input=zip.getInputStream(item);
+            ByteArrayOutputStream out=new ByteArrayOutputStream(
+                (int)Math.min(item.getSize(),65536L))){
+            byte[] buf=new byte[32*1024];
+            int n;
+            while((n=input.read(buf))!=-1){
+                if(out.size()+n>maxBytes)throw new Exception("Превышен лимит ресурса");
+                out.write(buf,0,n);
+            }
+            if(out.size()!=item.getSize())throw new Exception("ZIP повреждён");
+            return out.toByteArray();
+        }
+    }
+    private static ZipEntry linked(ZipFile zip,String from,String uri)
+            throws Exception {
+        if(uri==null||uri.isEmpty()||uri.indexOf('\\')>=0||
+           uri.contains(":")||uri.startsWith("/")||uri.indexOf('?')>=0||
+           uri.indexOf('#')>=0)throw new Exception("Небезопасная ссылка glTF");
+        final Path parent=Paths.get(from).getParent();
+        final Path resolved=(parent==null?Paths.get(uri):parent.resolve(uri)).normalize();
+        final String name=resolved.toString().replace('\\','/');
+        if(!safeName(name))throw new Exception("Путь glTF выходит за пределы ZIP");
+        return zip.getEntry(name);
+    }
+    private static void pad(ByteArrayOutputStream stream) {
+        while((stream.size()&3)!=0)stream.write(0);
+    }
+    private static byte[] externalGltf(ZipFile zip,Entry item) throws Exception {
+        final JSONObject doc=new JSONObject(new String(
+                read(zip,zip.getEntry(item.path),MAX_JSON_BYTES),
+                StandardCharsets.UTF_8));
+        if(!doc.getJSONObject("asset").optString("version","").startsWith("2."))
+            throw new Exception("Требуется glTF 2.0");
+        final JSONArray buffers=doc.getJSONArray("buffers");
+        if(buffers.length()!=1)throw new Exception("Нужен один бинарный буфер");
+        final JSONObject buffer=buffers.getJSONObject(0);
+        final String binPath=buffer.getString("uri");
+        final byte[] binary=read(zip,linked(zip,item.path,binPath),GlbReader.MAX_BYTES);
+        if(binary.length!=buffer.getInt("byteLength"))
+            throw new Exception("Размер BIN не совпадает");
+        final ByteArrayOutputStream aggregate=new ByteArrayOutputStream();
+        aggregate.write(binary);
+        buffer.remove("uri");
+        JSONArray views=doc.optJSONArray("bufferViews");
+        if(views==null){views=new JSONArray();doc.put("bufferViews",views);}
+        final JSONArray images=doc.optJSONArray("images");
+        if(images!=null)for(int i=0;i<images.length();++i){
+            final JSONObject img=images.getJSONObject(i);
+            if(!img.has("uri"))continue;
+            final String uri=img.getString("uri");
+            final String lower=uri.toLowerCase(java.util.Locale.ROOT);
+            if(!lower.endsWith(".png")&&!lower.endsWith(".jpg")&&
+               !lower.endsWith(".jpeg"))
+                throw new Exception("Поддерживаются только исходные PNG/JPEG");
+            final byte[] picture=read(zip,linked(zip,item.path,uri),
+                                      GlbReader.MAX_BYTES);
+            pad(aggregate);
+            final int offset=aggregate.size();
+            if((long)offset+picture.length>GlbReader.MAX_BYTES-4096L)
+                throw new Exception("Дерево слишком большое для GLB (24 МиБ)");
+            aggregate.write(picture);
+            final JSONObject view=new JSONObject();
+            view.put("buffer",0);view.put("byteOffset",offset);
+            view.put("byteLength",picture.length);
+            final int viewId=views.length();views.put(view);
+            img.remove("uri");img.put("bufferView",viewId);
+            img.put("mimeType",lower.endsWith(".png")?"image/png":"image/jpeg");
+        }
+        buffer.put("byteLength",aggregate.size());
+        // Geometry and image bytes are kept byte-identical. Only the glTF
+        // container changes to make one independently importable GLB.
+        return GltfReader.packGlb(doc,aggregate.toByteArray());
+    }
+    static byte[] load(Entry entry) throws Exception {
+        try(ZipFile zip=new ZipFile(entry.pack)){
+            if(entry.path.toLowerCase(java.util.Locale.ROOT).endsWith(".glb"))
+                return read(zip,zip.getEntry(entry.path),GlbReader.MAX_BYTES);
+            return externalGltf(zip,entry);
+        }
+    }
+}

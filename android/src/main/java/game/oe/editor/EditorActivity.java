@@ -63,6 +63,7 @@ public class EditorActivity extends Activity {
     private static native boolean nativeJumpTo(float x, float z);
     private static native int nativePick(float x, float y);
     private static native int nativeAdd(int kind);
+    private static native int nativeFoundationUnderSelected();
     private static native int nativePlaceAtScreen(int kind, float x, float y);
     private static native int nativePlaceImportedAtScreen(String key, float x, float y);
     private static native int nativeAddPlaced(int kind, float x, float z, float yaw, float scale);
@@ -278,7 +279,7 @@ public class EditorActivity extends Activity {
         top.setPadding(dp(5),dp(2),dp(5),dp(2));
         top.setBackgroundColor(Color.argb(220,14,21,32));
         TextView title=new TextView(this);
-        title.setText("OE MEDIEVAL JUNCTIONS R5.2 TEST");
+        title.setText("OE BRIDGES & FOUNDATIONS R5.3 TEST");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
         title.setTextSize(12);
@@ -435,6 +436,8 @@ public class EditorActivity extends Activity {
             addPaletteOption("+ Таверна",()->enterPlaceMode(0,null));
             addPaletteOption("+ Кузница",()->enterPlaceMode(1,null));
             addPaletteOption("+ Аукционный дом",()->enterPlaceMode(2,null));
+            addPaletteOption("🧱 Каменный фундамент · поставить",()->enterPlaceMode(19,null));
+            addPaletteOption("⬇ Фундамент под выбранное здание",this::foundationUnderSelected);
         }else if("Детали".equals(category)){
             addPaletteOption("▧ Стена",()->enterPlaceMode(10,null));
             addPaletteOption("▤ Пол",()->enterPlaceMode(11,null));
@@ -443,6 +446,7 @@ public class EditorActivity extends Activity {
             addPaletteOption("▣ Окно",()->enterPlaceMode(14,null));
             addPaletteOption("▥ Колонна",()->enterPlaceMode(15,null));
             addPaletteOption("↗ Лестница",()->enterPlaceMode(16,null));
+            addPaletteOption("🧱 Фундамент 7×6 м",()->enterPlaceMode(19,null));
         }else if("Декор".equals(category)){
             addPaletteOption("+ Фонарь",()->enterPlaceMode(3,null));
             addPaletteOption("+ Фонтан",()->enterPlaceMode(4,null));
@@ -463,6 +467,8 @@ public class EditorActivity extends Activity {
             addPaletteOption("⬇ Вид сверху на карту",this::showMapTopView);
             addPaletteOption("🎥 Вернуть вид 3D",this::showMapPerspective);
             addPaletteOption("🗑 Убрать PNG-подложку",this::askRemoveMapReference);
+            addPaletteOption("🪨 Каменный мост · 8 м",()->enterPlaceMode(17,null));
+            addPaletteOption("🪵 Деревянный мост · 8 м",()->enterPlaceMode(18,null));
             addPaletteOption("🛣 Новая дорога · точки",this::beginNewRoad);
             addPaletteOption("✔ Завершить дорогу",this::finishRoad);
             addPaletteOption("📋 Выбрать дорогу",this::chooseExistingRoad);
@@ -529,6 +535,14 @@ public class EditorActivity extends Activity {
         statusText.setText(mode==0?"3D-оси: тяни X (красная), Y (зелёная), Z (синяя)":
             mode==1?"3D-ось Y: тяни зелёный маркер для поворота вокруг вертикали":
                      "3D-оси: тяни цветной маркер для изменения масштаба по выбранной оси");
+    }
+    private void foundationUnderSelected(){
+        if(importing){message("Дождись окончания загрузки проекта");return;}
+        edit(()->{
+            final int id=nativeFoundationUnderSelected();
+            if(id>0)message("Каменный фундамент установлен под зданием · ↶ отменить");
+            else message("Выдели таверну, кузницу или аукционный дом, затем повтори");
+        });
     }
     private void enterPlaceMode(int kind, String asset) {
         if(importing) { message("Сначала дождись завершения импорта"); return; }
@@ -954,6 +968,13 @@ public class EditorActivity extends Activity {
             if(tileLocations.size()>32)throw new Exception("Превышено число участков");
             json.put("paintLayers",serialized);
             json.put("version",5);
+        }
+        // New object kinds 17–19 require version 6. Older projects with only
+        // original kinds keep their previous version/format.
+        JSONArray objects=json.getJSONArray("items");
+        for(int i=0;i<objects.length();i++){
+            int kind=objects.getJSONObject(i).getInt("type");
+            if(kind>=17&&kind<=19){json.put("version",6);break;}
         }
         String result=json.toString();
         if(result.getBytes(StandardCharsets.UTF_8).length>ProjectArchive.MAX_SCENE_BYTES)
@@ -1818,8 +1839,8 @@ public class EditorActivity extends Activity {
             }
             JSONObject document=new JSONObject(new String(jsonBytes.toByteArray(),StandardCharsets.UTF_8));
             final int sceneVersion=document.optInt("version",-1);
-            if(sceneVersion<1||sceneVersion>5)
-                throw new Exception("Неверная версия сцены (нужна 1–5)");
+            if(sceneVersion<1||sceneVersion>6)
+                throw new Exception("Неверная версия сцены (нужна 1–6)");
             final boolean demoRoads=document.optBoolean("demoRoads",false);
             final int worldSize=document.optInt("worldSize",1024);
             if(worldSize!=1024&&worldSize!=2048&&worldSize!=4096&&worldSize!=8192&&worldSize!=16384)
@@ -1971,7 +1992,8 @@ public class EditorActivity extends Activity {
                 double x=object.getDouble("x"),z=object.getDouble("z");
                 double yaw=object.getDouble("yaw"),size=object.getDouble("size"),
                         y=object.optDouble("y",0.0);
-                if(e.type<0||e.type>16||!Double.isFinite(x)||!Double.isFinite(z)||
+                if(e.type<0||e.type>19||(e.type>=17&&sceneVersion<6)||
+                   !Double.isFinite(x)||!Double.isFinite(z)||
                     !Double.isFinite(yaw)||!Double.isFinite(size)||!Double.isFinite(y)||
                     Math.abs(z)>worldSize/2.0||Math.abs(x)>worldSize/2.0||
                     Math.abs(yaw)>36000||size<.2||size>8||y<-24||y>160)

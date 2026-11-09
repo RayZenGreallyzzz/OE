@@ -67,3 +67,7 @@ jobs:
         run: |
           g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/road_pedestrian_geometry_smoke.cpp -o /tmp/oe-pedestrian-test
           /tmp/oe-pedestrian-test
+      - name: Validate medieval surfaces and deterministic low-memory paving budgets
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/road_materials_smoke.cpp -o /tmp/oe-medieval-materials-test
+          /tmp/oe-medieval-materials-test

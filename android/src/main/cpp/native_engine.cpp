@@ -2240,7 +2240,8 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeRoadTap(
  JNIEnv*,jclass,jfloat px,jfloat py){
  float x,z;
  if(!groundPoint(px,py,x,z))return 0;
- const oe::roads::Point point{static_cast<double>(x),static_cast<double>(z)};
+ oe::roads::Point point{static_cast<double>(x),static_cast<double>(z)};
+ point=oe::roads::snapEndpoint(gRoads.all(),point,2.0,gActiveRoad);
  if(!gActiveRoad){
   if(!gRoadPending){
    if(gRoads.all().size()>=oe::roads::kMaxRoads||
@@ -2294,8 +2295,82 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadSelect(
  const auto& roads=gRoads.all();
  if(index<0||static_cast<size_t>(index)>=roads.size())return JNI_FALSE;
  gSelectedRoad=roads[static_cast<size_t>(index)].id;
- gActiveRoad=0;gRoadPending=false;return JNI_TRUE;
+ gActiveRoad=0;gRoadPending=false;gSelectedRoadPoint=-1;return JNI_TRUE;
 }
+
+// Editor R5: selecting, moving or smoothing an authored control point does
+// not change the road ID or the .oezip scene data schema.
+JNIEXPORT jdoubleArray JNICALL Java_game_oe_editor_EditorActivity_nativeRoadPointCoords(
+ JNIEnv*env,jclass){
+ const oe::roads::Road* road=gRoads.find(gSelectedRoad);
+ const std::size_t count=road?road->controlPoints.size():0;
+ jdoubleArray result=env->NewDoubleArray(static_cast<jsize>(count*2));
+ if(!result)return nullptr;
+ std::vector<jdouble> coords;
+ coords.reserve(count*2);
+ if(road)for(const auto&point:road->controlPoints){
+  coords.push_back(point.x);coords.push_back(point.z);
+ }
+ if(!coords.empty())
+  env->SetDoubleArrayRegion(result,0,static_cast<jsize>(coords.size()),coords.data());
+ return result;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadPointSelect(
+ JNIEnv*,jclass,jint index){
+ const auto* road=gRoads.find(gSelectedRoad);
+ if(!road||index<0||static_cast<size_t>(index)>=road->controlPoints.size())
+  return JNI_FALSE;
+ gSelectedRoadPoint=index;
+ gActiveRoad=0;gRoadPending=false;
+ return JNI_TRUE;
+}
+bool updateSelectedRoadPoint(double x,double z){
+ const oe::roads::Road* road=gRoads.find(gSelectedRoad);
+ if(!road||gSelectedRoadPoint<0||
+    static_cast<size_t>(gSelectedRoadPoint)>=road->controlPoints.size()||
+    !std::isfinite(x)||!std::isfinite(z))return false;
+ oe::roads::Road modified=*road;
+ modified.controlPoints[static_cast<size_t>(gSelectedRoadPoint)]={x,z};
+ auto candidate=gRoads.all();
+ for(auto&roadCopy:candidate)if(roadCopy.id==modified.id){roadCopy=modified;break;}
+ if(!roadBudget(candidate,gWorldSize))return false;
+ recordEdit();
+ if(!gRoads.update(modified))return false;
+ ++gRoadRevision;return true;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadPointMove(
+ JNIEnv*,jclass,jdouble x,jdouble z){
+ return updateSelectedRoadPoint(x,z)?JNI_TRUE:JNI_FALSE;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadPointTapMove(
+ JNIEnv*,jclass,jfloat px,jfloat py){
+ float x,z;
+ if(!groundPoint(px,py,x,z))return JNI_FALSE;
+ const auto snap=oe::roads::snapEndpoint(
+    gRoads.all(),{static_cast<double>(x),static_cast<double>(z)},2.0,gSelectedRoad);
+ return updateSelectedRoadPoint(snap.x,snap.z)?JNI_TRUE:JNI_FALSE;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadSmooth(
+ JNIEnv*,jclass,jdouble metres){
+ const oe::roads::Road* current=gRoads.find(gSelectedRoad);
+ if(!current)return JNI_FALSE;
+ oe::roads::Road smooth;
+ if(!oe::roads::roundCorners(*current,metres,smooth))return JNI_FALSE;
+ auto candidate=gRoads.all();
+ for(auto& road:candidate)if(road.id==smooth.id){road=smooth;break;}
+ if(!roadBudget(candidate,gWorldSize))return JNI_FALSE;
+ recordEdit();
+ if(!gRoads.update(smooth))return JNI_FALSE;
+ gSelectedRoadPoint=-1;gActiveRoad=0;++gRoadRevision;
+ return JNI_TRUE;
+}
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeRoadIntersectionCount(
+ JNIEnv*,jclass){
+ std::vector<oe::roads::Junction> intersections;
+ return oe::roads::findJunctions(gRoads.all(),intersections)?
+        static_cast<jint>(intersections.size()): -1;
+}
+
 JNIEXPORT jdouble JNICALL Java_game_oe_editor_EditorActivity_nativeRoadSelectedWidth(
  JNIEnv*,jclass){
  const auto* road=gRoads.find(gSelectedRoad);

@@ -694,6 +694,48 @@ public class EditorActivity extends Activity {
             return out;
         }finally{compressor.end();}
     }
+
+    private static final int MATERIAL_WEIGHT_BYTES=128*128;
+    private static String compressedMaterialMask(byte[] bytes) throws Exception{
+        if(bytes==null||bytes.length!=MATERIAL_WEIGHT_BYTES)
+            throw new Exception("Повреждённая маска материала");
+        java.util.zip.Deflater stream=new java.util.zip.Deflater(3);
+        try{
+            stream.setInput(bytes);stream.finish();
+            ByteArrayOutputStream result=new ByteArrayOutputStream(1024);
+            byte[] buffer=new byte[8192];
+            while(!stream.finished()){
+                int n=stream.deflate(buffer);
+                if(n<=0||result.size()+n>20000)
+                    throw new Exception("Слишком большая маска текстуры");
+                result.write(buffer,0,n);
+            }
+            return android.util.Base64.encodeToString(result.toByteArray(),
+                android.util.Base64.NO_WRAP);
+        }finally{stream.end();}
+    }
+    private static byte[] restoredMaterialMask(String text) throws Exception{
+        if(text==null||text.length()<4||text.length()>28000||
+           !text.matches("[A-Za-z0-9+/=]+"))
+            throw new Exception("Неверная маска материала в сцене");
+        byte[] compressed=android.util.Base64.decode(text,android.util.Base64.NO_WRAP);
+        if(compressed.length<=0||compressed.length>20000)
+            throw new Exception("Маска материала превышает лимит");
+        java.util.zip.Inflater stream=new java.util.zip.Inflater();
+        try{
+            stream.setInput(compressed);
+            byte[] restored=new byte[MATERIAL_WEIGHT_BYTES];
+            int offset=0;
+            while(!stream.finished()&&offset<restored.length){
+                int n=stream.inflate(restored,offset,restored.length-offset);
+                if(n<=0)throw new Exception("Повреждены данные маски");
+                offset+=n;
+            }
+            if(offset!=restored.length||!stream.finished()||stream.getRemaining()!=0)
+                throw new Exception("Размер маски материала не совпадает");
+            return restored;
+        }finally{stream.end();}
+    }
     private String snapshotWithGuide() throws Exception{
         final JSONObject json=new JSONObject(nativeSceneSnapshot());
         final MapGuide guide=mapGuide;
@@ -717,6 +759,29 @@ public class EditorActivity extends Activity {
             }
             json.put("paintTiles",saved);
             json.put("version",4);
+        }
+        int[] layerLocations=nativeLayerCoords();
+        String[] layerMaterials=nativeLayerKeys();
+        if(layerLocations==null||layerMaterials==null||
+           layerLocations.length%2!=0||layerLocations.length>256||
+           layerLocations.length/2!=layerMaterials.length)
+            throw new Exception("Превышены границы R4.1");
+        if(layerMaterials.length!=0){
+            JSONArray serialized=new JSONArray();
+            HashSet<String> tileLocations=new HashSet<>();
+            for(int i=0;i<layerMaterials.length;i++){
+                if(!validTexture(layerMaterials[i]))
+                    throw new Exception("Неизвестный материал слоя");
+                tileLocations.add(layerLocations[2*i]+":"+layerLocations[2*i+1]);
+                JSONArray layer=new JSONArray();
+                layer.put(layerLocations[2*i]);layer.put(layerLocations[2*i+1]);
+                layer.put(layerMaterials[i]);
+                layer.put(compressedMaterialMask(nativeLayerMask(i)));
+                serialized.put(layer);
+            }
+            if(tileLocations.size()>32)throw new Exception("Превышено число участков");
+            json.put("paintLayers",serialized);
+            json.put("version",5);
         }
         String result=json.toString();
         if(result.getBytes(StandardCharsets.UTF_8).length>ProjectArchive.MAX_SCENE_BYTES)
@@ -1581,8 +1646,8 @@ public class EditorActivity extends Activity {
             }
             JSONObject document=new JSONObject(new String(jsonBytes.toByteArray(),StandardCharsets.UTF_8));
             final int sceneVersion=document.optInt("version",-1);
-            if(sceneVersion<1||sceneVersion>4)
-                throw new Exception("Неверная версия сцены (нужна 1–4)");
+            if(sceneVersion<1||sceneVersion>5)
+                throw new Exception("Неверная версия сцены (нужна 1–5)");
             final boolean demoRoads=document.optBoolean("demoRoads",false);
             final int worldSize=document.optInt("worldSize",1024);
             if(worldSize!=1024&&worldSize!=2048&&worldSize!=4096&&worldSize!=8192&&worldSize!=16384)
@@ -1646,6 +1711,40 @@ public class EditorActivity extends Activity {
                 preciseTileCoords[2*i]=x;preciseTileCoords[2*i+1]=z;
                 preciseTileBytes[i]=restoredTile(tile.getString(2));
             }
+
+            JSONArray savedLayers=document.optJSONArray("paintLayers");
+            if((sceneVersion==5&&savedLayers==null)||
+               (sceneVersion<5&&document.has("paintLayers"))||
+               (document.has("paintLayers")&&savedLayers==null))
+                throw new Exception("Неверная версия независимых слоёв");
+            final int materialCount=savedLayers==null?0:savedLayers.length();
+            if(materialCount>128)throw new Exception("Слишком много слоёв материала");
+            int[] materialCoords=new int[materialCount*2];
+            String[] materialKeys=new String[materialCount];
+            byte[][] materialWeights=new byte[materialCount][];
+            HashSet<String> uniqueMaterialTile=new HashSet<>();
+            HashSet<String> touchedTileKeys=new HashSet<>();
+            HashSet<String> requiredMaterials=new HashSet<>();
+            java.util.Map<String,Integer> materialCounts=new java.util.HashMap<>();
+            for(int i=0;i<materialCount;i++){
+                JSONArray layer=savedLayers.getJSONArray(i);
+                if(layer.length()!=4)throw new Exception("Неверная запись R4.1");
+                int tx=layer.getInt(0),tz=layer.getInt(1);
+                String key=layer.getString(2);
+                String pair=tx+":"+tz;
+                if(!validTexture(key)||!uniqueMaterialTile.add(pair+":"+key)||
+                   tx*64>=worldSize/2||tx*64+64<=-worldSize/2||
+                   tz*64>=worldSize/2||tz*64+64<=-worldSize/2)
+                    throw new Exception("Повтор или неверный материал R4.1");
+                int count=materialCounts.containsKey(pair)?materialCounts.get(pair)+1:1;
+                if(count>4)throw new Exception("Не больше четырёх материалов на участок");
+                materialCounts.put(pair,count);touchedTileKeys.add(pair);
+                materialCoords[2*i]=tx;materialCoords[2*i+1]=tz;
+                materialKeys[i]=key;
+                materialWeights[i]=restoredMaterialMask(layer.getString(3));
+                requiredMaterials.add(key);
+            }
+            if(touchedTileKeys.size()>32)throw new Exception("Превышен лимит участков R4.1");
             JSONArray arr=document.getJSONArray("items");
             if(arr.length()>300)throw new Exception("Слишком много объектов");
             SavedEntity[] items=new SavedEntity[arr.length()];
@@ -1672,7 +1771,7 @@ public class EditorActivity extends Activity {
             }
             String[] modelKeys=new String[arr.length()];
             String[] objectPaintKeys=new String[arr.length()];
-            HashSet<String> referencedPaint=new HashSet<>();
+            HashSet<String> referencedPaint=new HashSet<>(requiredMaterials);
             JSONArray paintJson=document.optJSONArray("terrainPaint");
             int paintCount=paintJson==null?0:paintJson.length();
             if(paintCount>48)throw new Exception("Максимум 48 мазков по земле");
@@ -1927,7 +2026,8 @@ public class EditorActivity extends Activity {
                     if(!nativeReplaceScene(worldSize,demoRoads,kinds,transforms,modelKeys,
                             terrainBrushes,objectPaintKeys,paintBrushes,paintBrushKeys,
                             roadIds,roadNames,roadMaterials,roadWidths,roadPaths,
-                            preciseTileCoords,preciseTileBytes))
+                            preciseTileCoords,preciseTileBytes,
+                            materialCoords,materialKeys,materialWeights))
                         throw new Exception("Сцена не прошла полную проверку в движке");
                     if(parsedGuide!=null){
                         if(!nativeMapCommit(parsedGuide.centerX,parsedGuide.centerZ,

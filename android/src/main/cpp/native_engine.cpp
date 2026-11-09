@@ -1425,13 +1425,14 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeRoadMode(
  gRoadDragId=0;gRoadDragPoint=-1;gRoadDragChanged=false;
 }
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeRoadBegin(
- JNIEnv*,jclass,jfloat width,jboolean markings){
+ JNIEnv*,jclass,jfloat width,jboolean markings,jint material){
  if(gRoads.size()>=oe::roads::kMaxRoads||
+    !oe::roads::validSurface(material)||
     !std::isfinite(width)||width<oe::roads::kMinWidth||
     width>oe::roads::kMaxWidth||gNextRoadId>=2147483647)return 0;
  recordEdit();
  const int id=gNextRoadId++;
- gRoads.push_back({id,width,markings==JNI_TRUE,{}});
+ gRoads.push_back({id,width,markings==JNI_TRUE,{},material});
  gSelectedRoad=id;gRoadEditMode=1;gRoadRevision++;
  return id;
 }
@@ -1535,6 +1536,21 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadSetMarki
  if(road->markings==value)return JNI_TRUE;
  recordEdit();road->markings=value;++gRoadRevision;return JNI_TRUE;
 }
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadSetMaterial(
+ JNIEnv*,jclass,jint material){
+ auto*road=selectedRoad();
+ if(!road||!oe::roads::validSurface(material))return JNI_FALSE;
+ if(road->material==material)return JNI_TRUE;
+ recordEdit();
+ road->material=material;
+ if(material!=oe::roads::kAsphalt)road->markings=false;
+ ++gRoadRevision;return JNI_TRUE;
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeRoadMedievalPreset(
+ JNIEnv*,jclass){
+ if(!gRoadSidewalks&&!gRoadCrosswalks)return;
+ recordEdit();gRoadSidewalks=false;gRoadCrosswalks=false;++gRoadRevision;
+}
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeRoadTogglePedestrian(
  JNIEnv*,jclass,jint feature){
  bool*value=feature==0?&gRoadSidewalks:feature==1?&gRoadCrosswalks:nullptr;
@@ -1577,7 +1593,8 @@ JNIEXPORT jobjectArray JNICALL Java_game_oe_editor_EditorActivity_nativeRoadLabe
   const auto&road=gRoads[static_cast<std::size_t>(i)];
   std::ostringstream label;
   label<<"Дорога #"<<road.id<<" · "<<road.points.size()<<" узлов · "
-       <<road.width<<" м"<<(road.markings?" · разметка":"");
+       <<road.width<<" м · "<<oe::roads::surfaceName(road.material)
+       <<(road.markings?" · разметка":"");
   jstring item=env->NewStringUTF(label.str().c_str());
   env->SetObjectArrayElement(result,i,item);env->DeleteLocalRef(item);
  }
@@ -1604,7 +1621,8 @@ JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeRoadInfo(
  std::ostringstream report;
  report<<"Дорога #"<<road->id<<"\nТочек: "<<road->points.size()
        <<" / "<<oe::roads::kMaxPoints<<"\nШирина: "<<road->width
-       <<" м\nРазметка: "<<(road->markings?"есть":"нет");
+       <<" м\nПокрытие: "<<oe::roads::surfaceName(road->material)
+       <<"\nРазметка: "<<(road->markings?"есть":"нет");
  return env->NewStringUTF(report.str().c_str());
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeInit(JNIEnv*,jclass){
@@ -1975,7 +1993,7 @@ JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSceneSnapshot
    if(i)out<<",";
    out<<"["<<road.points[i].x<<","<<road.points[i].z<<"]";
   }
-  out<<"]]";
+  out<<"],"<<road.material<<"]";
  }
  out<<"]}";return env->NewStringUTF(out.str().c_str());
 }
@@ -2150,11 +2168,12 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  jobjectArray modelKeys,jfloatArray terrainData,jobjectArray objectPaintKeys,
  jfloatArray painting,jobjectArray terrainPaintKeys,
  jintArray roadIds,jfloatArray roadWidths,jbooleanArray roadMarkings,
- jintArray roadCounts,jfloatArray roadCoordinates,
+ jintArray roadCounts,jintArray roadMaterials,jfloatArray roadCoordinates,
  jboolean roadSidewalks,jboolean roadCrosswalks){
  if(!allowedWorldSize(size)||!kinds||!transforms||!modelKeys||!terrainData||
     !objectPaintKeys||!painting||!terrainPaintKeys||
-    !roadIds||!roadWidths||!roadMarkings||!roadCounts||!roadCoordinates)
+    !roadIds||!roadWidths||!roadMarkings||!roadCounts||!roadMaterials||
+    !roadCoordinates)
     return JNI_FALSE;
  const jsize n=env->GetArrayLength(kinds);
  if(n<0||n>MAX_ENTITIES||env->GetArrayLength(transforms)!=n*8||
@@ -2246,18 +2265,20 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  if(rn<0||rn>static_cast<jsize>(oe::roads::kMaxRoads)||
     env->GetArrayLength(roadWidths)!=rn||
     env->GetArrayLength(roadMarkings)!=rn||
-    env->GetArrayLength(roadCounts)!=rn)return JNI_FALSE;
+    env->GetArrayLength(roadCounts)!=rn||
+    env->GetArrayLength(roadMaterials)!=rn)return JNI_FALSE;
  const jsize coordinateCount=env->GetArrayLength(roadCoordinates);
  if(coordinateCount<0||
     coordinateCount>static_cast<jsize>(oe::roads::kMaxRoads*oe::roads::kMaxPoints*2)||
     coordinateCount%2)return JNI_FALSE;
- std::array<jint,oe::roads::kMaxRoads> idsRaw{},countsRaw{};
+ std::array<jint,oe::roads::kMaxRoads> idsRaw{},countsRaw{},materialsRaw{};
  std::array<jfloat,oe::roads::kMaxRoads> widthsRaw{};
  std::array<jboolean,oe::roads::kMaxRoads> markingsRaw{};
  std::array<jfloat,oe::roads::kMaxRoads*oe::roads::kMaxPoints*2> pointsRaw{};
  if(rn){
   env->GetIntArrayRegion(roadIds,0,rn,idsRaw.data());
   env->GetIntArrayRegion(roadCounts,0,rn,countsRaw.data());
+  env->GetIntArrayRegion(roadMaterials,0,rn,materialsRaw.data());
   env->GetFloatArrayRegion(roadWidths,0,rn,widthsRaw.data());
   env->GetBooleanArrayRegion(roadMarkings,0,rn,markingsRaw.data());
  }
@@ -2273,7 +2294,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
      offset+static_cast<std::size_t>(count)*2>static_cast<std::size_t>(coordinateCount))
      return JNI_FALSE;
   for(const auto&previous:stagedRoads)if(previous.id==id)return JNI_FALSE;
-  oe::roads::Road road{id,widthsRaw[i],markingsRaw[i]==JNI_TRUE,{}};
+  oe::roads::Road road{id,widthsRaw[i],markingsRaw[i]==JNI_TRUE,{},materialsRaw[i]};
   road.points.reserve(static_cast<std::size_t>(count));
   for(int j=0;j<count;++j){
    road.points.push_back({pointsRaw[offset],pointsRaw[offset+1]});

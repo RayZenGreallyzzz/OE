@@ -52,11 +52,6 @@ bool vertex(Point p,double u,double v,const TerrainHeight& height,Vertex& out){
       static_cast<float>(p.z),static_cast<float>(u),static_cast<float>(v)};
  return true;
 }
-bool section(Point middle,Point side,double width,double v,
-             const TerrainHeight& height,Vertex& left,Vertex& right){
- return vertex(add(middle,mul(side,width)),0.,v,height,left)&&
-        vertex(sub(middle,mul(side,width)),2.*width*kMetresToUv,v,height,right);
-}
 bool makeJunctions(const RoadTopology& top,JunctionLookup& lookup){
  std::map<std::uint64_t,Point> positions;
  for(const auto&node:top.nodes)positions.emplace(node.id,node.position);

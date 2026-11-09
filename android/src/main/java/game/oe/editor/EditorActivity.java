@@ -93,7 +93,8 @@ public class EditorActivity extends Activity {
             int[] kinds, float[] transforms, String[] modelKeys, float[] terrain,
             String[] objectPaintKeys, float[] painting, String[] terrainPaintKeys,
             long[] roadIds, String[] roadNames, String[] roadMaterials,
-            double[] roadWidths, double[][] roadPoints,int[] tileCoords,byte[][] tileData);
+            double[] roadWidths, double[][] roadPoints,int[] tileCoords,byte[][] tileData,
+            int[] layerCoords,String[] layerKeys,byte[][] layerMasks);
     private static native boolean nativeRegisterPaintTexture(String key, byte[] rgba,int width,int height);
     private static native boolean nativePaintSelected(String key);
     private static native int nativePaintTerrainAtScreen(float x,float y,float radius,String key);
@@ -126,6 +127,13 @@ public class EditorActivity extends Activity {
             String texture,boolean erase);
     private static native boolean nativePaintStrokeMove(float x,float y);
     private static native void nativePaintStrokeEnd();
+    private static native int[] nativeLayerCoords();
+    private static native String[] nativeLayerKeys();
+    private static native byte[] nativeLayerMask(int index);
+    private static native boolean nativeLayerStrokeStart(float x,float y,float radius,
+            float opacity,String material,boolean erase);
+    private static native boolean nativeLayerStrokeMove(float x,float y);
+    private static native void nativeLayerStrokeEnd();
     private static native double[] nativeMapTarget();
     private static native boolean nativeMapStage(byte[] rgba,int width,int height);
     private static native boolean nativeMapCommit(double x,double z,double width,float opacity,boolean visible);
@@ -147,6 +155,7 @@ public class EditorActivity extends Activity {
     private volatile String activePaintKey="";
     private volatile boolean paintTerrainMode=false;
     private volatile boolean precisionPaintMode=false;
+    private volatile boolean materialPaintMode=false;
     private volatile boolean precisionPaintErase=false;
     private volatile float precisionPaintRadius=2f,precisionPaintOpacity=.75f;
     private volatile boolean roadMode=false;
@@ -259,7 +268,7 @@ public class EditorActivity extends Activity {
         top.setPadding(dp(5),dp(2),dp(5),dp(2));
         top.setBackgroundColor(Color.argb(220,14,21,32));
         TextView title=new TextView(this);
-        title.setText("OE TERRAIN PAINT R4 / PRECISION TEST");
+        title.setText("OE TERRAIN LAYERS R4.1 TEST");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
         title.setTextSize(12);
@@ -464,9 +473,11 @@ public class EditorActivity extends Activity {
             addPaletteOption("🎨 Мои текстуры",this::choosePaintTexture);
             addPaletteOption("🧱 Нанести на выбранную деталь",this::applyPaintToSelected);
             addPaletteOption("🧽 Очистить текстуру детали",()->edit(()->nativePaintSelected("")));
-            addPaletteOption("🖌 Точная кисть R4 · рисовать",()->activatePrecisionPaint(false));
-            addPaletteOption("🧽 Точная кисть R4 · стереть",()->activatePrecisionPaint(true));
-            addPaletteOption("📏 Размер и прозрачность R4",this::choosePrecisionPaint);
+            addPaletteOption("🧩 Слои R4.1 · рисовать",()->activateMaterialPaint(false));
+            addPaletteOption("🧽 Слои R4.1 · стереть материал",()->activateMaterialPaint(true));
+            addPaletteOption("🖌 Старый композит R4 · рисовать",()->activatePrecisionPaint(false));
+            addPaletteOption("🧽 Старый композит R4 · стереть",()->activatePrecisionPaint(true));
+            addPaletteOption("📏 Радиус и сила кисти",this::choosePrecisionPaint);
             addPaletteOption("✕ Завершить точную кисть",this::cancelPlace);
             addPaletteOption("○ Старые пятна · совместимость",this::activateTerrainPainting);
             addPaletteOption("📏 Радиус кисти земли",this::choosePaintRadius);
@@ -505,8 +516,9 @@ public class EditorActivity extends Activity {
     }
     private void enterPlaceMode(int kind, String asset) {
         if(importing) { message("Сначала дождись завершения импорта"); return; }
-        terrainMode=0;paintTerrainMode=false;roadMode=false;precisionPaintMode=false;
-        surface.queueEvent(EditorActivity::nativePaintStrokeEnd);
+        terrainMode=0;paintTerrainMode=false;roadMode=false;precisionPaintMode=false;materialPaintMode=false;
+        materialPaintMode=false;
+         surface.queueEvent(()->{nativePaintStrokeEnd();nativeLayerStrokeEnd();});
         surface.queueEvent(EditorActivity::nativeRoadFinish);
         placingKind = kind;
         placingGlb = asset;
@@ -515,7 +527,7 @@ public class EditorActivity extends Activity {
     }
     private void cancelPlace() {
         paintTerrainMode=false;roadMode=false;precisionPaintMode=false;
-        surface.queueEvent(()->{nativeRoadFinish();nativePaintStrokeEnd();});
+        surface.queueEvent(()->{nativeRoadFinish();nativePaintStrokeEnd();nativeLayerStrokeEnd();});
         terrainMode=0;
         placingKind = -1;
         placingGlb = null;
@@ -525,7 +537,7 @@ public class EditorActivity extends Activity {
     private void enterTerrainMode(int direction){
         if(importing){message("Дождись завершения операции");return;}
         placingKind=-1;placingGlb=null;paintTerrainMode=false;roadMode=false;
-        precisionPaintMode=false;
+        precisionPaintMode=false;materialPaintMode=false;
         surface.queueEvent(()->{nativeRoadFinish();nativePaintStrokeEnd();});
         terrainMode=direction;
         statusText.setText(direction>0?
@@ -555,7 +567,7 @@ public class EditorActivity extends Activity {
 
     private void beginNewRoad(){
         if(importing){message("Дождись завершения импорта");return;}
-        placingKind=-1;placingGlb=null;terrainMode=0;paintTerrainMode=false;precisionPaintMode=false;roadMode=true;
+        placingKind=-1;placingGlb=null;terrainMode=0;paintTerrainMode=false;precisionPaintMode=false;materialPaintMode=false;roadMode=true;
         surface.queueEvent(()->{nativeRoadBegin();surface.requestRender();});
         statusText.setText("ДОРОГА: коснись земли для 1-й точки, затем для 2-й. "
             +"Следующие касания продолжают дорогу. Два пальца — камера.");
@@ -1300,7 +1312,7 @@ public class EditorActivity extends Activity {
         if(activePaintKey.isEmpty()){
             message("Сначала загрузи и выбери PNG/JPG");return;
         }
-        terrainMode=0;placingKind=-1;placingGlb=null;roadMode=false;precisionPaintMode=false;
+        terrainMode=0;placingKind=-1;placingGlb=null;roadMode=false;precisionPaintMode=false;materialPaintMode=false;
         surface.queueEvent(()->{nativeRoadFinish();nativePaintStrokeEnd();});
         paintTerrainMode=true;
         statusText.setText("КИСТЬ ТЕКСТУР: касайся земли · радиус "+(int)paintRadius+
@@ -1313,12 +1325,27 @@ public class EditorActivity extends Activity {
             message("Сначала загрузи и выбери текстуру PNG/JPG");return;
         }
         paintTerrainMode=false;terrainMode=0;placingKind=-1;placingGlb=null;roadMode=false;
-        precisionPaintErase=erase;precisionPaintMode=true;
+        precisionPaintErase=erase;precisionPaintMode=true;materialPaintMode=false;
         surface.queueEvent(()->{nativeRoadFinish();nativePaintStrokeEnd();});
         statusText.setText(erase?"ЛАСТИК R4: веди пальцем · курсор на 70 dp выше пальца":
              "КИСТЬ R4: веди пальцем непрерывно · круг на 70 dp выше пальца. "
              +"Размер "+precisionPaintRadius+" м, двухпальцевый зум.");
         message(erase?"Режим стирания покрытия":"Непрерывная кисть · одно касание рисует линию");
+    }
+
+    private void activateMaterialPaint(boolean erase){
+        if(importing){message("Дождись окончания импорта");return;}
+        if(activePaintKey.isEmpty()){
+            message("Сначала выбери материал PNG/JPG в библиотеке текстур");return;
+        }
+        paintTerrainMode=false;terrainMode=0;placingKind=-1;placingGlb=null;roadMode=false;
+        precisionPaintErase=erase;precisionPaintMode=true;materialPaintMode=true;
+        surface.queueEvent(()->{nativeRoadFinish();nativePaintStrokeEnd();nativeLayerStrokeEnd();});
+        statusText.setText(erase?
+            "ЛАСТИК СЛОЯ: стирает ТОЛЬКО выбранную текстуру. Курсор выше пальца.":
+            "СЛОИ R4.1: рисуй поверх плана. До 4 материалов на один участок 64м.");
+        message(erase?"Стирать выбранный материал, остальные слои не изменятся":
+                       "Слои R4.1 · нарисованную текстуру можно править отдельно");
     }
     private void choosePrecisionPaint(){
         final String[] sizes={"0,5 м — точная","1 м — узкая","2 м — дорога",

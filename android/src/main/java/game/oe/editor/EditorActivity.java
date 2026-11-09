@@ -1140,7 +1140,9 @@ public class EditorActivity extends Activity {
         if(importing){message("Дождись завершения операции");return;}
         Intent intent=new Intent(Intent.ACTION_CREATE_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("application/zip");
+        // Some Android document providers label ZIPs as octet-stream;
+        // validate the actual archive content after selection.
+        intent.setType("*/*");
         intent.putExtra(Intent.EXTRA_TITLE,"ORVETHRA-World.oezip");
         try{startActivityForResult(intent,SAVE_PROJECT);}
         catch(Exception e){message("Нельзя открыть файловый менеджер: "+e.getMessage());}

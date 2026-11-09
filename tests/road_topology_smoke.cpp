@@ -53,6 +53,12 @@ int main(){
  assert(buildRoadTopology({road(5,{{-10,0},{10,0}}),
                           road(6,{{0,10},{0,2.1}})},separate));
  assert(separate.junctionCount==0);
+ // Two narrow parallel alleys within two metres must remain separate.
+ RoadTopology alleys;
+ assert(buildRoadTopology({road(14,{{-10,0},{10,0}}),
+                          road(15,{{-10,1.5},{10,1.5}})},alleys));
+ assert(alleys.junctionCount==0&&alleys.edges.size()==2);
+ assert(std::abs(alleys.roads[1].controlPoints.front().z-1.5)<1e-6);
  // Shared point exact (no false duplicate edges).
  RoadTopology endpoint;
  assert(buildRoadTopology({road(7,{{0,0},{5,0}}),

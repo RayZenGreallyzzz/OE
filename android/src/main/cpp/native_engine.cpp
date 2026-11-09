@@ -2203,7 +2203,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsse
  const jsize batchLength=env->GetArrayLength(batchData);
  if(batchLength<=0||batchLength>6144||batchLength%3!=0)return JNI_FALSE;
  const jsize imageCount=env->GetArrayLength(imageData);
- if(imageCount<0||imageCount>4||env->GetArrayLength(imageInfo)!=imageCount*3)
+ if(imageCount<0||imageCount>8||env->GetArrayLength(imageInfo)!=imageCount*3)
   return JNI_FALSE;
  Asset prepared;
  prepared.vertexStride=11;prepared.centerY=centerY;prepared.radius=radius;

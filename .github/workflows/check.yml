@@ -68,6 +68,19 @@ jobs:
             android/src/main/cpp/terrainpaint/paint_tiles.cpp \
             -o /tmp/oe-terrain-paint
           /tmp/oe-terrain-paint
+  medieval-road-surfaces:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify seamless terrain X/T/Y junction caps and bounded surfaces
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -pedantic \
+            tests/medieval_surface_smoke.cpp \
+            android/src/main/cpp/roads/road_network.cpp \
+            android/src/main/cpp/roads/road_topology.cpp \
+            android/src/main/cpp/roads/medieval_surface.cpp \
+            -o /tmp/oe-medieval-surface-test
+          /tmp/oe-medieval-surface-test
   road-topology:
     runs-on: ubuntu-latest
     steps:

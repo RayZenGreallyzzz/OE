@@ -188,7 +188,7 @@ public final class ProjectArchive {
         for(int i=0;i<items.length();i++){
             JSONObject item=items.getJSONObject(i);
             int kind=item.getInt("type");
-            check(kind>=0&&kind<=19&&(kind<=16||version>=6),
+            check(kind>=0&&kind<=28&&(kind<=16||version>=6),
                   "Недопустимый тип средневекового объекта");
             if(kind!=6)continue;
             String key=item.getString("asset");

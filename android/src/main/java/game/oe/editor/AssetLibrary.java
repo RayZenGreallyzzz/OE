@@ -137,8 +137,13 @@ final class AssetLibrary {
             StringBuilder id=new StringBuilder();
             for(byte b:sha.digest())id.append(String.format(java.util.Locale.ROOT,"%02x",b&255));
             final File destination=new File(dir,"lib-"+id.substring(0,20)+".zip");
-            if(!destination.exists())
+            if(!destination.exists()){
+                final File[] existing=dir.listFiles((d,name)->
+                        name.startsWith("lib-")&&name.endsWith(".zip"));
+                if(existing!=null&&existing.length>=MAX_SCAN_CACHE)
+                    throw new Exception("Установлено 8 библиотек. Освободи место перед добавлением новой.");
                 Files.move(temp.toPath(),destination.toPath(),StandardCopyOption.ATOMIC_MOVE);
+            }
             return items;
         }finally{Files.deleteIfExists(temp.toPath());}
     }

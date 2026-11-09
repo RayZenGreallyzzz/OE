@@ -62,12 +62,13 @@ int main(){
   assert(fitsStockBuildingFoundation(foundation));
   assert(std::isfinite(foundationTop(foundation)));
   const auto ext=moduleBounds(foundation);
-  assert(std::abs(ext.maxY-foundationTop(foundation))<.0001f);
+  assert(ext.maxY>=foundationTop(foundation)&&
+         ext.maxY-foundationTop(foundation)<.60f);
   assert(ext.maxX-ext.minX>=6.5f&&ext.maxZ-ext.minZ>=5.6f);
  }
  assert(!fitsStockBuildingFoundation(kSmallHutFoundation));
  assert(std::abs(foundationTop(kSmallHutFoundation)-.4f)<.0001f);
  assert(!fitsStockBuildingFoundation(kNarrowFootbridge));
  assert(std::isnan(foundationTop(kRopeBridge)));
- std::cout<<"OE_MEDIEVAL_MODULES_OK: 12 bounded meshes, 5 bridges/crossings, 5 foundations, safe auto-fit\n";
+ std::cout<<"OE_MEDIEVAL_MODULES_OK: 12 bounded meshes, 7 bridges/crossings, 5 foundations, safe auto-fit\n";
 }

@@ -106,6 +106,7 @@ public class EditorActivity extends Activity {
     private static native String[] nativeLoadedAssetKeys();
     private static native boolean nativeCanRegisterMore(int newUniqueAssets);
     private static native void nativeDiscardUnusedAsset(String key);
+    private static native int nativeTrimUnusedAssets();
     private static native boolean nativeReplaceScene(int size, boolean demoRoads,
             int[] kinds, float[] transforms, String[] modelKeys, float[] terrain,
             String[] objectPaintKeys, float[] painting, String[] terrainPaintKeys,
@@ -126,8 +127,9 @@ public class EditorActivity extends Activity {
     private static native void nativeGizmoDrag(int axis,float dx,float dy);
     private static native void nativeGizmoEnd();
     private static native int nativeAddImportedPlaced(String key, float x, float z, float yaw, float size);
-    private static final int PICK_GLB = 702, PICK_PROJECT=703, SAVE_PROJECT=704, PICK_PAINT=705;
-    private static final int MAX_ASSETS = 12;
+    private static final int PICK_GLB = 702, PICK_PROJECT=703, SAVE_PROJECT=704, PICK_PAINT=705,
+            PICK_LIBRARY=AssetLibrary.PICK_LIBRARY;
+    private static final int MAX_ASSETS = 32;
 
     private EditorSurface surface;
     private Button roadDoneButton;
@@ -146,6 +148,7 @@ public class EditorActivity extends Activity {
     private volatile float paintRadius=16f;
     private volatile long statsUpdatedAt=0;
     private volatile boolean importing = false;
+    private volatile String activeLibraryTab="Деревья";
     private volatile int placingKind = -1;
     private volatile String placingGlb = null;
     private volatile int terrainMode=0; // -1 lower, +1 raise
@@ -281,7 +284,8 @@ public class EditorActivity extends Activity {
         HorizontalScrollView categoryScroll=new HorizontalScrollView(this);
         categoryScroll.setHorizontalScrollBarEnabled(false);
         LinearLayout categoryRow=row();
-        for(String category:new String[]{"Здания","Детали","Декор","Рельеф","Дороги","Текстуры","Проект"}){
+        for(String category:new String[]{"Дома","Деревья","Крепость","Декорации",
+                "Детали","Декор","Рельеф","Дороги","Текстуры","Проект"}){
             Button tab=button(category,()->showPalette(category));
             LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(dp(98),dp(44));
             p.setMargins(dp(2),0,dp(2),0);categoryRow.addView(tab,p);
@@ -409,10 +413,24 @@ public class EditorActivity extends Activity {
     }
     private void showPalette(String category){
         paletteItems.removeAllViews();
-        if("Здания".equals(category)){
+        if("Дома".equals(category)||"Здания".equals(category)){
             addPaletteOption("+ Таверна",()->enterPlaceMode(0,null));
             addPaletteOption("+ Кузница",()->enterPlaceMode(1,null));
             addPaletteOption("+ Аукционный дом",()->enterPlaceMode(2,null));
+            addLibraryButtons(AssetLibrary.HOUSES);
+        }else if("Деревья".equals(category)){
+            addPaletteOption("🌳 Дерево OE",()->enterPlaceMode(5,null));
+            addPaletteOption("🌿 Куст OE",()->enterPlaceMode(8,null));
+            addLibraryButtons(AssetLibrary.TREES);
+        }else if("Крепость".equals(category)){
+            addPaletteOption("▥ Каменная стена OE",()->enterPlaceMode(10,null));
+            addPaletteOption("▥ Колонна OE",()->enterPlaceMode(15,null));
+            addLibraryButtons(AssetLibrary.FORTRESS);
+        }else if("Декорации".equals(category)){
+            addPaletteOption("🔥 Фонарь OE",()->enterPlaceMode(3,null));
+            addPaletteOption("🪨 Камни OE",()->enterPlaceMode(7,null));
+            addPaletteOption("🧺 Лавка OE",()->enterPlaceMode(9,null));
+            addLibraryButtons(AssetLibrary.DECOR);
         }else if("Детали".equals(category)){
             addPaletteOption("▧ Стена",()->enterPlaceMode(10,null));
             addPaletteOption("▤ Пол",()->enterPlaceMode(11,null));
@@ -1181,6 +1199,124 @@ public class EditorActivity extends Activity {
         if(stagingRoot!=null)new Thread(() -> ProjectArchive.removeTree(stagingRoot),
                 "oe-project-cleanup").start();
     }
+    private void addLibraryButtons(String category){
+        addPaletteOption("📚 Выбрать отдельную модель из ZIP",()->
+            showLibraryObjects(category));
+        addPaletteOption("📦 Добавить набор моделей ZIP",()->
+            pickLibrary(category));
+    }
+    private void pickLibrary(String category){
+        if(importing){message("Импорт ещё выполняется");return;}
+        activeLibraryTab=category;
+        Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/zip");
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        try{startActivityForResult(intent,PICK_LIBRARY);}
+        catch(Exception e){message("Файловый менеджер недоступен: "+e.getMessage());}
+    }
+    private void installLibrary(Uri uri){
+        if(importing)return;
+        importing=true;
+        message("📦 Добавляю библиотеку; сами модели пока не загружаю в GPU");
+        new Thread(()->{
+            try(InputStream input=getContentResolver().openInputStream(uri)){
+                if(input==null)throw new Exception("ZIP не найден");
+                final int count=AssetLibrary.install(input,getFilesDir());
+                importing=false;
+                message("✅ Библиотека добавлена: "+count+
+                        " отдельных моделей. Выбери раздел каталога.");
+                ui(()->showPalette(activeLibraryTab));
+            }catch(Exception e){
+                importing=false;
+                message("Не удалось добавить ZIP: "+e.getMessage());
+            }
+        },"oe-library-install").start();
+    }
+    private void showLibraryObjects(String category){
+        if(importing){message("Дождись завершения загрузки");return;}
+        activeLibraryTab=category;
+        new Thread(()->{
+            try{
+                final java.util.List<AssetLibrary.Entry> items=
+                        AssetLibrary.list(getFilesDir(),category);
+                ui(()->{
+                    if(items.isEmpty()){
+                        message("Моделей в разделе пока нет. Нажми «Добавить набор моделей ZIP».");
+                        return;
+                    }
+                    String[] labels=new String[items.size()];
+                    for(int i=0;i<items.size();++i)
+                        labels[i]=items.get(i).label();
+                    new AlertDialog.Builder(this)
+                       .setTitle(category+" · "+items.size()+" отдельных объектов")
+                       .setItems(labels,(dialog,index)->selectLibraryObject(items.get(index)))
+                       .setNegativeButton("Назад",null).show();
+                });
+            }catch(Exception e){message("Каталог: "+e.getMessage());}
+        },"oe-library-list").start();
+    }
+    private void selectLibraryObject(AssetLibrary.Entry entry){
+        if(importing){message("Подожди: предыдущая модель загружается");return;}
+        importing=true;
+        message("Загружаю отдельно: "+entry.label());
+        new Thread(()->{
+            try{
+                final byte[] bytes=AssetLibrary.load(entry);
+                final String key=GlbReader.key(bytes);
+                final File target=new File(modelDir(),key);
+                // A selected model becomes part of the normal content-addressed
+                // OE model store; project .oezip includes it unchanged.
+                if(!target.exists()){
+                    final File part=new File(modelDir(),key+".part");
+                    try{
+                        Files.write(part.toPath(),bytes);
+                        Files.move(part.toPath(),target.toPath(),
+                            StandardCopyOption.REPLACE_EXISTING);
+                    }finally{Files.deleteIfExists(part.toPath());}
+                }
+                surface.queueEvent(()->{
+                    if(Arrays.asList(nativeLoadedAssetKeys()).contains(key)){
+                        importing=false;
+                        ui(()->enterPlaceMode(6,key));
+                        message("Выбрана: "+entry.label());
+                        return;
+                    }
+                    // A small GPU cache is separate from the ZIP catalog. Only
+                    // models not used by the scene or undo/redo may be evicted.
+                    nativeTrimUnusedAssets();
+                    if(!nativeCanRegisterMore(1)){
+                        importing=false;
+                        message("Достигнут лимит "+MAX_ASSETS+
+                                " уникальных моделей в сцене. Копии уже размещённых объектов не расходуют слот.");
+                        return;
+                    }
+                    new Thread(()->{
+                        try{
+                            final GlbReader.Result mesh=GlbReader.decode(bytes,textureLimit);
+                            surface.queueEvent(()->{
+                                final boolean ok=nativeRegisterAsset(key,mesh.vertices,
+                                        mesh.boundCenterY,mesh.boundRadius,mesh.draws,
+                                        mesh.imageData,mesh.imageInfo,mesh.previewOmitsRig);
+                                importing=false;
+                                if(ok){
+                                    ui(()->enterPlaceMode(6,key));
+                                    surface.requestRender();
+                                    message("✅ "+entry.label()+" готов. Коснись земли.");
+                                }else message("GPU отклонил модель: лимит памяти или геометрии.");
+                            });
+                        }catch(Exception e){
+                            importing=false;
+                            message("Не загрузить "+entry.label()+": "+e.getMessage());
+                        }
+                    },"oe-library-decode").start();
+                });
+            }catch(Exception e){
+                importing=false;
+                message("Ошибка чтения модели: "+e.getMessage());
+            }
+        },"oe-library-load").start();
+    }
     private void pickGlb() {
         if(importing) { message("Импорт или загрузка уже выполняется"); return; }
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -1191,6 +1327,11 @@ public class EditorActivity extends Activity {
     }
     @Override protected void onActivityResult(int requestCode,int resultCode,Intent intent) {
         super.onActivityResult(requestCode,resultCode,intent);
+        if(requestCode==PICK_LIBRARY){
+            if(resultCode==RESULT_OK&&intent!=null&&intent.getData()!=null)
+                installLibrary(intent.getData());
+            return;
+        }
         if(requestCode==PICK_PAINT){
             if(resultCode==RESULT_OK&&intent!=null&&intent.getData()!=null)
                 importPaintTexture(intent.getData());

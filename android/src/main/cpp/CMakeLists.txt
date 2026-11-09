@@ -7,7 +7,7 @@ set_target_properties(oe_runtime_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_features(oe_runtime_core PUBLIC cxx_std_17)
 target_include_directories(oe_runtime_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/runtime")
 
-add_library(oe_road_network STATIC roads/road_network.cpp roads/road_junctions.cpp)
+add_library(oe_road_network STATIC roads/road_network.cpp roads/road_junctions.cpp roads/road_topology.cpp)
 set_target_properties(oe_road_network PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_features(oe_road_network PUBLIC cxx_std_17)
 target_include_directories(oe_road_network PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/roads")

@@ -126,6 +126,8 @@ public class EditorActivity extends Activity {
     private static native boolean nativeRoadPointTapMove(float x,float y);
     private static native boolean nativeRoadSmooth(double radiusMetres);
     private static native int nativeRoadIntersectionCount();
+    private static native int[] nativeRoadTopologyStats();
+    private static native boolean nativeRoadBakeTopology();
     private static native int[] nativePaintTileCoords();
     private static native byte[] nativePaintTileData(int index);
     private static native boolean nativePaintCursor(float x,float y,float radius);
@@ -275,7 +277,7 @@ public class EditorActivity extends Activity {
         top.setPadding(dp(5),dp(2),dp(5),dp(2));
         top.setBackgroundColor(Color.argb(220,14,21,32));
         TextView title=new TextView(this);
-        title.setText("OE ROAD JUNCTIONS R5 / TEST");
+        title.setText("OE MEDIEVAL ROADS R5.1 TEST");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
         title.setTextSize(12);
@@ -467,7 +469,8 @@ public class EditorActivity extends Activity {
             addPaletteOption("📍 Переместить точку касанием",()->chooseRoadPoint(true));
             addPaletteOption("⌨ Точные координаты точки",()->chooseRoadPoint(false));
             addPaletteOption("〰 Сгладить повороты",this::chooseRoadSmoothing);
-            addPaletteOption("✣ Перекрёстки · информация",this::showJunctionStatus);
+            addPaletteOption("🔗 Соединить старые дороги",this::bakeExistingRoadTopology);
+            addPaletteOption("✣ Узлы дорожной сети",this::showJunctionStatus);
             addPaletteOption("↶ Удалить последнюю точку",this::removeRoadPoint);
             addPaletteOption("↔ Ширина дороги",this::chooseRoadWidth);
             addPaletteOption("🎨 Покрытие дороги",this::chooseRoadMaterial);
@@ -722,16 +725,35 @@ public class EditorActivity extends Activity {
     private void showJunctionStatus(){
         if(importing)return;
         surface.queueEvent(()->{
-            final int count=nativeRoadIntersectionCount();
-            ui(()->new AlertDialog.Builder(this).setTitle("Перекрёстки OE · R5")
-                .setMessage(count<0?
-                    "Дорожная сеть превышает ограничение предварительного поиска (1800 отрезков). "
-                    +"Сами дороги остаются доступны, но предпросмотр перекрёстков отключён.":
-                    "Найдено пересечений: "+count+". Центры пересечений показаны поверх дорог. "
-                    +"Это визуальные площадки, не окончательная геометрия тротуаров или навигации. "
-                    +"При подведении конца дороги к другой конечной точке действует привязка 2 м.")
+            final int[] graph=nativeRoadTopologyStats();
+            ui(()->new AlertDialog.Builder(this).setTitle("Дорожная сеть OE · R5.1")
+                .setMessage(graph==null||graph.length!=4||graph[0]<0?
+                    "Дорожная сеть содержит наложенные параллельные дороги либо превышает " +
+                    "лимит 1200 сегментов / 96 соединений. Сами дороги остаются доступными. " +
+                    "Уменьши сеть или исправь дублирующие улицы.":
+                    "Общих узлов: "+graph[0]+"\n" +
+                    "Точек сети: "+graph[1]+"\n" +
+                    "Отрезков: "+graph[2]+"\n\n" +
+                    "Новым улицам автоматически добавляются общие контрольные точки " +
+                    "в местах пересечений X/T/Y. Концы улиц привязываются к середине " +
+                    "соседней дороги в радиусе 2 м.\n\n" +
+                    "Это связная схема дорог, а не готовые полосы транспорта/физика. " +
+                    "Для прежних проектов нажми «Соединить старые дороги».")
                 .setPositiveButton("Понятно",null).show());
         });
+    }
+    private void bakeExistingRoadTopology(){
+        if(importing)return;
+        new AlertDialog.Builder(this).setTitle("Соединить улицы по плану")
+            .setMessage("OE найдёт Т/X/Y-перекрёстки и добавит к существующим дорогам " +
+                "общие контрольные точки. Это изменит геометрию проекта, но сохранит " +
+                "ID дорог, материалы и имена. Действие можно отменить через ↶. " +
+                "Перед обработкой большого города сохрани копию .oezip.")
+            .setPositiveButton("Соединить",(dialog,which)->edit(()->{
+                if(nativeRoadBakeTopology())
+                    message("Дорожные узлы соединены · сохрани .oezip · ↶ отменить");
+                else message("Не удалось: проверь пересечения, наложенные улицы или лимит сети");
+            })).setNegativeButton("Отмена",null).show();
     }
 
     private void chooseRoadWidth(){
@@ -2420,10 +2442,10 @@ public class EditorActivity extends Activity {
                             }else if(roadDraw){
                                 final int result=nativeRoadTap(px,py);
                                 if(result==1)message("Первая точка · коснись земли ещё раз");
-                                else if(result==2)message("Дорога создана · добавляй точки");
-                                else if(result==3)message("Точка дороги добавлена");
+                                else if(result==2)message("Дорога создана · перекрёстки соединены · добавляй точки");
+                                else if(result==3)message("Точка добавлена · дорожные узлы обновлены");
                                 else if(result==0)message("Не попали на землю: попробуй другой ракурс");
-                                else message("Точка слишком близко, за краем карты или превышен лимит дороги");
+                                else message("Нельзя соединить: слишком близко, наложение улиц или лимит сети");
                             }else if(paint){
                                 int strokes=nativePaintTerrainAtScreen(px,py,paintRadius,paintingKey);
                                 if(strokes>0)message("Земля окрашена · мазок "+strokes+"/48");

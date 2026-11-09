@@ -1544,7 +1544,7 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeRoadBegin(
     width>oe::roads::kMaxWidth||gNextRoadId>=2147483647)return 0;
  recordEdit();
  const int id=gNextRoadId++;
- gRoads.push_back({id,width,markings==JNI_TRUE,{},material});
+ gRoads.push_back({id,width,material==oe::roads::kAsphalt&&markings==JNI_TRUE,{},material});
  gSelectedRoad=id;gRoadEditMode=1;gRoadRevision++;
  return id;
 }
@@ -1645,6 +1645,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadSetMarki
  auto*road=selectedRoad();
  if(!road)return JNI_FALSE;
  const bool value=enabled==JNI_TRUE;
+ if(value&&road->material!=oe::roads::kAsphalt)return JNI_FALSE;
  if(road->markings==value)return JNI_TRUE;
  recordEdit();road->markings=value;++gRoadRevision;return JNI_TRUE;
 }

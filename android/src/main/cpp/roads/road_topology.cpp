@@ -73,18 +73,18 @@ bool snapEndpoints(std::vector<Road>& roads,double radius){
      const double sq=dot(delta,delta);
      if(sq<kMinimumSegment*kMinimumSegment)continue;
      const double t=clamp01(dot(sub(originalPoint,a),delta)/sq);
-     // Do not collapse two nearby parallel medieval lanes into one street.
-     // A connection into the *middle* of a street must approach at an angle.
-     // Exact endpoint-to-endpoint connections may be collinear.
-     if(t>.01&&t<.99){
+     const Point projected=add(a,mul(delta,t));
+     const double separation=dist(projected,originalPoint);
+     // A nearby parallel alley must NOT merge even if its endpoints line up.
+     // Permit collinear end-to-end joining but not a sideways lane jump.
+     if(separation>.20){
       const auto& own=original[roadIndex].controlPoints;
       const Point inward=endpoint==0?sub(own[1],originalPoint):
                                  sub(own[own.size()-2],originalPoint);
       const double alignment=std::abs(dot(inward,delta))/(length(inward)*length(delta));
-      if(alignment>.94)continue;
+      const double lateral=std::abs(cross(sub(projected,originalPoint),delta))/length(delta);
+      if(alignment>.94&&lateral>.20)continue;
      }
-     const Point projected=add(a,mul(delta,t));
-     const double separation=dist(projected,originalPoint);
      if(separation<best-(found?1.e-8:0.)){
       nearest=projected;best=separation;found=true;
      }

@@ -17,7 +17,11 @@ UPSTREAM = (
     "https://kenney.nl/media/pages/assets/retro-fantasy-kit/"
     "cf3f41b752-1774770658/kenney_retro-fantasy-kit.zip"
 )
-SHA256 = "d3462b453018d0d150406d85af3c4ae1322ceef8f1754c4eb4e6355adfeaab0f"
+# Pin the actual uncompressed model+texture payload instead of the enclosing
+# ZIP metadata. Different ZIP compression/timestamp wrappers are allowed only
+# if all 105 original meshes and all 10 original images are byte-identical.
+CONTENT_SHA256 = "893063a957225f1fe722dd2f968d431d1065e8a7ca1567d13f03abca61134551"
+TEXTURES_SHA256 = "117dd53a8fe5dee201d1361988867d799ab25656d3f6429c490590dbfb0d972c"
 OUT = pathlib.Path("android/src/main/assets/medieval/kenney_retro_105.zip")
 SOURCE_PREFIX = "Models/GLB format/"
 MAX_SOURCE = 4 * 1024 * 1024
@@ -25,9 +29,8 @@ MAX_SOURCE = 4 * 1024 * 1024
 def make_bundle(source: bytes, destination: pathlib.Path) -> None:
     if len(source) > MAX_SOURCE:
         raise ValueError("Unexpectedly large upstream download")
-    actual = hashlib.sha256(source).hexdigest()
-    if actual != SHA256:
-        raise ValueError(f"Kenney kit SHA-256 mismatch: {actual}")
+    archive_sha = hashlib.sha256(source).hexdigest()
+    print(f"Upstream container SHA-256: {archive_sha}; ZIP header: {source[:12]!r}")
     with zipfile.ZipFile(io.BytesIO(source), "r") as original:
         all_names = original.namelist()
         models = sorted(n for n in all_names if
@@ -41,6 +44,20 @@ def make_bundle(source: bytes, destination: pathlib.Path) -> None:
                 f"{len(textures)} textures")
         if len(set(x.rsplit("/", 1)[-1] for x in models)) != 105:
             raise ValueError("Duplicate model basenames")
+        content_hash = hashlib.sha256()
+        texture_hash = hashlib.sha256()
+        for name in sorted(models + textures):
+            data = original.read(name)
+            key = name[len(SOURCE_PREFIX):].encode("utf-8")
+            payload = key + b"\\0" + len(data).to_bytes(8, "little") + data
+            content_hash.update(payload)
+            if name in textures:
+                texture_hash.update(payload)
+        actual_content = content_hash.hexdigest()
+        actual_textures = texture_hash.hexdigest()
+        print(f"Resource manifest SHA-256: {actual_content}; textures: {actual_textures}")
+        if actual_content != CONTENT_SHA256 or actual_textures != TEXTURES_SHA256:
+            raise ValueError("Original user's 105 GLBs / 10 PNGs differ from upstream; refusing to change textures")
         license_name = "License.txt" if "License.txt" in all_names else "LICENSE.txt"
         if license_name not in all_names:
             raise ValueError("Missing Kenney CC0 license")

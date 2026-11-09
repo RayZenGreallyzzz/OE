@@ -2588,7 +2588,7 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeFoundationUnderS
  return foundation.id;
 }
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePlaceAtScreen(JNIEnv*,jclass,jint type,jfloat px,jfloat py){
- if(type<0||type>19||type==6)return 0;
+ if(type<0||type>28||type==6)return 0;
  float x,z;
  if(!groundPoint(px,py,x,z)||blocked(x,z,type))return 0;
  return add(type,x,z,0,1);

@@ -1085,6 +1085,93 @@ void drawPrecisionPaint(const Mat4& vp){
  glUniform1f(gShader.locGuide,0.f);glUniform1f(gShader.locTextured,0.f);
  glUniform1f(gShader.locPaintOverride,0.f);
 }
+
+// R4.1 per-material layer preview: source diffuse texture at world-space UV,
+// independent 8-bit alpha mask at tile-local UV. No stamp draw calls.
+void drawMaterialLayers(const Mat4& vp){
+ if(gMaterialCanvas.tiles().empty()||!gPaintMesh.vao)return;
+ const float range=quality().viewRangeMetres+oe::terrainpaint::kTileMetres;
+ glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+ glDepthMask(GL_FALSE);
+ const Mat4 model=identity();
+ glUniformMatrix4fv(gShader.locMvp,1,GL_FALSE,vp.m);
+ glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
+ glUniform3f(gShader.locColor,1,1,1);
+ glUniform1f(gShader.locLight,0.f);
+ glUniform1f(gShader.locTextured,1.f);
+ glUniform1f(gShader.locPaintOverride,1.f);
+ glUniform1f(gShader.locGuide,1.f);
+ glUniform1f(gShader.locOverlay,0.f);
+ glUniform1f(gShader.locOpacity,1.f);
+ glUniform1f(gShader.locMaterialLayer,1.f);
+ glBindVertexArray(gPaintMesh.vao);
+ std::vector<float> verts;
+ verts.reserve(16*16*6*11);
+ for(const auto& tile:gMaterialCanvas.tiles()){
+  const float ox=tile.x*oe::terrainpaint::kTileMetres,
+              oz=tile.z*oe::terrainpaint::kTileMetres;
+  if(std::abs(ox+32.f-gTarget.x)>range||
+     std::abs(oz+32.f-gTarget.z)>range)continue;
+  verts.clear();
+  auto append=[&](float x,float z){
+   verts.insert(verts.end(),{x,terrainHeightAt(x,z)+.084f,z,
+     0.f,1.f,0.f,1.f,1.f,1.f,
+     (x-ox)/oe::terrainpaint::kTileMetres,
+     (z-oz)/oe::terrainpaint::kTileMetres});
+  };
+  for(int z=0;z<16;z++)for(int x=0;x<16;x++){
+   const float x0=ox+x*4.f,x1=x0+4.f,z0=oz+z*4.f,z1=z0+4.f;
+   append(x0,z0);append(x0,z1);append(x1,z0);
+   append(x1,z0);append(x0,z1);append(x1,z1);
+  }
+  glBindBuffer(GL_ARRAY_BUFFER,gPaintMesh.buffer);
+  glBufferData(GL_ARRAY_BUFFER,static_cast<GLsizeiptr>(verts.size()*sizeof(float)),
+               verts.data(),GL_DYNAMIC_DRAW);
+  for(const auto& layer:tile.materials){
+   const TextureResource* material=paintTexture(layer.material);
+   if(!material||!material->id)continue;
+   const auto key=std::make_tuple(tile.x,tile.z,layer.material);
+   auto& gpu=gMaterialGpu[key];
+   glActiveTexture(GL_TEXTURE1);
+   if(!gpu.texture){
+    glGenTextures(1,&gpu.texture);
+    if(!gpu.texture)continue;
+    glBindTexture(GL_TEXTURE_2D,gpu.texture);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+    glPixelStorei(GL_UNPACK_ALIGNMENT,1);
+    glTexImage2D(GL_TEXTURE_2D,0,GL_R8,oe::terrainpaint::kResolution,
+       oe::terrainpaint::kResolution,0,GL_RED,GL_UNSIGNED_BYTE,layer.weights.data());
+    glPixelStorei(GL_UNPACK_ALIGNMENT,4);
+    gpu.revision=layer.revision;
+   }else{
+    glBindTexture(GL_TEXTURE_2D,gpu.texture);
+    if(gpu.revision!=layer.revision){
+     glPixelStorei(GL_UNPACK_ALIGNMENT,1);
+     glTexSubImage2D(GL_TEXTURE_2D,0,0,0,oe::terrainpaint::kResolution,
+         oe::terrainpaint::kResolution,GL_RED,GL_UNSIGNED_BYTE,layer.weights.data());
+     glPixelStorei(GL_UNPACK_ALIGNMENT,4);
+     gpu.revision=layer.revision;
+    }
+   }
+   glActiveTexture(GL_TEXTURE0);
+   glBindTexture(GL_TEXTURE_2D,material->id);
+   glDrawArrays(GL_TRIANGLES,0,static_cast<GLsizei>(verts.size()/11));
+   ++gDrawCalls;gTriangles+=static_cast<int>(verts.size()/33);
+  }
+ }
+ glActiveTexture(GL_TEXTURE1);glBindTexture(GL_TEXTURE_2D,0);
+ glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,0);
+ glBindVertexArray(0);
+ glDepthMask(GL_TRUE);glDisable(GL_BLEND);
+ glUniform1f(gShader.locMaterialLayer,0.f);
+ glUniform1f(gShader.locGuide,0.f);
+ glUniform1f(gShader.locTextured,0.f);
+ glUniform1f(gShader.locPaintOverride,0.f);
+}
+
 void drawPrecisionCursor(const Mat4& vp){
  if(!gPaintCursorVisible||!gPaintMesh.vao)return;
  constexpr int segments=48;
@@ -1735,6 +1822,7 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDraw(JNIEnv*,jcl
  drawWorld(vp);
  drawTerrainPaint(vp);
  drawPrecisionPaint(vp);
+ drawMaterialLayers(vp);
  drawMapGuide(vp);
  drawRoads(vp);
  for(const auto&e:gEntities)drawEntity(vp,frustum,e);

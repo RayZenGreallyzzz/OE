@@ -79,6 +79,8 @@ jobs:
             android/src/main/cpp/medieval/structures.cpp \
             -o /tmp/oe-medieval-modules-test
           /tmp/oe-medieval-modules-test
+      - name: Validate editor placement and scene-v6 archive wiring
+        run: python3 tests/medieval_editor_integration_smoke.py
   medieval-road-surfaces:
     runs-on: ubuntu-latest
     steps:

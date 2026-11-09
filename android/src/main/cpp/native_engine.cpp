@@ -739,7 +739,7 @@ constexpr Color stone{.51f,.50f,.49f},mortar{.75f,.64f,.51f},oak{.32f,.20f,.13f}
  roof{.55f,.22f,.18f},gold{.82f,.62f,.33f},dark{.19f,.23f,.29f},glass{.82f,.65f,.33f};
 template<class Part>
 void forEachStaticPart(int type,Part&&part){
- // R5.3: three modular medieval structures baked into existing shared meshes.
+ // R5.2a: three modular medieval structures baked into existing shared meshes.
  // Every visible placed instance remains ONE GLES draw call.
  if(oe::medieval::validModule(type)){
   const auto boxes=oe::medieval::moduleParts(type);

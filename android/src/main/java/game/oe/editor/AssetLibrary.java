@@ -2,6 +2,10 @@ package game.oe.editor;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
+import android.content.res.AssetManager;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.util.Arrays;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.InputStream;
@@ -34,6 +38,7 @@ import java.util.zip.ZipFile;
  */
 final class AssetLibrary {
     static final int PICK_LIBRARY = 706;
+    static final String BUILTIN_KENNEY="medieval/kenney_retro_105.zip";
     static final long MAX_PACK_BYTES = 190L*1024*1024;
     private static final long MAX_EXPANDED = 550L*1024*1024;
     private static final int MAX_FILES = 650;
@@ -147,6 +152,25 @@ final class AssetLibrary {
             return items;
         }finally{Files.deleteIfExists(temp.toPath());}
     }
+    // First use opens the small, read-only ZIP shipped INSIDE the installed APK.
+    // Install a private indexed copy (about 250 KB), not every model or texture.
+    // This runs off the UI/GL threads; subsequent library browsing is offline.
+    static void ensureBundled(AssetManager manager,File root) throws Exception {
+        final File installedFlag=new File(directory(root),"kenney-105-bundled-v1.ok");
+        if(installedFlag.isFile())return;
+        try(InputStream input=manager.open(BUILTIN_KENNEY)){
+            final int total=install(input,root);
+            if(total!=105)
+                throw new Exception("Встроенная библиотека содержит "+total+
+                                    " моделей вместо 105");
+        }
+        final File pending=new File(installedFlag.getPath()+".part");
+        try{
+            Files.write(pending.toPath(),"105".getBytes(StandardCharsets.UTF_8));
+            Files.move(pending.toPath(),installedFlag.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING);
+        }finally{Files.deleteIfExists(pending.toPath());}
+    }
     static List<Entry> list(File root,String category) throws Exception {
         final List<Entry> list=new ArrayList<>();
         final File[] packs=directory(root).listFiles((d,name)->
@@ -238,10 +262,79 @@ final class AssetLibrary {
         // container changes to make one independently importable GLB.
         return GltfReader.packGlb(doc,aggregate.toByteArray());
     }
+    // Kenney GLBs reference sibling PNGs inside their official distribution.
+    // Embed those exact bytes into the selected GLB, without altering image
+    // content, resizing, recompressing or loading unrelated objects into RAM.
+    private static byte[] externalImageGlb(ZipFile zip,Entry item)
+            throws Exception {
+        final byte[] source=read(zip,zip.getEntry(item.path),GlbReader.MAX_BYTES);
+        if(source.length<20)throw new Exception("Повреждённый GLB");
+        final ByteBuffer bb=ByteBuffer.wrap(source).order(ByteOrder.LITTLE_ENDIAN);
+        if(bb.getInt(0)!=0x46546c67||bb.getInt(4)!=2||
+           bb.getInt(8)!=source.length)
+            throw new Exception("Нужен бинарный glTF 2.0");
+        int pos=12,jsonStart=-1,jsonLength=0,binStart=-1,binLength=0;
+        while(pos+8<=source.length){
+            int length=bb.getInt(pos),kind=bb.getInt(pos+4);
+            if(length<0||(long)pos+8+length>source.length)
+                throw new Exception("GLB имеет повреждённые чанки");
+            if(kind==0x4e4f534a){
+                if(jsonStart>=0)throw new Exception("Повторный JSON-чанк");
+                jsonStart=pos+8;jsonLength=length;
+            }
+            if(kind==0x004e4942){
+                if(binStart>=0)throw new Exception("Повторный BIN-чанк");
+                binStart=pos+8;binLength=length;
+            }
+            pos+=8+length;
+        }
+        if(pos!=source.length||jsonStart<0||binStart<0||binLength<=0)
+            throw new Exception("Неверные чанки GLB");
+        final JSONObject doc=new JSONObject(new String(source,jsonStart,
+                        jsonLength,StandardCharsets.UTF_8).trim());
+        final JSONArray images=doc.optJSONArray("images");
+        if(images==null||images.length()==0)return source;
+        boolean hasExternal=false;
+        for(int i=0;i<images.length();++i){
+            String uri=images.getJSONObject(i).optString("uri","");
+            if(!uri.isEmpty()&&!uri.startsWith("data:"))hasExternal=true;
+        }
+        if(!hasExternal)return source;
+        final JSONArray buffers=doc.getJSONArray("buffers");
+        if(buffers.length()!=1)throw new Exception("GLB: несколько BIN-буферов");
+        final ByteArrayOutputStream aggregate=new ByteArrayOutputStream();
+        aggregate.write(source,binStart,binLength);
+        JSONArray views=doc.optJSONArray("bufferViews");
+        if(views==null){views=new JSONArray();doc.put("bufferViews",views);}
+        for(int i=0;i<images.length();++i){
+            final JSONObject img=images.getJSONObject(i);
+            final String uri=img.optString("uri","");
+            if(uri.isEmpty()||uri.startsWith("data:"))continue;
+            final String lower=uri.toLowerCase(java.util.Locale.ROOT);
+            if(!lower.endsWith(".png")&&!lower.endsWith(".jpg")&&
+               !lower.endsWith(".jpeg"))
+                throw new Exception("Текстура в GLB должна быть PNG/JPG");
+            final byte[] original=read(zip,linked(zip,item.path,uri),
+                                        GlbReader.MAX_BYTES);
+            pad(aggregate);
+            final int offset=aggregate.size();
+            if((long)offset+original.length>GlbReader.MAX_BYTES-4096L)
+                throw new Exception("GLB с текстурами слишком большой");
+            aggregate.write(original);
+            JSONObject view=new JSONObject();
+            view.put("buffer",0);view.put("byteOffset",offset);
+            view.put("byteLength",original.length);
+            final int index=views.length();views.put(view);
+            img.remove("uri");img.put("bufferView",index);
+            img.put("mimeType",lower.endsWith(".png")?"image/png":"image/jpeg");
+        }
+        buffers.getJSONObject(0).put("byteLength",aggregate.size());
+        return GltfReader.packGlb(doc,aggregate.toByteArray());
+    }
     static byte[] load(Entry entry) throws Exception {
         try(ZipFile zip=new ZipFile(entry.pack)){
             if(entry.path.toLowerCase(java.util.Locale.ROOT).endsWith(".glb"))
-                return read(zip,zip.getEntry(entry.path),GlbReader.MAX_BYTES);
+                return externalImageGlb(zip,entry);
             return externalGltf(zip,entry);
         }
     }

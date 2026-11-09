@@ -919,7 +919,7 @@ void rebuildRoadMesh(){
   vertex(a.x,a.z,lift,col);vertex(c.x,c.z,lift,col);vertex(d.x,d.z,lift,col);
  };
  const Color asphalt{.22f,.23f,.24f},border{.88f,.85f,.73f},
-             center{.98f,.86f,.44f},junctionAsphalt{.245f,.255f,.26f};
+             center{.98f,.86f,.44f};
  const Color sidewalk{.52f,.53f,.52f},curb{.68f,.68f,.65f},
              sidewalkWall{.38f,.39f,.38f},crosswalkPaint{.97f,.96f,.86f};
  auto between=[](Vec3 a,Vec3 b,float t)->Vec3 {

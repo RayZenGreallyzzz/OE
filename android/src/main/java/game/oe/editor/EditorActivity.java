@@ -1937,7 +1937,7 @@ public class EditorActivity extends Activity {
                     mapGuide=parsedGuide;
                     mapTopViewActive=false;
                     committed=true;
-                    roadMode=false;precisionPaintMode=false;
+                    roadMode=false;precisionPaintMode=false;materialPaintMode=false;
                     surface.requestRender();
                     refreshSelected();
                     message("Сцена загружена · "+items.length+" объектов, текстур "+referencedPaint.size()+", GLB "+assets.size()+
@@ -2078,8 +2078,10 @@ public class EditorActivity extends Activity {
                     final float rad=precisionPaintRadius, strength=precisionPaintOpacity;
                     queueEvent(()->{
                         nativePaintCursor(px,cy,rad);
-                        if(!nativePaintStrokeBegin(px,cy,rad,strength,paintKey,eraser))
-                            paintStrokeFailed=true;
+                        final boolean ok=materialPaintMode?
+                            nativeLayerStrokeStart(px,cy,rad,strength,paintKey,eraser):
+                            nativePaintStrokeBegin(px,cy,rad,strength,paintKey,eraser);
+                        if(!ok)paintStrokeFailed=true;
                         requestRender();
                     });
                     return true;
@@ -2095,7 +2097,7 @@ public class EditorActivity extends Activity {
                 multiTouch=true;
                 touchedGizmoAxis=-1;
                 queueEvent(()->{nativeGizmoEnd();gizmoEditStarted=false;
-                    nativePaintStrokeEnd();requestRender();});
+                    nativePaintStrokeEnd();nativeLayerStrokeEnd();requestRender();});
                 if(e.getPointerCount()>=2){
                     lastPinch=pinch(e);
                     lastMidX=(e.getX(0)+e.getX(1))*.5f;
@@ -2118,7 +2120,9 @@ public class EditorActivity extends Activity {
                     if(precisionPaintMode){
                         final float px=surfaceX(x),py=precisionScreenY(y);
                         queueEvent(()->{
-                            if(!nativePaintStrokeMove(px,py))paintStrokeFailed=true;
+                            if(!(materialPaintMode?nativeLayerStrokeMove(px,py):
+                                  nativePaintStrokeMove(px,py)))
+                                paintStrokeFailed=true;
                             interactiveRender();
                         });
                         lastX=x;lastY=y;
@@ -2151,9 +2155,10 @@ public class EditorActivity extends Activity {
                     final float px=surfaceX(e.getX()),py=precisionScreenY(e.getY());
                     final boolean wasMultiTouch=multiTouch;
                     queueEvent(()->{
-                        if(!wasMultiTouch&&!nativePaintStrokeMove(px,py))paintStrokeFailed=true;
-                        nativePaintStrokeEnd();requestRender();
-                        if(paintStrokeFailed)message("Рисование остановлено: край карты, текстура или предел 32 участков");
+                        if(!wasMultiTouch&&!(materialPaintMode?nativeLayerStrokeMove(px,py):
+                                  nativePaintStrokeMove(px,py)))paintStrokeFailed=true;
+                        nativePaintStrokeEnd();nativeLayerStrokeEnd();requestRender();
+                        if(paintStrokeFailed)message("Рисование остановлено: лимит участков/материалов, граница или текстура");
                     });
                     multiTouch=false;
                     return true;
@@ -2220,7 +2225,7 @@ public class EditorActivity extends Activity {
             if(action==MotionEvent.ACTION_CANCEL) {
                 multiTouch=false;touchedGizmoAxis=-1;
                 queueEvent(()->{nativeGizmoEnd();gizmoEditStarted=false;
-                    nativePaintStrokeEnd();requestRender();});
+                    nativePaintStrokeEnd();nativeLayerStrokeEnd();requestRender();});
                 return true;
             }
             return true;

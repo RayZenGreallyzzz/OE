@@ -575,13 +575,21 @@ public class EditorActivity extends Activity {
             }).setNegativeButton("Отмена",null).show();
     }
     private void toggleRoadMarkings(){
-        roadMarkings=!roadMarkings;
-        final boolean enabled=roadMarkings;
+        if(importing){message("Дождись загрузки сцены");return;}
+        final boolean enabled=!roadMarkings;
         surface.queueEvent(()->{
-            nativeRoadSetMarkings(enabled);
+            final boolean updated=nativeRoadSetMarkings(enabled);
             surface.requestRender();
+            ui(()->{
+                if(updated){
+                    roadMarkings=enabled;
+                    message(enabled?"Разметка включена":"Разметка выключена");
+                }else{
+                    // Modern paint stripes are intentionally absent on medieval surfaces.
+                    message("Современная разметка доступна только на асфальтовой дороге. Выбери её в списке.");
+                }
+            });
         });
-        message(enabled?"Разметка включена":"Разметка выключена");
     }
     private void toggleRoadPedestrian(int feature){
         if(importing||surface==null){message("Дождись загрузки сцены");return;}

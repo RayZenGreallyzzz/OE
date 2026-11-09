@@ -49,7 +49,7 @@ def make_bundle(source: bytes, destination: pathlib.Path) -> None:
         for name in sorted(models + textures):
             data = original.read(name)
             key = name[len(SOURCE_PREFIX):].encode("utf-8")
-            payload = key + b"\\0" + len(data).to_bytes(8, "little") + data
+            payload = key + bytes((0,)) + len(data).to_bytes(8, "little") + data
             content_hash.update(payload)
             if name in textures:
                 texture_hash.update(payload)

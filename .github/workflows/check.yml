@@ -68,6 +68,18 @@ jobs:
             android/src/main/cpp/terrainpaint/paint_tiles.cpp \
             -o /tmp/oe-terrain-paint
           /tmp/oe-terrain-paint
+  road-topology:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify deterministic shared T/X/Y graph, snap and serializable control points
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -pedantic \
+            tests/road_topology_smoke.cpp \
+            android/src/main/cpp/roads/road_network.cpp \
+            android/src/main/cpp/roads/road_topology.cpp \
+            -o /tmp/oe-road-topology-test
+          /tmp/oe-road-topology-test
   road-junctions:
     runs-on: ubuntu-latest
     steps:

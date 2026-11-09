@@ -74,7 +74,7 @@ public class EditorActivity extends Activity {
     private static native boolean nativeSetSelectedCoordinates(double x,double y,double z);
     private static native String nativeSceneSnapshot();
     private static native void nativeRoadMode(int mode);
-    private static native int nativeRoadBegin(float width,boolean markings);
+    private static native int nativeRoadBegin(float width,boolean markings,int material);
     private static native int nativeRoadAppend(float pixelX,float pixelY,float minSpacing);
     private static native boolean nativeRoadFinish();
     private static native boolean nativeRoadPickHandle(float pixelX,float pixelY);
@@ -82,6 +82,8 @@ public class EditorActivity extends Activity {
     private static native void nativeRoadEndDrag();
     private static native boolean nativeRoadSetWidth(float width);
     private static native boolean nativeRoadSetMarkings(boolean markings);
+    private static native boolean nativeRoadSetMaterial(int material);
+    private static native void nativeRoadMedievalPreset();
     private static native int nativeRoadTogglePedestrian(int feature);
     private static native boolean nativeRoadDelete();
     private static native void nativeRoadSelect(int roadId);
@@ -108,7 +110,7 @@ public class EditorActivity extends Activity {
             int[] kinds, float[] transforms, String[] modelKeys, float[] terrain,
             String[] objectPaintKeys, float[] painting, String[] terrainPaintKeys,
             int[] roadIds, float[] roadWidths, boolean[] roadMarkings,
-            int[] roadCounts, float[] roadCoordinates,
+            int[] roadCounts, int[] roadMaterials, float[] roadCoordinates,
             boolean roadSidewalks, boolean roadCrosswalks);
     private static native boolean nativeRegisterPaintTexture(String key, byte[] rgba,int width,int height);
     private static native boolean nativePaintSelected(String key);
@@ -131,7 +133,8 @@ public class EditorActivity extends Activity {
     private Button roadDoneButton;
     private volatile int roadMode=0; // 0=objects, 1=draw roads, 2=drag road points
     private volatile float roadWidth=6f;
-    private volatile boolean roadMarkings=true;
+    private volatile boolean roadMarkings=false;
+    private volatile int roadMaterial=1; // medieval cobblestone; 0 means legacy asphalt
     private TextView selectionText;
     private TextView statusText;
     private TextView renderStatsText;
@@ -432,6 +435,8 @@ public class EditorActivity extends Activity {
             addPaletteOption("📐 Радиус и сила кисти",this::chooseTerrainBrush);
             addPaletteOption("✕ Завершить изменение",this::cancelPlace);
         }else if("Дороги".equals(category)){
+            addPaletteOption("🏰 Средневековый пресет улиц",this::applyMedievalRoadPreset);
+            addPaletteOption("🪨 Покрытие дороги · брусчатка/грунт/гравий",this::chooseRoadMaterial);
             addPaletteOption("🛣 Новая дорога · рисовать пальцем",this::startRoadDrawing);
             addPaletteOption("✏ Редактировать узлы дорог",this::startRoadEditing);
             addPaletteOption("📏 Ширина дороги",this::chooseRoadWidth);
@@ -476,6 +481,41 @@ public class EditorActivity extends Activity {
             addPaletteOption("↷ Повтор",this::redoAction);
         }
     }
+    private void applyMedievalRoadPreset(){
+        if(importing){message("Дождись загрузки сцены");return;}
+        // Changes only future road defaults and scene-wide modern pavement UI.
+        // Existing road geometry and per-road materials remain untouched.
+        roadWidth=4f;
+        roadMaterial=1; // cobblestone
+        roadMarkings=false;
+        surface.queueEvent(()->{
+            nativeRoadMedievalPreset();
+            surface.requestRender();
+        });
+        message("🏰 Средневековые улицы: брусчатка 4 м, без современной разметки, тротуаров и зебр. Старые дороги не изменены.");
+    }
+    private void chooseRoadMaterial(){
+        if(importing){message("Дождись загрузки сцены");return;}
+        final String[] names={
+            "🛣 Асфальт · современная дорога",
+            "🪨 Брусчатка · жилые улочки и рынок",
+            "🐎 Грунт · повозки и деревенские тропы",
+            "⛰ Гравий · тракт и окраины",
+            "🌙 Тёмные древние плиты · фэнтези квартал"
+        };
+        new AlertDialog.Builder(this).setTitle("Покрытие улицы")
+            .setSingleChoiceItems(names,roadMaterial,(dialog,index)->{
+                roadMaterial=index;
+                if(index!=0)roadMarkings=false;
+                final int chosen=index;
+                surface.queueEvent(()->{
+                    nativeRoadSetMaterial(chosen);
+                    surface.requestRender();
+                });
+                message("Покрытие новых и выбранной дороги: "+names[index]);
+                dialog.dismiss();
+            }).setNegativeButton("Отмена",null).show();
+    }
     private void startRoadDrawing(){
         if(importing){message("Заверши загрузку сцены");return;}
         if(roadMode==1)finishRoadMode();
@@ -485,7 +525,7 @@ public class EditorActivity extends Activity {
         roadDoneButton.setText("✓ Завершить дорогу");
         statusText.setText("ДОРОГА: веди пальцем. Концы соединятся с соседней дорогой до 3 м. Готово — ✓.");
         surface.queueEvent(()->{
-            int roadId=nativeRoadBegin(roadWidth,roadMarkings);
+            int roadId=nativeRoadBegin(roadWidth,roadMarkings,roadMaterial);
             if(roadId==0){
                 ui(()->{
                     roadMode=0;roadDoneButton.setVisibility(View.GONE);
@@ -1290,7 +1330,8 @@ public class EditorActivity extends Activity {
                 throw new Exception("Неверный формат дорог");
             final int roadTotal=roadsJson==null?0:roadsJson.length();
             if(roadTotal>24)throw new Exception("Слишком много дорог (макс. 24)");
-            int[] roadIds=new int[roadTotal],roadCounts=new int[roadTotal];
+            int[] roadIds=new int[roadTotal],roadCounts=new int[roadTotal],
+                  roadMaterials=new int[roadTotal];
             float[] roadWidths=new float[roadTotal];
             boolean[] roadMarkings=new boolean[roadTotal];
             float[] roadsRaw=new float[24*48*2];
@@ -1298,7 +1339,12 @@ public class EditorActivity extends Activity {
             HashSet<Integer> seenRoads=new HashSet<>();
             for(int ri=0;ri<roadTotal;ri++){
                 JSONArray road=roadsJson.getJSONArray(ri);
-                if(road.length()!=4)throw new Exception("Неверная структура дороги "+ri);
+                if(road.length()!=4&&road.length()!=5)
+                    throw new Exception("Неверная структура дороги "+ri);
+                final int material=road.length()==5?road.getInt(4):0;
+                if(material<0||material>4)
+                    throw new Exception("Неизвестное покрытие дороги "+ri);
+                roadMaterials[ri]=material;
                 final int id=road.getInt(0),flag=road.getInt(2);
                 final double width=road.getDouble(1);
                 JSONArray points=road.getJSONArray(3);
@@ -1522,7 +1568,7 @@ public class EditorActivity extends Activity {
                     }
                     if(!nativeReplaceScene(worldSize,demoRoads,kinds,transforms,modelKeys,
                             terrainBrushes,objectPaintKeys,paintBrushes,paintBrushKeys,
-                            roadIds,roadWidths,roadMarkings,roadCounts,roadCoordinates,
+                            roadIds,roadWidths,roadMarkings,roadCounts,roadMaterials,roadCoordinates,
                             roadSidewalks,roadCrosswalks))
                         throw new Exception("Сцена не прошла полную проверку в движке");
                     committed=true;

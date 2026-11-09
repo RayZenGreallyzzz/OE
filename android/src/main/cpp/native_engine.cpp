@@ -66,7 +66,7 @@ struct Asset {
  float centerY=0.f, radius=0.f;
 };
 static Mesh gMeshes[3];
-static Mesh gStaticMeshes[20];
+static Mesh gStaticMeshes[29];
 static Mesh gPaintMesh; // Every decorative object is a single combined draw.
 void bakeStaticMesh(int type);
 // Cached, combined flat terrain: one GLES draw call per frame instead of one per tile.
@@ -589,7 +589,7 @@ void setupGL(){
   glDisableVertexAttribArray(2);
   glDisableVertexAttribArray(3);
  }
- for(int kind=0;kind<20;kind++)if(kind!=6)bakeStaticMesh(kind);
+ for(int kind=0;kind<29;kind++)if(kind!=6)bakeStaticMesh(kind);
  for(auto &kv:gAssets){
   uploadAsset(kv.second);
   for(auto&lod:kv.second.lods)uploadLod(lod);
@@ -739,7 +739,7 @@ constexpr Color stone{.51f,.50f,.49f},mortar{.75f,.64f,.51f},oak{.32f,.20f,.13f}
  roof{.55f,.22f,.18f},gold{.82f,.62f,.33f},dark{.19f,.23f,.29f},glass{.82f,.65f,.33f};
 template<class Part>
 void forEachStaticPart(int type,Part&&part){
- // R5.2a: three modular medieval structures baked into existing shared meshes.
+ // R5.2b: twelve modular medieval structures baked into shared meshes.
  // Every visible placed instance remains ONE GLES draw call.
  if(oe::medieval::validModule(type)){
   const auto boxes=oe::medieval::moduleParts(type);
@@ -866,7 +866,7 @@ void bindPaint(const TextureResource*paint){
  }
 }
 void drawStatic(const Mat4&vp,const Entity&e){
- if(e.type<0||e.type>=20||e.type==6)return;
+ if(e.type<0||e.type>=29||e.type==6)return;
  const Mesh&m=gStaticMeshes[e.type];
  if(m.count<=0)return;
  const Mat4 model=mul(mul(translate({e.x,e.y,e.z}),rotateY(e.yaw*RAD)),
@@ -1496,7 +1496,7 @@ bool staticInView(const Mat4&vp,const Entity&e){
     std::abs(e.z-gTarget.z)>quality().viewRangeMetres)return false;
  const Vec4 clip=apply(vp,{e.x,e.y+2.8f*e.size*e.sy,e.z,1.f});
  const float radius=(e.type<=2?7.5f:
-    (e.type==17||e.type==18?6.f:(e.type==19?5.5f:(e.type==5?4.5f:3.5f))))*
+    (oe::medieval::validModule(e.type)?6.5f:(e.type==5?4.5f:3.5f)))*
     e.size*std::max({e.sx,e.sy,e.sz});
  if(clip.w < -radius)return false;
  if(clip.w <=radius)return true; // Keep very close objects visible.
@@ -1512,7 +1512,7 @@ void drawEntity(const Mat4&vp,const Frustum&frustum,const Entity&e){
  if(staticInView(vp,e))drawStatic(vp,e);
 }
 int add(int type,float x,float z,float yaw,float size){
- if(type<0||type>19||type==6||gEntities.size()>=MAX_ENTITIES)return 0;
+ if(type<0||type>28||type==6||gEntities.size()>=MAX_ENTITIES)return 0;
  recordEdit();
  int id=gNextId++;gEntities.push_back({id,type,x,z,yaw,size,"",terrainHeightAt(x,z)});gSelected=id;return id;
 }
@@ -1543,8 +1543,8 @@ void reset(bool demo){
 }
 Entity* selected(){for(auto &e:gEntities)if(e.id==gSelected)return &e;return nullptr;}
 const char* nameFor(int type){
- const char* names[]={"Таверна","Кузница","Аукционный дом","Фонарь","Фонтан","Дерево","Модель GLB","Камни","Куст","Лавка","Стена","Пол","Крыша","Дверная рама","Окно","Колонна","Лестница","Каменный мост","Деревянный мост","Каменный фундамент"};
- return type>=0&&type<20?names[type]:"Объект";
+ const char* names[]={"Таверна","Кузница","Аукционный дом","Фонарь","Фонтан","Дерево","Модель GLB","Камни","Куст","Лавка","Стена","Пол","Крыша","Дверная рама","Окно","Колонна","Лестница","Каменный мост","Деревянный мост","Каменный фундамент","Узкий мостик","Верёвочный мост","Каменный брод","Свайный фундамент","Руины основания","Основание хижины","Основание башни","Широкий мост для телег","Настил через болото"};
+ return type>=0&&type<29?names[type]:"Объект";
 }
 
 // Touch-friendly axis gizmo; drawn using existing simple meshes (no new shaders
@@ -2530,9 +2530,9 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePick(JNIEnv*,jcl
  float depth=1e9f;int found=0;
  for(const auto&e:gEntities){
   const float range=e.type<3||e.type==6?3.5f:
-       (e.type==17||e.type==18?4.8f:(e.type==19?4.0f:2.0f));
+       (oe::medieval::validModule(e.type)?5.3f:2.0f);
   const float h=e.type<3||e.type==6?6.f:
-       (e.type==17||e.type==18?2.7f:(e.type==19?1.2f:4.9f));
+       (oe::medieval::validModule(e.type)?2.8f:4.9f);
   float left=1e9f,top=1e9f,right=-1e9f,bottom=-1e9f,minW=1e9f;
   int visible=0;
   for(float xx:{-range,range})for(float zz:{-range,range})for(float yy:{0.f,h}){
@@ -2550,7 +2550,7 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePick(JNIEnv*,jcl
  return found;
 }
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeAdd(JNIEnv*,jclass,jint type){
- if(type<0||type>19||type==6)return 0;
+ if(type<0||type>28||type==6)return 0;
  float x=gTarget.x,z=gTarget.z;
  for(int radius=0;radius<=160;radius+=12){
   for(int angle=0;angle<8;angle++){
@@ -2565,18 +2565,20 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeAdd(JNIEnv*,jcla
 // Add a stone plinth aligned under the selected built-in building.
 // Atomic single undo entry. No terrain modification or building teleport.
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeFoundationUnderSelected(
- JNIEnv*,jclass){
+ JNIEnv*,jclass,jint foundationKind){
  const Entity*building=selected();
- if(!building||(building->type<0||building->type>2)||
+ if(!oe::medieval::fitsStockBuildingFoundation(foundationKind)||
+    !building||(building->type<0||building->type>2)||
     gEntities.size()>=MAX_ENTITIES||gNextId<=0)return 0;
  const Entity source=*building; // copy; push_back can invalidate pointers
  const float effectiveHeight=source.size*source.sy;
- const float foundationY=source.y-oe::medieval::kFoundationTop*effectiveHeight;
+ const float foundationY=source.y-
+      oe::medieval::foundationTop(foundationKind)*effectiveHeight;
  if(!std::isfinite(foundationY)||foundationY<-24.f||foundationY>160.f||
     std::abs(source.x)>worldHalf()-4.f*source.size*source.sx||
     std::abs(source.z)>worldHalf()-4.f*source.size*source.sz)return 0;
  Entity foundation{};
- foundation.id=gNextId;foundation.type=oe::medieval::kStoneFoundation;
+ foundation.id=gNextId;foundation.type=foundationKind;
  foundation.x=source.x;foundation.z=source.z;foundation.y=foundationY;
  foundation.yaw=source.yaw;foundation.size=source.size;
  foundation.sx=source.sx;foundation.sy=source.sy;foundation.sz=source.sz;
@@ -2603,7 +2605,7 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePlaceImportedAtS
  int id=gNextId++;gEntities.push_back({id,6,x,z,0,1,asset,terrainHeightAt(x,z)});gSelected=id;return id;
 }
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeAddPlaced(JNIEnv*,jclass,jint type,jfloat x,jfloat z,jfloat yaw,jfloat size){
- if(type<0||type>19||type==6 || !std::isfinite(x)||!std::isfinite(z)||!std::isfinite(yaw)||!std::isfinite(size) ||
+ if(type<0||type>28||type==6 || !std::isfinite(x)||!std::isfinite(z)||!std::isfinite(yaw)||!std::isfinite(size) ||
  std::abs(x)>worldHalf() || std::abs(z)>worldHalf() || std::abs(yaw)>36000 || size<.2f || size>8)return 0;
  return add(type,x,z,yaw,size);
 }
@@ -2980,7 +2982,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
   const float x=matrix[i*8],z=matrix[i*8+1],yaw=matrix[i*8+2],
               scl=matrix[i*8+3],y=matrix[i*8+4],
               sx=matrix[i*8+5],sy=matrix[i*8+6],sz=matrix[i*8+7];
-  if(type<0||type>19||!std::isfinite(x)||!std::isfinite(z)||
+  if(type<0||type>28||!std::isfinite(x)||!std::isfinite(z)||
     !std::isfinite(yaw)||!std::isfinite(scl)||!std::isfinite(y)||
     !std::isfinite(sx)||!std::isfinite(sy)||!std::isfinite(sz)||
     std::abs(x)>half||std::abs(z)>half||std::abs(yaw)>36000||

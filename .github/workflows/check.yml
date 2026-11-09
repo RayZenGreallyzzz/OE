@@ -68,6 +68,18 @@ jobs:
             android/src/main/cpp/terrainpaint/paint_tiles.cpp \
             -o /tmp/oe-terrain-paint
           /tmp/oe-terrain-paint
+  road-junctions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify bounded crossings, point snapping and rounded curves
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -pedantic \
+            tests/road_junctions_smoke.cpp \
+            android/src/main/cpp/roads/road_network.cpp \
+            android/src/main/cpp/roads/road_junctions.cpp \
+            -o /tmp/oe-junctions-test
+          /tmp/oe-junctions-test
   road-network:
     runs-on: ubuntu-latest
     steps:

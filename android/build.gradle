@@ -8,15 +8,15 @@ android {
         applicationId 'game.oe.editor'
         minSdk 26
         targetSdk 34
-        versionCode 25
-        versionName '0.7.5-material-layers-r41-test'
+        versionCode 26
+        versionName '0.7.6-road-junctions-r5-test'
         ndk { abiFilters 'arm64-v8a' }
         externalNativeBuild {
             cmake { cppFlags '-std=c++17 -O2 -Wall -Wextra' }
         }
     }
     buildTypes {
-        debug { debuggable true; applicationIdSuffix '.materiallayers' }
+        debug { debuggable true; applicationIdSuffix '.roadjunctions' }
         release { minifyEnabled false }
     }
     compileOptions {

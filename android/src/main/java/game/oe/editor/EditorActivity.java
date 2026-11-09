@@ -120,6 +120,12 @@ public class EditorActivity extends Activity {
     private static native boolean nativeRoadSetMaterial(int choice);
     private static native boolean nativeRoadRemoveLastPoint();
     private static native boolean nativeRoadDeleteSelected();
+    private static native double[] nativeRoadPointCoords();
+    private static native boolean nativeRoadPointSelect(int index);
+    private static native boolean nativeRoadPointMove(double x,double z);
+    private static native boolean nativeRoadPointTapMove(float x,float y);
+    private static native boolean nativeRoadSmooth(double radiusMetres);
+    private static native int nativeRoadIntersectionCount();
     private static native int[] nativePaintTileCoords();
     private static native byte[] nativePaintTileData(int index);
     private static native boolean nativePaintCursor(float x,float y,float radius);
@@ -159,6 +165,7 @@ public class EditorActivity extends Activity {
     private volatile boolean precisionPaintErase=false;
     private volatile float precisionPaintRadius=2f,precisionPaintOpacity=.75f;
     private volatile boolean roadMode=false;
+    private volatile boolean roadMoveMode=false;
     private volatile boolean mapTopViewActive=false;
     private volatile MapGuide mapGuide=null;
     private volatile double selectedRoadWidth=6.0;
@@ -268,7 +275,7 @@ public class EditorActivity extends Activity {
         top.setPadding(dp(5),dp(2),dp(5),dp(2));
         top.setBackgroundColor(Color.argb(220,14,21,32));
         TextView title=new TextView(this);
-        title.setText("OE TERRAIN LAYERS R4.1 TEST");
+        title.setText("OE ROAD JUNCTIONS R5 / TEST");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
         title.setTextSize(12);
@@ -457,6 +464,10 @@ public class EditorActivity extends Activity {
             addPaletteOption("✔ Завершить дорогу",this::finishRoad);
             addPaletteOption("📋 Выбрать дорогу",this::chooseExistingRoad);
             addPaletteOption("➕ Продолжить выбранную",this::continueExistingRoad);
+            addPaletteOption("📍 Переместить точку касанием",()->chooseRoadPoint(true));
+            addPaletteOption("⌨ Точные координаты точки",()->chooseRoadPoint(false));
+            addPaletteOption("〰 Сгладить повороты",this::chooseRoadSmoothing);
+            addPaletteOption("✣ Перекрёстки · информация",this::showJunctionStatus);
             addPaletteOption("↶ Удалить последнюю точку",this::removeRoadPoint);
             addPaletteOption("↔ Ширина дороги",this::chooseRoadWidth);
             addPaletteOption("🎨 Покрытие дороги",this::chooseRoadMaterial);
@@ -516,7 +527,7 @@ public class EditorActivity extends Activity {
     }
     private void enterPlaceMode(int kind, String asset) {
         if(importing) { message("Сначала дождись завершения импорта"); return; }
-        terrainMode=0;paintTerrainMode=false;roadMode=false;precisionPaintMode=false;materialPaintMode=false;
+        terrainMode=0;paintTerrainMode=false;roadMode=false;roadMoveMode=false;precisionPaintMode=false;materialPaintMode=false;
         materialPaintMode=false;
          surface.queueEvent(()->{nativePaintStrokeEnd();nativeLayerStrokeEnd();});
         surface.queueEvent(EditorActivity::nativeRoadFinish);
@@ -526,7 +537,7 @@ public class EditorActivity extends Activity {
         message("Коснись места на карте для размещения");
     }
     private void cancelPlace() {
-        paintTerrainMode=false;roadMode=false;precisionPaintMode=false;
+        paintTerrainMode=false;roadMode=false;roadMoveMode=false;precisionPaintMode=false;
         surface.queueEvent(()->{nativeRoadFinish();nativePaintStrokeEnd();nativeLayerStrokeEnd();});
         terrainMode=0;
         placingKind = -1;
@@ -536,7 +547,7 @@ public class EditorActivity extends Activity {
     }
     private void enterTerrainMode(int direction){
         if(importing){message("Дождись завершения операции");return;}
-        placingKind=-1;placingGlb=null;paintTerrainMode=false;roadMode=false;
+        placingKind=-1;placingGlb=null;paintTerrainMode=false;roadMode=false;roadMoveMode=false;
         precisionPaintMode=false;materialPaintMode=false;
         surface.queueEvent(()->{nativeRoadFinish();nativePaintStrokeEnd();});
         terrainMode=direction;
@@ -567,14 +578,14 @@ public class EditorActivity extends Activity {
 
     private void beginNewRoad(){
         if(importing){message("Дождись завершения импорта");return;}
-        placingKind=-1;placingGlb=null;terrainMode=0;paintTerrainMode=false;precisionPaintMode=false;materialPaintMode=false;roadMode=true;
+        placingKind=-1;placingGlb=null;terrainMode=0;paintTerrainMode=false;precisionPaintMode=false;materialPaintMode=false;roadMoveMode=false;roadMode=true;
         surface.queueEvent(()->{nativeRoadBegin();surface.requestRender();});
         statusText.setText("ДОРОГА: коснись земли для 1-й точки, затем для 2-й. "
             +"Следующие касания продолжают дорогу. Два пальца — камера.");
         message("Создание новой дороги · две точки задают первый участок");
     }
     private void finishRoad(){
-        roadMode=false;
+        roadMode=false;roadMoveMode=false;
         surface.queueEvent(()->{nativeRoadFinish();surface.requestRender();});
         statusText.setText("Дорога завершена · выбери другую или отредактируй ширину.");
     }
@@ -582,7 +593,7 @@ public class EditorActivity extends Activity {
         if(importing)return;
         surface.queueEvent(()->{
             if(nativeRoadContinue()){
-                roadMode=true;placingKind=-1;terrainMode=0;paintTerrainMode=false;
+                roadMoveMode=false;roadMode=true;placingKind=-1;terrainMode=0;paintTerrainMode=false;
                 ui(()->statusText.setText("Продолжение дороги: касайся земли для добавления точек."));
                 surface.requestRender();
             }else message("Сначала выбери дорогу через «Дороги → Выбрать»");
@@ -596,7 +607,7 @@ public class EditorActivity extends Activity {
                 if(list==null||list.length==0){message("Пока нет дорог");return;}
                 new AlertDialog.Builder(this).setTitle("Выбери дорогу")
                     .setItems(list,(dialog,index)->{
-                        roadMode=false;
+                        roadMode=false;roadMoveMode=false;
                         edit(()->{
                             nativeRoadFinish();
                             nativeRoadSelect(index);
@@ -607,6 +618,122 @@ public class EditorActivity extends Activity {
             });
         });
     }
+
+    private void chooseRoadPoint(boolean byTap){
+        if(importing)return;
+        surface.queueEvent(()->{
+            final double[] coords=nativeRoadPointCoords();
+            ui(()->{
+                if(coords==null||coords.length<4){
+                    message("Сначала выбери дорогу в разделе «Дороги»");return;
+                }
+                final int count=coords.length/2;
+                final String[] choices=new String[Math.min(120,count)];
+                for(int i=0;i<choices.length;i++)
+                    choices[i]=String.format(Locale.US,"Точка %d · X %.2f / Z %.2f",
+                                              i+1,coords[2*i],coords[2*i+1]);
+                final AlertDialog.Builder builder=new AlertDialog.Builder(this)
+                    .setTitle(byTap?"Выбрать точку для переноса":"Точные координаты точки")
+                    .setItems(choices,(dialog,index)->onRoadPointChosen(index,
+                                                coords[2*index],coords[2*index+1],byTap))
+                    .setNegativeButton("Отмена",null);
+                if(count>120){
+                    builder.setMessage("Показаны первые 120 точек из "+count+
+                        ". Для дальних точек выбери «По номеру».")
+                        .setNeutralButton("По номеру",(dialog,which)->{
+                            final EditText number=new EditText(this);
+                            number.setSingleLine(true);
+                            number.setInputType(InputType.TYPE_CLASS_NUMBER);
+                            number.setHint("От 1 до "+count);
+                            new AlertDialog.Builder(this)
+                                .setTitle("Номер контрольной точки").setView(number)
+                                .setPositiveButton("Выбрать",(d,k)->{
+                                    try{
+                                        int idx=Integer.parseInt(number.getText().toString().trim())-1;
+                                        if(idx<0||idx>=count)throw new NumberFormatException();
+                                        onRoadPointChosen(idx,coords[2*idx],coords[2*idx+1],byTap);
+                                    }catch(Exception ignored){message("Номер точки вне диапазона");}
+                                }).setNegativeButton("Отмена",null).show();
+                        });
+                }
+                builder.show();
+            });
+        });
+    }
+    private void onRoadPointChosen(int index,double oldX,double oldZ,boolean byTap){
+        if(byTap){
+            roadMode=false;roadMoveMode=true;
+            placingKind=-1;placingGlb=null;paintTerrainMode=false;
+            precisionPaintMode=false;materialPaintMode=false;terrainMode=0;
+            surface.queueEvent(()->{
+                nativeRoadFinish();
+                if(nativeRoadPointSelect(index)){
+                    surface.requestRender();
+                    ui(()->statusText.setText("ТОЧКА "+(index+1)+
+                        ": коснись нового места на земле. Привязка к концам дорог — 2 м."));
+                    message("Выбрана точка "+(index+1)+" · коснись места переноса");
+                }
+            });
+            return;
+        }
+        roadMoveMode=false;
+        LinearLayout fields=new LinearLayout(this);
+        fields.setPadding(dp(20),dp(8),dp(20),dp(5));
+        fields.setOrientation(LinearLayout.VERTICAL);
+        EditText x=new EditText(this),z=new EditText(this);
+        int input=InputType.TYPE_CLASS_NUMBER|InputType.TYPE_NUMBER_FLAG_DECIMAL|
+                  InputType.TYPE_NUMBER_FLAG_SIGNED;
+        x.setSingleLine(true);z.setSingleLine(true);
+        x.setInputType(input);z.setInputType(input);
+        x.setHint("X, метры");z.setHint("Z, метры");
+        x.setText(String.format(Locale.US,"%.3f",oldX));
+        z.setText(String.format(Locale.US,"%.3f",oldZ));
+        fields.addView(x);fields.addView(z);
+        new AlertDialog.Builder(this).setTitle("Точка "+(index+1)+" · координаты")
+            .setView(fields).setPositiveButton("Применить",(dialog,which)->{
+                try{
+                    double newX=Double.parseDouble(x.getText().toString().trim().replace(',','.'));
+                    double newZ=Double.parseDouble(z.getText().toString().trim().replace(',','.'));
+                    if(!Double.isFinite(newX)||!Double.isFinite(newZ))
+                        throw new NumberFormatException();
+                    edit(()->{
+                        if(nativeRoadPointSelect(index)&&nativeRoadPointMove(newX,newZ))
+                            message("Точка "+(index+1)+" обновлена. Доступна отмена ↶.");
+                        else message("Точка недоступна, слишком близко к соседней или вне мира");
+                    });
+                }catch(Exception invalid){message("Введите числовые X и Z в метрах");}
+            }).setNegativeButton("Отмена",null).show();
+    }
+    private void chooseRoadSmoothing(){
+        if(importing)return;
+        final double[] radii={1,2,4,8};
+        final String[] names={"1 м — лёгкое","2 м — обычное",
+                              "4 м — плавное","8 м — широкие повороты"};
+        new AlertDialog.Builder(this).setTitle("Сгладить повороты дороги")
+            .setMessage("Заменяет резкие углы дополнительными редактируемыми точками. "
+                +"Возможна отмена ↶. Для точной прокладки по PNG используй маленький радиус.")
+            .setItems(names,(dialog,index)->edit(()->{
+                roadMoveMode=false;roadMode=false;
+                if(nativeRoadSmooth(radii[index]))
+                    message("Повороты сглажены · радиус "+radii[index]+" м");
+                else message("Не получилось сгладить: выбери дорогу или уменьшай число точек");
+            })).setNegativeButton("Отмена",null).show();
+    }
+    private void showJunctionStatus(){
+        if(importing)return;
+        surface.queueEvent(()->{
+            final int count=nativeRoadIntersectionCount();
+            ui(()->new AlertDialog.Builder(this).setTitle("Перекрёстки OE · R5")
+                .setMessage(count<0?
+                    "Дорожная сеть превышает ограничение предварительного поиска (1800 отрезков). "
+                    +"Сами дороги остаются доступны, но предпросмотр перекрёстков отключён.":
+                    "Найдено пересечений: "+count+". Центры пересечений показаны поверх дорог. "
+                    +"Это визуальные площадки, не окончательная геометрия тротуаров или навигации. "
+                    +"При подведении конца дороги к другой конечной точке действует привязка 2 м.")
+                .setPositiveButton("Понятно",null).show());
+        });
+    }
+
     private void chooseRoadWidth(){
         if(importing)return;
         final EditText field=new EditText(this);
@@ -1377,7 +1504,7 @@ public class EditorActivity extends Activity {
         if(activePaintKey.isEmpty()){
             message("Сначала загрузи и выбери PNG/JPG");return;
         }
-        terrainMode=0;placingKind=-1;placingGlb=null;roadMode=false;precisionPaintMode=false;materialPaintMode=false;
+        terrainMode=0;placingKind=-1;placingGlb=null;roadMode=false;roadMoveMode=false;precisionPaintMode=false;materialPaintMode=false;
         surface.queueEvent(()->{nativeRoadFinish();nativePaintStrokeEnd();});
         paintTerrainMode=true;
         statusText.setText("КИСТЬ ТЕКСТУР: касайся земли · радиус "+(int)paintRadius+
@@ -1390,7 +1517,7 @@ public class EditorActivity extends Activity {
             message("Сначала загрузи и выбери текстуру PNG/JPG");return;
         }
         paintTerrainMode=false;terrainMode=0;placingKind=-1;placingGlb=null;roadMode=false;
-        precisionPaintErase=erase;precisionPaintMode=true;materialPaintMode=false;
+        precisionPaintErase=erase;precisionPaintMode=true;materialPaintMode=false;roadMoveMode=false;
         surface.queueEvent(()->{nativeRoadFinish();nativePaintStrokeEnd();});
         statusText.setText(erase?"ЛАСТИК R4: веди пальцем · курсор на 70 dp выше пальца":
              "КИСТЬ R4: веди пальцем непрерывно · круг на 70 dp выше пальца. "
@@ -1404,7 +1531,7 @@ public class EditorActivity extends Activity {
             message("Сначала выбери материал PNG/JPG в библиотеке текстур");return;
         }
         paintTerrainMode=false;terrainMode=0;placingKind=-1;placingGlb=null;roadMode=false;
-        precisionPaintErase=erase;precisionPaintMode=true;materialPaintMode=true;
+        precisionPaintErase=erase;precisionPaintMode=true;materialPaintMode=true;roadMoveMode=false;
         surface.queueEvent(()->{nativeRoadFinish();nativePaintStrokeEnd();nativeLayerStrokeEnd();});
         statusText.setText(erase?
             "ЛАСТИК СЛОЯ: стирает ТОЛЬКО выбранную текстуру. Курсор выше пальца.":
@@ -2037,7 +2164,7 @@ public class EditorActivity extends Activity {
                     mapGuide=parsedGuide;
                     mapTopViewActive=false;
                     committed=true;
-                    roadMode=false;precisionPaintMode=false;materialPaintMode=false;
+                    roadMode=false;roadMoveMode=false;precisionPaintMode=false;materialPaintMode=false;
                     surface.requestRender();
                     refreshSelected();
                     message("Сцена загружена · "+items.length+" объектов, текстур "+referencedPaint.size()+", GLB "+assets.size()+
@@ -2188,7 +2315,7 @@ public class EditorActivity extends Activity {
                 }
                 queueEvent(() -> {
                     nativeGizmoEnd();gizmoEditStarted=false;
-                    if(placingKind==-1&&terrainMode==0&&!paintTerrainMode&&!roadMode)
+                    if(placingKind==-1&&terrainMode==0&&!paintTerrainMode&&!roadMode&&!roadMoveMode)
                         touchedGizmoAxis=nativeGizmoHit(px,py);
                 });
                 return true;
@@ -2236,7 +2363,7 @@ public class EditorActivity extends Activity {
                         // axis hit-test on DOWN is guaranteed to run before MOVE.
                         queueEvent(()->{
                             final int axis=touchedGizmoAxis;
-                            if(axis>=0&&placingKind==-1&&terrainMode==0&&!paintTerrainMode&&!roadMode){
+                            if(axis>=0&&placingKind==-1&&terrainMode==0&&!paintTerrainMode&&!roadMode&&!roadMoveMode){
                                 if(!gizmoEditStarted&&movedEnough)
                                     gizmoEditStarted=nativeGizmoBegin(axis);
                                 if(gizmoEditStarted)nativeGizmoDrag(axis,sx,sy);
@@ -2272,6 +2399,7 @@ public class EditorActivity extends Activity {
                     final int kind=placingKind,brush=terrainMode;
                     final boolean paint=paintTerrainMode;
                     final boolean roadDraw=roadMode;
+                    final boolean roadPointMove=roadMoveMode;
                     final String paintingKey=activePaintKey;
                     final String asset=placingGlb;
                     queueEvent(()->{
@@ -2282,7 +2410,14 @@ public class EditorActivity extends Activity {
                             return;
                         }
                         if(tap){
-                            if(roadDraw){
+                            if(roadPointMove){
+                                if(nativeRoadPointTapMove(px,py)){
+                                    roadMoveMode=false;
+                                    message("Контрольная точка перенесена · ↶ отменить");
+                                    ui(()->statusText.setText(
+                                        "Точка перенесена · можно выбрать следующую."));
+                                }else message("Перенос невозможен: край карты или соседняя точка");
+                            }else if(roadDraw){
                                 final int result=nativeRoadTap(px,py);
                                 if(result==1)message("Первая точка · коснись земли ещё раз");
                                 else if(result==2)message("Дорога создана · добавляй точки");

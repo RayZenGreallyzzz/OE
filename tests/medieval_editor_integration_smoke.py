@@ -11,33 +11,46 @@ archive = (root / "android/src/main/java/game/oe/editor/ProjectArchive.java").re
 manifest = (root / "android/src/main/AndroidManifest.xml").read_text()
 cmake = (root / "android/src/main/cpp/CMakeLists.txt").read_text()
 
-# Scene entity validators and both map-touch/add paths must accept 17..19.
-assert "gStaticMeshes[20]" in native
-assert "for(int kind=0;kind<20;kind++)if(kind!=6)bakeStaticMesh(kind);" in native
-assert "e.type>=20" in native
-assert "type<0||type>19||type==6" in native
+# Scene entity validators and both map-touch/add paths accept 17..28.
+assert "gStaticMeshes[29]" in native
+assert "for(int kind=0;kind<29;kind++)if(kind!=6)bakeStaticMesh(kind);" in native
+assert "e.type>=29" in native
+assert "type<0||type>28||type==6" in native
 assert "type<0||type>16" not in native
 assert "oe::medieval::moduleParts(type)" in native
 assert "nativeFoundationUnderSelected(" in native
+assert "fitsStockBuildingFoundation(foundationKind)" in native
+assert "nativeFoundationUnderSelected(int foundationKind)" in java
+assert '"Мосты".equals(category)' in java
+assert '"Фундаменты".equals(category)' in java
 
 # UI palette must truly offer the modules, not just names in an info panel.
 for entry in (
     'enterPlaceMode(17,null)',
     'enterPlaceMode(18,null)',
     'enterPlaceMode(19,null)',
+    'enterPlaceMode(20,null)',
+    'enterPlaceMode(21,null)',
+    'enterPlaceMode(22,null)',
+    'enterPlaceMode(23,null)',
+    'enterPlaceMode(24,null)',
+    'enterPlaceMode(25,null)',
+    'enterPlaceMode(26,null)',
+    'enterPlaceMode(27,null)',
+    'enterPlaceMode(28,null)',
     'this::foundationUnderSelected',
 ):
     assert entry in java, entry
 
 # Only scenes containing new object types move to version six.
 assert 'json.put("version",6)' in java
-assert "kind>=17&&kind<=19" in java
+assert "kind>=17&&kind<=28" in java
 assert "sceneVersion>6" in java
 assert "(e.type>=17&&sceneVersion<6)" in java
 assert "version>=1&&version<=6" in archive
-assert "kind>=0&&kind<=19&&(kind<=16||version>=6)" in archive
+assert "kind>=0&&kind<=28&&(kind<=16||version>=6)" in archive
 assert "(version!=5||independent!=null)" in archive
 assert "medieval/structures.cpp" in cmake
-assert "OE MEDIEVAL MODULES R5.2a TEST" in manifest
+assert "OE MEDIEVAL MODULES R5.2b TEST" in manifest
 
 print("OE_MEDIEVAL_EDITOR_INTEGRATION_OK: placement, palette, v6 archive, isolated build")

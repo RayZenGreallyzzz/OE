@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-feature android:glEsVersion="0x00030000" android:required="true"/>
-    <application android:label="OE MEDIEVAL MODULES R5.2a TEST" android:theme="@android:style/Theme.Material.NoActionBar"
+    <application android:label="OE MEDIEVAL MODULES R5.2b TEST" android:theme="@android:style/Theme.Material.NoActionBar"
         android:allowBackup="false" android:usesCleartextTraffic="false">
         <activity android:name="game.oe.editor.EditorActivity" android:exported="true"
             android:screenOrientation="sensorLandscape"

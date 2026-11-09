@@ -5,8 +5,8 @@
 using namespace oe::medieval;
 int main(){
  assert(!validModule(16)&&validModule(kStoneBridge)&&validModule(kTimberBridge)&&
-        validModule(kStoneFoundation)&&!validModule(20));
- assert(moduleParts(20).empty());
+        validModule(kStoneFoundation)&&validModule(kSwampCauseway));
+ assert(!validModule(29)&&moduleParts(29).empty());
  for(int type=kStoneBridge;type<=kLastModuleType;++type){
   const auto parts=moduleParts(type);
   assert(!parts.empty()&&parts.size()<=kMaxPartsPerModule);
@@ -39,5 +39,36 @@ int main(){
  // beyond its walls, and a tree/road must remain unaffected.
  assert(base.minX<=-3.5f&&base.maxX>=3.5f&&
         base.minZ<=-2.9f&&base.maxZ>=2.9f);
- std::cout<<"OE_MEDIEVAL_MODULES_OK: 3 bounded shared meshes, open bridges, building foundation\n";
+ // Every one of the twelve variants has a distinctive part layout.
+ for(int type=kStoneBridge;type<=kLastModuleType;++type){
+  const auto parts=moduleParts(type);
+  assert(!parts.empty());
+  assert(parts.size()<=40); // one shared GPU mesh, fixed memory cost
+ }
+ // New constructions have different spans and deck clearances.
+ const auto narrow=moduleBounds(kNarrowFootbridge);
+ assert(narrow.maxX-narrow.minX>6.f&&narrow.maxZ-narrow.minZ<2.5f);
+ const auto rope=moduleBounds(kRopeBridge);
+ assert(rope.maxX-rope.minX>8.9f&&rope.maxY>2.f);
+ const auto stepping=moduleBounds(kSteppingStoneFord);
+ assert(stepping.maxY<.35f&&stepping.maxX-stepping.minX>8.f);
+ const auto wide=moduleBounds(kWideCartBridge);
+ assert(wide.maxX-wide.minX>10.f&&wide.maxZ-wide.minZ>4.f);
+ const auto marsh=moduleBounds(kSwampCauseway);
+ assert(marsh.maxX-marsh.minX>8.f&&marsh.minY>=0.f);
+ // Proper auto placement only for pads large enough for original stock houses.
+ for(int foundation:{kStoneFoundation,kTimberPileFoundation,
+                      kRuinFoundation,kTowerFoundation}){
+  assert(fitsStockBuildingFoundation(foundation));
+  assert(std::isfinite(foundationTop(foundation)));
+  const auto ext=moduleBounds(foundation);
+  assert(ext.maxY>=foundationTop(foundation)&&
+         ext.maxY-foundationTop(foundation)<.60f);
+  assert(ext.maxX-ext.minX>=6.5f&&ext.maxZ-ext.minZ>=5.6f);
+ }
+ assert(!fitsStockBuildingFoundation(kSmallHutFoundation));
+ assert(std::abs(foundationTop(kSmallHutFoundation)-.4f)<.0001f);
+ assert(!fitsStockBuildingFoundation(kNarrowFootbridge));
+ assert(std::isnan(foundationTop(kRopeBridge)));
+ std::cout<<"OE_MEDIEVAL_MODULES_OK: 12 bounded meshes, 7 bridges/crossings, 5 foundations, safe auto-fit\n";
 }

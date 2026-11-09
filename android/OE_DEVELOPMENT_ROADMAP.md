@@ -36,6 +36,14 @@ These features are implemented in experimental branches with successful automate
 - Scene v6 only when new object types are present; previous scene versions v1–v5 continue loading. Keep a .oezip backup before importing v6 into older editor builds.
 - Not water/terrain carving, automatic bridge-to-road endpoints, collision, physical stone arch construction or grouped parent-child building transforms.
 
+### R5.2b — medieval bridge/foundation variations and code backup (experimental implementation; tablet QA pending)
+- Preserve R5.2a at GitHub source branch `backup/oe-medieval-r52a-2026-11-09` before modifying new variants.
+- Add 9 more lightweight structures: narrow footbridge, rope bridge, stepping-stone ford, timber pile foundation, ruined stone plinth, hut foundation, tower foundation, wide cart bridge, and raised swamp boardwalk — 12 total.
+- Dedicated `Мосты` and `Фундаменты` tabs and selectable 4-style auto-fitted foundation placement under stock buildings.
+- Maintain one shared static mesh per module kind, <=40 boxes and 480 triangles per mesh, <=300 editor objects, and backwards scene v1–v6 import (new objects remain v6).
+- Backup packaged APKs and release archives are not a backup of the user's local `.oezip` cities. Export those separately on the tablet.
+- Bridges still have no game physics/automatic road attachment and do not cut riverbeds. R5.3 remains road collision and nav foundations.
+
 ### R5.3 — road navigation and collision-ready data
 - Build a separate road graph for future vehicles/NPCs, with junction and direction metadata.
 - Provide simplified collision mesh or collision shapes for road and sidewalk surfaces.

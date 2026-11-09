@@ -5,6 +5,7 @@
 #include "runtime/oe_runtime.h"
 #include "roads/road_network.h"
 #include "roads/road_junctions.h"
+#include "roads/road_topology.h"
 #include "terrainpaint/paint_tiles.h"
 #include "terrainpaint/material_layers.h"
 #include "vendor/basisu/transcoder/basisu_transcoder.h"
@@ -2236,12 +2237,24 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadContinue
  if(!gRoads.find(gSelectedRoad))return JNI_FALSE;
  gActiveRoad=gSelectedRoad;gRoadPending=false;return JNI_TRUE;
 }
+// Build and validate the COMPLETE graph before recording undo or touching live
+// roads. Returns false for overlaps, unsafe topology, GPU/world budgets.
+bool commitRoadNetwork(const std::vector<oe::roads::Road>& proposed){
+ oe::roads::RoadTopology topology;
+ if(!oe::roads::buildRoadTopology(proposed,topology)||
+    !roadBudget(topology.roads,gWorldSize))return false;
+ oe::roads::Network staging=gRoads;
+ if(!staging.replaceAll(topology.roads))return false;
+ recordEdit();
+ gRoads=std::move(staging);
+ gSelectedRoadPoint=-1;++gRoadRevision;
+ return true;
+}
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeRoadTap(
  JNIEnv*,jclass,jfloat px,jfloat py){
  float x,z;
  if(!groundPoint(px,py,x,z))return 0;
- oe::roads::Point point{static_cast<double>(x),static_cast<double>(z)};
- point=oe::roads::snapEndpoint(gRoads.all(),point,2.0,gActiveRoad);
+ const oe::roads::Point point{static_cast<double>(x),static_cast<double>(z)};
  if(!gActiveRoad){
   if(!gRoadPending){
    if(gRoads.all().size()>=oe::roads::kMaxRoads||
@@ -2249,28 +2262,29 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeRoadTap(
       std::abs(point.z)>worldHalf()-gRoadWidth*2)return -1;
    gRoadFirstPoint=point;gRoadPending=true;return 1;
   }
-  oe::roads::Road candidate{1,"Road","builtin:cobblestone",gRoadWidth,
-                            {gRoadFirstPoint,point}};
-  candidate.material=gRoadMaterial;
-  std::vector<oe::roads::Road> preview=gRoads.all();
-  preview.push_back(candidate);
-  if(!roadBudget(preview,gWorldSize))return -1;
-  recordEdit();
-  const std::uint64_t id=gRoads.create("Road "+std::to_string(gRoads.all().size()+1),
-                                       gRoadMaterial,gRoadWidth,candidate.controlPoints);
+  oe::roads::Network staging=gRoads;
+  const std::uint64_t id=staging.create(
+      "Road "+std::to_string(gRoads.all().size()+1),gRoadMaterial,gRoadWidth,
+      {gRoadFirstPoint,point});
   if(!id)return -1;
-  gActiveRoad=gSelectedRoad=id;gRoadPending=false;++gRoadRevision;return 2;
+  oe::roads::RoadTopology topology;
+  if(!oe::roads::buildRoadTopology(staging.all(),topology)||
+     !roadBudget(topology.roads,gWorldSize)||
+     !staging.replaceAll(topology.roads))return -1;
+  recordEdit();
+  gRoads=std::move(staging);
+  gActiveRoad=gSelectedRoad=id;gRoadPending=false;
+  gSelectedRoadPoint=-1;++gRoadRevision;return 2;
  }
- const oe::roads::Road* current=gRoads.find(gActiveRoad);
+ const auto* current=gRoads.find(gActiveRoad);
  if(!current){gActiveRoad=0;return -1;}
- oe::roads::Road changed=*current;
- changed.controlPoints.push_back(point);
- std::vector<oe::roads::Road> preview=gRoads.all();
- for(auto& road:preview)if(road.id==changed.id){road=changed;break;}
- if(!roadBudget(preview,gWorldSize))return -1;
- recordEdit();
- if(!gRoads.update(changed))return -1;
- gSelectedRoad=changed.id;++gRoadRevision;return 3;
+ auto modified=*current;
+ modified.controlPoints.push_back(point);
+ auto proposed=gRoads.all();
+ for(auto& road:proposed)if(road.id==modified.id){road=modified;break;}
+ if(!commitRoadNetwork(proposed))return -1;
+ gSelectedRoad=modified.id;
+ return 3;
 }
 JNIEXPORT jobjectArray JNICALL Java_game_oe_editor_EditorActivity_nativeRoadLabels(
  JNIEnv*env,jclass){
@@ -2325,18 +2339,15 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadPointSel
  return JNI_TRUE;
 }
 bool updateSelectedRoadPoint(double x,double z){
- const oe::roads::Road* road=gRoads.find(gSelectedRoad);
- if(!road||gSelectedRoadPoint<0||
-    static_cast<size_t>(gSelectedRoadPoint)>=road->controlPoints.size()||
+ const auto* current=gRoads.find(gSelectedRoad);
+ if(!current||gSelectedRoadPoint<0||
+    static_cast<std::size_t>(gSelectedRoadPoint)>=current->controlPoints.size()||
     !std::isfinite(x)||!std::isfinite(z))return false;
- oe::roads::Road modified=*road;
- modified.controlPoints[static_cast<size_t>(gSelectedRoadPoint)]={x,z};
- auto candidate=gRoads.all();
- for(auto&roadCopy:candidate)if(roadCopy.id==modified.id){roadCopy=modified;break;}
- if(!roadBudget(candidate,gWorldSize))return false;
- recordEdit();
- if(!gRoads.update(modified))return false;
- ++gRoadRevision;return true;
+ auto modified=*current;
+ modified.controlPoints[static_cast<std::size_t>(gSelectedRoadPoint)]={x,z};
+ auto proposed=gRoads.all();
+ for(auto& road:proposed)if(road.id==modified.id){road=modified;break;}
+ return commitRoadNetwork(proposed);
 }
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadPointMove(
  JNIEnv*,jclass,jdouble x,jdouble z){
@@ -2346,9 +2357,8 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadPointTap
  JNIEnv*,jclass,jfloat px,jfloat py){
  float x,z;
  if(!groundPoint(px,py,x,z))return JNI_FALSE;
- const auto snap=oe::roads::snapEndpoint(
-    gRoads.all(),{static_cast<double>(x),static_cast<double>(z)},2.0,gSelectedRoad);
- return updateSelectedRoadPoint(snap.x,snap.z)?JNI_TRUE:JNI_FALSE;
+ return updateSelectedRoadPoint(static_cast<double>(x),static_cast<double>(z))?
+        JNI_TRUE:JNI_FALSE;
 }
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadSmooth(
  JNIEnv*,jclass,jdouble metres){
@@ -2358,11 +2368,30 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadSmooth(
  if(!oe::roads::roundCorners(*current,metres,smooth))return JNI_FALSE;
  auto candidate=gRoads.all();
  for(auto& road:candidate)if(road.id==smooth.id){road=smooth;break;}
- if(!roadBudget(candidate,gWorldSize))return JNI_FALSE;
- recordEdit();
- if(!gRoads.update(smooth))return JNI_FALSE;
- gSelectedRoadPoint=-1;gActiveRoad=0;++gRoadRevision;
+ if(!commitRoadNetwork(candidate))return JNI_FALSE;
+ gSelectedRoadPoint=-1;gActiveRoad=0;
  return JNI_TRUE;
+}
+// Graph statistics are derived from the same deterministic calculation
+// that bakes the roads; old v1-v5 scenes require no extra graph JSON fields.
+JNIEXPORT jintArray JNICALL Java_game_oe_editor_EditorActivity_nativeRoadTopologyStats(
+ JNIEnv*env,jclass){
+ oe::roads::RoadTopology topology;
+ const bool good=oe::roads::buildRoadTopology(gRoads.all(),topology);
+ const jint values[4]={
+  good?static_cast<jint>(topology.junctionCount):-1,
+  good?static_cast<jint>(topology.nodes.size()):-1,
+  good?static_cast<jint>(topology.edges.size()):-1,
+  good?static_cast<jint>(topology.crossingCount):-1
+ };
+ jintArray array=env->NewIntArray(4);
+ if(array)env->SetIntArrayRegion(array,0,4,values);
+ return array;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadBakeTopology(
+ JNIEnv*,jclass){
+ if(gRoads.all().empty())return JNI_FALSE;
+ return commitRoadNetwork(gRoads.all())?JNI_TRUE:JNI_FALSE;
 }
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeRoadIntersectionCount(
  JNIEnv*,jclass){

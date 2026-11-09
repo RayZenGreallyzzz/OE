@@ -942,6 +942,8 @@ void rebuildRoadMesh(){
   if(road.points.size()<2)continue;
   const auto samples=oe::roads::sample(road);
   if(samples.size()<2)continue;
+  const auto palette=oe::roads::surfacePalette(road.material);
+  const Color roadColor{palette.base.r,palette.base.g,palette.base.b};
   auto offset=[&](std::size_t idx,float xOffset)->Vec3 {
    const std::size_t prev=idx?idx-1:0,next=std::min(idx+1,samples.size()-1);
    float dx=samples[next].x-samples[prev].x;
@@ -973,7 +975,7 @@ void rebuildRoadMesh(){
    const float half=road.width*.5f;
    const Vec3 left0=offset(i-1,-half),left1=offset(i,-half);
    const Vec3 right0=offset(i-1,half),right1=offset(i,half);
-   quad(left0,right0,right1,left1,.105f,asphalt);
+   quad(left0,right0,right1,left1,.105f,roadColor);
    if(gRoadSidewalks){
     // Two narrow pavements follow both sides of the spline. Clip at the
     // actual intersection contour instead of blocking the driving mouths.
@@ -995,11 +997,75 @@ void rebuildRoadMesh(){
      }
     }
    }
-   if(!road.markings)continue;
+   if(road.material==oe::roads::kDirt){
+    // Two restrained cart-wheel ruts across the whole dirt road.
+    const auto&rut=palette.seam;
+    const Color rutCol{rut.r,rut.g,rut.b};
+    for(const float side:{-1.f,1.f}){
+     const float offsetMetres=side*half*.53f;
+     const Vec3 a=offset(i-1,offsetMetres-.105f);
+     const Vec3 b=offset(i-1,offsetMetres+.105f);
+     const Vec3 c=offset(i,offsetMetres+.105f);
+     const Vec3 d=offset(i,offsetMetres-.105f);
+     quad(a,b,c,d,.118f,rutCol);
+    }
+   }
+   if(!road.markings||road.material!=oe::roads::kAsphalt)continue;
    const float line=.12f;
    paintStripe(i,-half+line,-half+line*2,border);
    paintStripe(i,half-line*2,half-line,border);
    if((i/3)%2==0)paintStripe(i,-.065f,.065f,center);
+  }
+  // Cheap deterministic cobbles/flagstones, earthy patches or gravel specks.
+  // A fixed per-road budget avoids huge VBOs on 4 GB Android tablets. Large
+  // roads sample fewer details rather than allocating extra geometry.
+  if(road.material!=oe::roads::kAsphalt){
+   const int cols=oe::roads::detailColumns(road.width);
+   const std::size_t budget=std::max<std::size_t>(100,
+         oe::roads::kDetailTilesTotal/std::max<std::size_t>(1,gRoads.size()));
+   std::size_t rows=0;
+   for(std::size_t i=1;i<samples.size();++i){
+    const float seg=std::sqrt(oe::roads::distanceSquared(samples[i-1],samples[i]));
+    rows+=static_cast<std::size_t>(std::max(1,(int)std::ceil(seg/1.6f)));
+   }
+   const int stride=oe::roads::detailStride(rows,cols,budget);
+   std::size_t rowIndex=0,placed=0;
+   for(std::size_t i=1;i<samples.size()&&placed<budget;++i){
+    const float seg=std::sqrt(oe::roads::distanceSquared(samples[i-1],samples[i]));
+    const int parts=std::max(1,(int)std::ceil(seg/1.6f));
+    for(int row=0;row<parts&&placed<budget;++row,++rowIndex){
+     if(stride<=0||rowIndex%static_cast<std::size_t>(stride)!=0)continue;
+     const float t0=(row+.09f)/parts,t1=(row+.91f)/parts;
+     const float usable=road.width-.38f;
+     const float cell=usable/cols;
+     for(int column=0;column<cols&&placed<budget;++column){
+      const std::uint32_t hash=oe::roads::tileHash(
+          road.id,static_cast<int>(rowIndex),column);
+      if(road.material==oe::roads::kDirt&&hash%4u!=0u)continue;
+      if(road.material==oe::roads::kGravel&&hash%3u==0u)continue;
+      const float stagger=((rowIndex&1u)&&column>0)?cell*.15f:0.f;
+      float left=-road.width*.5f+.19f+cell*column+stagger+cell*.07f;
+      float right=std::min(road.width*.5f-.17f,
+                           left+cell*(road.material==oe::roads::kDirt?.52f:.87f));
+      if(right-left<.12f)continue;
+      const float mid=(t0+t1)*.5f;
+      const float rowBegin=(road.material==oe::roads::kDirt||
+                             road.material==oe::roads::kGravel)
+                           ?mid-(t1-t0)*.31f:t0;
+      const float rowEnd=(road.material==oe::roads::kDirt||
+                           road.material==oe::roads::kGravel)
+                         ?mid+(t1-t0)*.31f:t1;
+      const Vec3 a=between(offset(i-1,left),offset(i,left),rowBegin);
+      const Vec3 b=between(offset(i-1,right),offset(i,right),rowBegin);
+      const Vec3 c=between(offset(i-1,right),offset(i,right),rowEnd);
+      const Vec3 d=between(offset(i-1,left),offset(i,left),rowEnd);
+      const auto tone=oe::roads::tileColor(road.material,road.id,
+                                    static_cast<int>(rowIndex),column);
+      quad(a,b,c,d,.119f,{tone.r,tone.g,tone.b});
+      ++placed;
+     }
+    }
+   }
   }
  }
  // Replace the old round overlays with convex asphalt polygons built
@@ -1008,6 +1074,22 @@ void rebuildRoadMesh(){
  for(const auto&junction:junctions){
   const auto&outline=junction.outline;
   if(outline.size()<3)continue;
+  // Adopt the predominant road surface; avoids gray asphalt islands in
+  // medieval streets while preserving original asphalt at mixed junctions.
+  int material=oe::roads::kAsphalt;
+  int votes[5]={};
+  int seedRoad=1;
+  for(const auto&mouth:junction.mouths){
+   for(const auto&road:gRoads)if(road.id==mouth.roadId){
+    ++votes[road.material];
+    seedRoad=road.id;
+    break;
+   }
+  }
+  for(int m=1;m<=oe::roads::kAncientSlate;++m)
+   if(votes[m]>votes[material])material=m;
+  const auto jp=oe::roads::surfacePalette(material);
+  const Color pavement{jp.base.r,jp.base.g,jp.base.b};
   oe::roads::Point centre{0.f,0.f};
   for(const auto p:outline){centre.x+=p.x;centre.z+=p.z;}
   centre.x/=outline.size();centre.z/=outline.size();
@@ -1018,9 +1100,35 @@ void rebuildRoadMesh(){
    for(int k=0;k<cuts;++k){
     const auto p=oe::roads::mix2(a,b,(float)k/cuts);
     const auto q=oe::roads::mix2(a,b,(float)(k+1)/cuts);
-    vertex(centre.x,centre.z,.175f,junctionAsphalt);
-    vertex(p.x,p.z,.175f,junctionAsphalt);
-    vertex(q.x,q.z,.175f,junctionAsphalt);
+    vertex(centre.x,centre.z,.175f,pavement);
+    vertex(p.x,p.z,.175f,pavement);
+    vertex(q.x,q.z,.175f,pavement);
+   }
+  }
+  if(jp.hasPavers){
+   // Inlaid stones fill the central polygon without crossing its boundary.
+   // Each patch is precomputed; no per-frame random variation or uploads.
+   int added=0,checked=0;
+   const float cell=1.45f;
+   int line=0;
+   for(float z=junction.minZ+.15f;z<junction.maxZ-.15f&&
+       added<160&&checked<2500;z+=cell,++line){
+    for(float x=junction.minX+.15f+(line%2)*.35f;
+        x<junction.maxX-.15f&&added<160&&checked<2500;x+=cell){
+     ++checked;
+     const oe::roads::Point p{x+.09f,z+.09f};
+     const oe::roads::Point q{x+cell-.15f,z+.09f};
+     const oe::roads::Point r{x+cell-.15f,z+cell-.15f};
+     const oe::roads::Point t{x+.09f,z+cell-.15f};
+     if(!oe::roads::insideJunction(p,junction)||
+        !oe::roads::insideJunction(q,junction)||
+        !oe::roads::insideJunction(r,junction)||
+        !oe::roads::insideJunction(t,junction))continue;
+     const auto rgb=oe::roads::tileColor(material,seedRoad,line,added);
+     quad({p.x,0,p.z},{q.x,0,q.z},{r.x,0,r.z},{t.x,0,t.z},
+          .189f,{rgb.r,rgb.g,rgb.b});
+     ++added;
+    }
    }
   }
  }
@@ -1043,6 +1151,10 @@ void rebuildRoadMesh(){
  if(gRoadCrosswalks){
   const auto crossings=oe::roads::makeCrosswalks(junctions,worldHalf());
   for(const auto&crossing:crossings){
+   // No modern zebra markings on cobbles, dirt, gravel or fantasy paving.
+   auto found=std::find_if(gRoads.begin(),gRoads.end(),
+       [&crossing](const oe::roads::Road&r){return r.id==crossing.roadId;});
+   if(found==gRoads.end()||found->material!=oe::roads::kAsphalt)continue;
    for(const auto&bar:crossing.bars){
     quad(asVec(bar.a),asVec(bar.b),asVec(bar.c),asVec(bar.d),
          .148f,crosswalkPaint);

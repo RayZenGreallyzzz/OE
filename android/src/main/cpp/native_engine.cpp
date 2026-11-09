@@ -5,6 +5,7 @@
 #include "runtime/oe_runtime.h"
 #include "roads/road_network.h"
 #include "terrainpaint/paint_tiles.h"
+#include "terrainpaint/material_layers.h"
 #include "vendor/basisu/transcoder/basisu_transcoder.h"
 #include <GLES3/gl3.h>
 #include <android/log.h>
@@ -20,6 +21,7 @@
 #include <vector>
 #include <unordered_map>
 #include <map>
+#include <tuple>
 #include <cstdint>
 
 namespace {
@@ -37,6 +39,7 @@ struct Shader {
  GLint locMvp=-1, locModel=-1, locColor=-1, locLight=-1;
  GLint locTexture=-1,locTextured=-1,locPaintOverride=-1,locOverlay=-1,locPaintCenter=-1,locPaintRadius=-1;
  GLint locGuide=-1,locOpacity=-1;
+ GLint locMaterialLayer=-1,locLayerMask=-1;
 };
 struct TextureResource {
  GLuint id=0;
@@ -116,6 +119,17 @@ static std::vector<TerrainBrush> gBrushes;
 static int gTerrainRevision=0;
 // R4 composited paint tiles: GPU cache is disposable; authoring bytes are portable.
 static oe::terrainpaint::Canvas gPaintTiles;
+static oe::terrainpaint::MaterialCanvas gMaterialCanvas;
+struct MaterialGpu {GLuint texture=0;std::uint32_t revision=0;};
+static std::map<std::tuple<int,int,std::string>,MaterialGpu> gMaterialGpu;
+static bool gMaterialStrokeActive=false,gMaterialEraser=false;
+static float gLayerX=0,gLayerZ=0,gLayerRadius=2.f,gLayerStrength=.85f;
+static std::string gLayerTexture;
+void clearMaterialGpu(){
+ for(auto& entry:gMaterialGpu)if(entry.second.texture)
+  glDeleteTextures(1,&entry.second.texture);
+ gMaterialGpu.clear();
+}
 struct PaintTileGpu {GLuint texture=0;std::uint32_t revision=0;};
 static std::map<std::pair<int,int>,PaintTileGpu> gPaintTileGpu;
 static bool gPrecisionPaintActive=false,gPaintCursorVisible=false,gPaintEraser=false;
@@ -179,12 +193,13 @@ struct SceneSnapshot {
  std::vector<oe::roads::Road> roads;
  std::uint64_t selectedRoad=0;
  oe::terrainpaint::Canvas precisePaint;
+ oe::terrainpaint::MaterialCanvas materialPaint;
 };
 static std::vector<SceneSnapshot> gUndo,gRedo;
 static bool gSuspendHistory=false;
-static constexpr size_t HISTORY_LIMIT=40;
+static constexpr size_t HISTORY_LIMIT=12; // bounded undo when 2x paint canvases are present
 SceneSnapshot captureScene(){return {gEntities,gNextId,gSelected,gWorldSize,gDemoRoads,
-    gTarget,gDistance,gBrushes,gTerrainPaint,gRoads.all(),gSelectedRoad,gPaintTiles};}
+    gTarget,gDistance,gBrushes,gTerrainPaint,gRoads.all(),gSelectedRoad,gPaintTiles,gMaterialCanvas};}
 void restoreScene(const SceneSnapshot&s){
  gEntities=s.entities;gNextId=s.nextId;gSelected=s.selected;gWorldSize=s.worldSize;
  gDemoRoads=s.demoRoads;gTarget=s.target;gDistance=s.cameraDistance;
@@ -192,8 +207,10 @@ void restoreScene(const SceneSnapshot&s){
  gRoads.replaceAll(s.roads);gSelectedRoad=s.selectedRoad;
  gRoadPending=false;gActiveRoad=0;++gRoadRevision;
  gPaintTiles=s.precisePaint;
+ gMaterialCanvas=s.materialPaint;clearMaterialGpu();gMaterialStrokeActive=false;
  for(auto& gpu:gPaintTileGpu)if(gpu.second.texture)glDeleteTextures(1,&gpu.second.texture);
  gPaintTileGpu.clear();gPrecisionPaintActive=false;gPaintCursorVisible=false;
+ gMaterialGpu.clear();gMaterialStrokeActive=false;
 }
 void pushBounded(std::vector<SceneSnapshot>&stack,SceneSnapshot value){
  if(stack.size()>=HISTORY_LIMIT)stack.erase(stack.begin());
@@ -510,10 +527,14 @@ void setupGL(){
  uniform float uPaintRadius;
  uniform float uGuide;
  uniform float uOpacity;
+ uniform float uMaterialLayer;
+ uniform sampler2D uLayerMask;
  out vec4 fragColor;
  void main(){
    float sun=max(dot(normalize(vNormal),normalize(vec3(-.55,1.,.5))),0.);
-   vec4 texel=uUseTexture>.5?texture(uTexture,vUV):vec4(1.);
+   vec4 texel=uUseTexture>.5?texture(uTexture,
+       uMaterialLayer>.5?vWorldPos.xz/6.:vUV):vec4(1.);
+    if(uMaterialLayer>.5)texel.a*=texture(uLayerMask,vUV).r;
    if(uOverlay>.5){
      float dist=length(vWorldPos.xz-uPaintCenter)/max(uPaintRadius,.001);
      texel.a*=1.0-smoothstep(.82,1.0,dist);
@@ -542,6 +563,8 @@ void setupGL(){
  gShader.locPaintRadius=glGetUniformLocation(gShader.program,"uPaintRadius");
  gShader.locGuide=glGetUniformLocation(gShader.program,"uGuide");
  gShader.locOpacity=glGetUniformLocation(gShader.program,"uOpacity");
+ gShader.locMaterialLayer=glGetUniformLocation(gShader.program,"uMaterialLayer");
+ gShader.locLayerMask=glGetUniformLocation(gShader.program,"uLayerMask");
  glUseProgram(gShader.program);
  glUniform1i(gShader.locTexture,0);
  glUniform1f(gShader.locTextured,0.f);
@@ -549,6 +572,8 @@ void setupGL(){
  glUniform1f(gShader.locOverlay,0.f);
  glUniform1f(gShader.locGuide,0.f);
  glUniform1f(gShader.locOpacity,1.f);
+ glUniform1f(gShader.locMaterialLayer,0.f);
+ glUniform1i(gShader.locLayerMask,1);
  for(int kind=0;kind<3;kind++){
   std::vector<float> d=geometry(kind);Mesh &m=gMeshes[kind];m.count=(GLsizei)(d.size()/6);
   glGenVertexArrays(1,&m.vao);glBindVertexArray(m.vao);
@@ -1355,7 +1380,8 @@ void reset(bool demo){
  gSuspendHistory=true;
  gEntities.clear();gBrushes.clear();gTerrainPaint.clear();gTerrainRevision++;gNextId=1;gSelected=0;
  gRoads.clear();gSelectedRoad=0;gActiveRoad=0;gRoadPending=false;++gRoadRevision;
- gPaintTiles.clear();
+ gPaintTiles.clear();gMaterialCanvas.clear();
+ clearMaterialGpu();gMaterialStrokeActive=false;
  for(auto& gpu:gPaintTileGpu)if(gpu.second.texture)glDeleteTextures(1,&gpu.second.texture);
  gPaintTileGpu.clear();gPrecisionPaintActive=false;gPaintCursorVisible=false;
  gSceneInitialized=true;gDemoRoads=demo;gMapTopDown=false;
@@ -2134,6 +2160,8 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeSetWorldSize
  if(!roadBudget(gRoads.all(),newSize))return JNI_FALSE;
  oe::terrainpaint::Canvas nextTiles;
  if(!nextTiles.replaceAll(gPaintTiles.tiles(),newSize))return JNI_FALSE;
+ oe::terrainpaint::MaterialCanvas nextMasks;
+ if(!nextMasks.replaceAll(gMaterialCanvas.tiles(),newSize))return JNI_FALSE;
  if(gWorldSize==newSize)return JNI_TRUE;
  recordEdit();
  gWorldSize=newSize;

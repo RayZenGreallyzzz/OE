@@ -6,6 +6,7 @@
 #include "roads/road_network.h"
 #include "roads/road_junctions.h"
 #include "roads/road_topology.h"
+#include "roads/medieval_surface.h"
 #include "terrainpaint/paint_tiles.h"
 #include "terrainpaint/material_layers.h"
 #include "vendor/basisu/transcoder/basisu_transcoder.h"
@@ -1312,41 +1313,58 @@ bool rebuildRoadGpu(){
  const auto height=[](double x,double z)->double{
   return terrainHeightAt(static_cast<float>(x),static_cast<float>(z));
  };
- for(const auto& road:gRoads.all()){
-  oe::roads::SurfaceMesh strip;
-  if(!oe::roads::buildSurfaceMesh(road,height,strip))return false;
+ const auto append=[&](const oe::roads::SurfaceMesh& mesh,
+                       std::uint64_t roadId,std::uint64_t materialRoadId)->bool{
   if(vertices.size()/11>MAX_ROAD_GPU_VERTICES||
-     strip.triangles.size()>MAX_ROAD_GPU_VERTICES-vertices.size()/11)return false;
+     mesh.triangles.size()>MAX_ROAD_GPU_VERTICES-vertices.size()/11)return false;
   const GLint first=static_cast<GLint>(vertices.size()/11);
-  const Color color=roadPreviewColor(road.material);
-  for(const auto& point:strip.triangles){
+  const auto* source=gRoads.find(materialRoadId);
+  const Color color=source?roadPreviewColor(source->material):Color{.67f,.62f,.52f};
+  for(const auto& point:mesh.triangles){
    const float x=point.x,z=point.z;
    const float dx=terrainHeightAt(x+0.5f,z)-terrainHeightAt(x-0.5f,z);
    const float dz=terrainHeightAt(x,z+0.5f)-terrainHeightAt(x,z-0.5f);
-   const Vec3 normal=unit({-dx,1.0f,-dz});
-   vertices.insert(vertices.end(),{x,point.y,z,normal.x,normal.y,normal.z,
-      color.r,color.g,color.b,point.u,point.v});
+   const Vec3 surfaceNormal=unit({-dx,1.0f,-dz});
+   // Stable worn-earth/cobblestone modulation. Evaluated only on road mesh
+   // rebuild; world-space alignment also prevents shader seams at junctions.
+   const float wear=.965f+.035f*std::sin(x*.77f+z*.31f)*
+                               std::sin(z*.59f-x*.21f);
+   vertices.insert(vertices.end(),{x,point.y,z,
+      surfaceNormal.x,surfaceNormal.y,surfaceNormal.z,
+      color.r*wear,color.g*wear,color.b*wear,point.u,point.v});
   }
-  draws.push_back({first,static_cast<GLsizei>(strip.triangles.size()),road.id});
- }
-
- // Derived, non-persistent intersection preview. At most 96 discs / 4.6k triangles.
- // If the network exceeds R5 scan limits, roads still draw normally.
- std::vector<oe::roads::Junction> crossings;
- if(oe::roads::findJunctions(gRoads.all(),crossings)){
-  for(const auto& crossing:crossings){
-   oe::roads::SurfaceMesh patch;
-   if(!oe::roads::buildJunctionPreview(crossing,height,patch))continue;
-   if(vertices.size()/11>MAX_ROAD_GPU_VERTICES||
-      patch.triangles.size()>MAX_ROAD_GPU_VERTICES-vertices.size()/11)break;
-   const GLint first=static_cast<GLint>(vertices.size()/11);
-   const oe::roads::Road* parent=gRoads.find(crossing.roadA);
-   const Color color=parent?roadPreviewColor(parent->material):Color{.67f,.66f,.61f};
-   for(const auto& point:patch.triangles){
-    vertices.insert(vertices.end(),{point.x,point.y,point.z,0.f,1.f,0.f,
-         color.r,color.g,color.b,point.u,point.v});
+  draws.push_back({first,static_cast<GLsizei>(mesh.triangles.size()),roadId});
+  return true;
+ };
+ oe::roads::RoadTopology graph;
+ oe::roads::MedievalSurface stitched;
+ const bool hasStitchedSurfaces=
+     oe::roads::buildRoadTopology(gRoads.all(),graph,0.)&&
+     oe::roads::buildMedievalSurface(graph,height,stitched);
+ if(hasStitchedSurfaces){
+  // Never draw R5 crossing discs over R5.2 joined geometry: every R5.2 cap
+  // border is shared by the road ribbon and its terrain-following junction.
+  for(const auto& part:stitched.roads)
+   if(!append(part.mesh,part.roadId,part.materialRoadId))return false;
+  for(const auto& part:stitched.junctions)
+   if(!append(part.mesh,0,part.materialRoadId))return false;
+ }else{
+  // Old R5/R5.1, over-short approaches and unsupported overlap geometries
+  // remain editable. Fallback cannot corrupt road IDs or projects.
+  for(const auto& road:gRoads.all()){
+   oe::roads::SurfaceMesh strip;
+   if(!oe::roads::buildSurfaceMesh(road,height,strip))return false;
+   if(!append(strip,road.id,road.id))return false;
+  }
+  std::vector<oe::roads::Junction> crossings;
+  if(oe::roads::findJunctions(gRoads.all(),crossings)){
+   for(const auto& crossing:crossings){
+    oe::roads::SurfaceMesh patch;
+    if(!oe::roads::buildJunctionPreview(crossing,height,patch))continue;
+    if(vertices.size()/11>MAX_ROAD_GPU_VERTICES||
+       patch.triangles.size()>MAX_ROAD_GPU_VERTICES-vertices.size()/11)break;
+    if(!append(patch,0,crossing.roadA))break;
    }
-   draws.push_back({first,static_cast<GLsizei>(patch.triangles.size()),0});
   }
  }
  if(!gRoadGpu.vao){
@@ -2374,6 +2392,25 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadSmooth(
 }
 // Graph statistics are derived from the same deterministic calculation
 // that bakes the roads; old v1-v5 scenes require no extra graph JSON fields.
+// R5.2 diagnostics expose whether stitched surfaces were accepted, their
+// junction count, triangle budget, and fallback to the R5 preview.
+JNIEXPORT jintArray JNICALL Java_game_oe_editor_EditorActivity_nativeMedievalSurfaceStats(
+ JNIEnv*env,jclass){
+ oe::roads::RoadTopology network;
+ oe::roads::MedievalSurface surfaces;
+ const auto height=[](double x,double z)->double{
+  return terrainHeightAt(static_cast<float>(x),static_cast<float>(z));
+ };
+ const bool accepted=oe::roads::buildRoadTopology(gRoads.all(),network,0.)&&
+                     oe::roads::buildMedievalSurface(network,height,surfaces)&&
+                     surfaces.triangles*3<=MAX_ROAD_GPU_VERTICES;
+ const jint stats[3]={accepted?1:0,
+     accepted?static_cast<jint>(surfaces.stitchedNodes):0,
+     accepted?static_cast<jint>(surfaces.triangles):0};
+ jintArray array=env->NewIntArray(3);
+ if(array)env->SetIntArrayRegion(array,0,3,stats);
+ return array;
+}
 JNIEXPORT jintArray JNICALL Java_game_oe_editor_EditorActivity_nativeRoadTopologyStats(
  JNIEnv*env,jclass){
  oe::roads::RoadTopology topology;

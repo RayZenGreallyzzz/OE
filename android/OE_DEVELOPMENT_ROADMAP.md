@@ -23,7 +23,7 @@ These features are implemented in experimental branches with successful automate
 - Bounded operations; accurate save/load and .oezip roundtrip; undo/redo of graph edits.
 - Portable host tests plus Android debug build and on-tablet touch QA.
 
-### R5.2 — seamless junction/sidewalk geometry
+### R5.2 — joined medieval junction mesh (experimental implementation; physical QA pending)
 - Replace approximate crossing patches with **stitched** meshes, avoiding gaps, overlaps and Z-fighting.
 - Correct widths, corner radii, worn cobblestones and dirt/gravel material transitions; medieval grass edges, wagon ruts and drainage ditches instead of modern asphalt, concrete curbs or sidewalks.
 - Terrain conformity and predictable vertex/draw-call budgets on A523.

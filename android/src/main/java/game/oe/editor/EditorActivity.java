@@ -127,6 +127,7 @@ public class EditorActivity extends Activity {
     private static native boolean nativeRoadSmooth(double radiusMetres);
     private static native int nativeRoadIntersectionCount();
     private static native int[] nativeRoadTopologyStats();
+    private static native int[] nativeMedievalSurfaceStats();
     private static native boolean nativeRoadBakeTopology();
     private static native int[] nativePaintTileCoords();
     private static native byte[] nativePaintTileData(int index);
@@ -277,7 +278,7 @@ public class EditorActivity extends Activity {
         top.setPadding(dp(5),dp(2),dp(5),dp(2));
         top.setBackgroundColor(Color.argb(220,14,21,32));
         TextView title=new TextView(this);
-        title.setText("OE MEDIEVAL ROADS R5.1 TEST");
+        title.setText("OE MEDIEVAL JUNCTIONS R5.2 TEST");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
         title.setTextSize(12);
@@ -471,6 +472,7 @@ public class EditorActivity extends Activity {
             addPaletteOption("〰 Сгладить повороты",this::chooseRoadSmoothing);
             addPaletteOption("🔗 Соединить старые дороги",this::bakeExistingRoadTopology);
             addPaletteOption("✣ Узлы дорожной сети",this::showJunctionStatus);
+            addPaletteOption("🪨 Проверить швы перекрёстков R5.2",this::showMedievalSurfaceStats);
             addPaletteOption("↶ Удалить последнюю точку",this::removeRoadPoint);
             addPaletteOption("↔ Ширина дороги",this::chooseRoadWidth);
             addPaletteOption("🎨 Покрытие дороги",this::chooseRoadMaterial);
@@ -739,6 +741,27 @@ public class EditorActivity extends Activity {
                     "соседней дороги в радиусе 2 м.\n\n" +
                     "Это связная схема дорог, а не готовые полосы транспорта/физика. " +
                     "Для прежних проектов нажми «Соединить старые дороги».")
+                .setPositiveButton("Понятно",null).show());
+        });
+    }
+    private void showMedievalSurfaceStats(){
+        if(importing)return;
+        surface.queueEvent(()->{
+            final int[] stats=nativeMedievalSurfaceStats();
+            ui(()->new AlertDialog.Builder(this)
+                .setTitle("Средневековые улицы · R5.2")
+                .setMessage(stats==null||stats.length!=3||stats[0]!=1?
+                    "Для этой сложной геометрии используется безопасный старый режим " +
+                    "R5: без бесшовных центров перекрёстков. Попробуй увеличить " +
+                    "расстояния между соединениями, изменить острый угол или убрать " +
+                    "накладывающиеся параллельные улицы.\n\n" +
+                    "Обычные перекрёстки X/T/Y строятся без модерновых бордюров.":
+                    "Бесшовная геометрия: включена.\n" +
+                    "Соединённых перекрёстков: "+stats[1]+"\n" +
+                    "Треугольников дорог: "+stats[2]+"\n\n" +
+                    "Общее покрытие — булыжник, песок, земля и травяные края; " +
+                    "не городские магистрали. Подлинные колеи и канавы будут " +
+                    "отдельным этапом по результатам проверки на планшете.")
                 .setPositiveButton("Понятно",null).show());
         });
     }

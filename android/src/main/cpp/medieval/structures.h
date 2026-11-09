@@ -1,5 +1,5 @@
 #pragma once
-// OE Medieval Modules R5.3: tiny, shared, static primitives.
+// OE Medieval Modules R5.2a: tiny, shared, static primitives.
 // Pure C++17; no Android, rendering API, terrain mutation or physics.
 #include <cstddef>
 #include <vector>

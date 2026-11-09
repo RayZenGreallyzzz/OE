@@ -68,6 +68,17 @@ jobs:
             android/src/main/cpp/terrainpaint/paint_tiles.cpp \
             -o /tmp/oe-terrain-paint
           /tmp/oe-terrain-paint
+  medieval-bridge-foundations:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify budgeted bridge and building-foundation geometry
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -pedantic \
+            tests/medieval_modules_smoke.cpp \
+            android/src/main/cpp/medieval/structures.cpp \
+            -o /tmp/oe-medieval-modules-test
+          /tmp/oe-medieval-modules-test
   medieval-road-surfaces:
     runs-on: ubuntu-latest
     steps:

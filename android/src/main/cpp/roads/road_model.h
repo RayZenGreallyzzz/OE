@@ -1,5 +1,6 @@
 #pragma once
 // OE road-editor data and curve sampling. Portable C++17; independent of Android/GLES.
+#include "road_materials.h"
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -17,6 +18,7 @@ struct Road {
     float width=6.f;
     bool markings=true;
     std::vector<Point> points;
+    int material=kAsphalt; // Optional 5th item in road JSON; legacy scenes stay asphalt.
 };
 
 inline float distanceSquared(Point a,Point b) noexcept {
@@ -37,7 +39,7 @@ inline bool append(Road&road,Point p,float halfWorld,float minSpacing) {
     return true;
 }
 inline bool valid(const Road&road,float halfWorld) noexcept {
-    if(road.id<=0||!std::isfinite(road.width)||
+    if(road.id<=0||!validSurface(road.material)||!std::isfinite(road.width)||
        road.width<kMinWidth||road.width>kMaxWidth||
        road.points.size()<2||road.points.size()>kMaxPoints||
        !std::isfinite(halfWorld)||halfWorld<=0.f)return false;

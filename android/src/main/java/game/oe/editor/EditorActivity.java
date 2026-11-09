@@ -527,7 +527,7 @@ public class EditorActivity extends Activity {
     }
     private void enterPlaceMode(int kind, String asset) {
         if(importing) { message("Сначала дождись завершения импорта"); return; }
-        terrainMode=0;paintTerrainMode=false;roadMode=false;roadMoveMode=false;roadMoveMode=false;precisionPaintMode=false;materialPaintMode=false;
+        terrainMode=0;paintTerrainMode=false;roadMode=false;roadMoveMode=false;precisionPaintMode=false;materialPaintMode=false;
         materialPaintMode=false;
          surface.queueEvent(()->{nativePaintStrokeEnd();nativeLayerStrokeEnd();});
         surface.queueEvent(EditorActivity::nativeRoadFinish);
@@ -537,7 +537,7 @@ public class EditorActivity extends Activity {
         message("Коснись места на карте для размещения");
     }
     private void cancelPlace() {
-        paintTerrainMode=false;roadMode=false;roadMoveMode=false;roadMoveMode=false;precisionPaintMode=false;
+        paintTerrainMode=false;roadMode=false;roadMoveMode=false;precisionPaintMode=false;
         surface.queueEvent(()->{nativeRoadFinish();nativePaintStrokeEnd();nativeLayerStrokeEnd();});
         terrainMode=0;
         placingKind = -1;
@@ -2399,6 +2399,7 @@ public class EditorActivity extends Activity {
                     final int kind=placingKind,brush=terrainMode;
                     final boolean paint=paintTerrainMode;
                     final boolean roadDraw=roadMode;
+                    final boolean roadPointMove=roadMoveMode;
                     final String paintingKey=activePaintKey;
                     final String asset=placingGlb;
                     queueEvent(()->{
@@ -2409,7 +2410,14 @@ public class EditorActivity extends Activity {
                             return;
                         }
                         if(tap){
-                            if(roadDraw){
+                            if(roadPointMove){
+                                if(nativeRoadPointTapMove(px,py)){
+                                    roadMoveMode=false;
+                                    message("Контрольная точка перенесена · ↶ отменить");
+                                    ui(()->statusText.setText(
+                                        "Точка перенесена · можно выбрать следующую."));
+                                }else message("Перенос невозможен: край карты или соседняя точка");
+                            }else if(roadDraw){
                                 final int result=nativeRoadTap(px,py);
                                 if(result==1)message("Первая точка · коснись земли ещё раз");
                                 else if(result==2)message("Дорога создана · добавляй точки");

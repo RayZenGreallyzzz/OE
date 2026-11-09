@@ -8,8 +8,8 @@ android {
         applicationId 'game.oe.editor.roadstest'
         minSdk 26
         targetSdk 34
-        versionCode 24
-        versionName '0.7.9-medieval-asset-library-test'
+        versionCode 25
+        versionName '0.7.10-medieval-builtin-assets-test'
         ndk { abiFilters 'arm64-v8a' }
         externalNativeBuild {
             cmake { cppFlags '-std=c++17 -O2 -Wall -Wextra' }

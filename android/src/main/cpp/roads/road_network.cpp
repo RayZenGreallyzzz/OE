@@ -10,7 +10,7 @@ namespace {
 constexpr double kMaxCoordinate=8192.0; // current OE editor world: 16 km
 constexpr double kMaxRoadLength=25000.0;
 constexpr double kMinSegmentLength=0.01;
-constexpr double kYOffset=0.03;
+constexpr double kYOffset=0.14; // above painted layers and PNG guide
 constexpr double kTextureRepeatMetres=2.0;
 bool finite(double v) noexcept { return std::isfinite(v); }
 double length(Point p) noexcept { return std::hypot(p.x,p.z); }

@@ -25,7 +25,7 @@ public final class ProjectArchive {
     private ProjectArchive() {}
     public static final long MAX_UNPACKED_BYTES=128L*1024*1024;
     public static final int MAX_MODELS=12;
-    public static final int MAX_SCENE_BYTES=4*1024*1024; // bounded compressed R4 tile data
+    public static final int MAX_SCENE_BYTES=8*1024*1024; // bounded R4 composite and R4.1 material masks
     public static final int MAX_TEXTURES=8,MAX_TEXTURE_BYTES=8*1024*1024;
     public static final int MAX_REFERENCE_BYTES=8*1024*1024;
 
@@ -51,13 +51,13 @@ public final class ProjectArchive {
         JSONObject json=new JSONObject(scene);
         int version=json.optInt("version",-1);
         JSONObject guide=json.optJSONObject("mapReference");
-        check(version>=1&&version<=4,"Неподдерживаемая версия сцены");
+        check(version>=1&&version<=5,"Неподдерживаемая версия сцены");
         if(version<3){
             check(!json.has("mapReference"),"Подложка требует сцену версии 3+");
             return null;
         }
         if(version==3)check(guide!=null,"В сцене версии 3 нет карты-подложки");
-        if(version==4&&guide==null){
+        if(version>=4&&guide==null){
             check(!json.has("mapReference"),"Повреждённые данные карты");
             return null;
         }
@@ -122,6 +122,34 @@ public final class ProjectArchive {
                 check(validTexture(key),"Недопустимая текстура земли");keys.add(key);
             }
         }
+        JSONArray independent=document.optJSONArray("paintLayers");
+        int version=document.optInt("version",-1);
+        if(version==5){
+            check(independent!=null&&independent.length()<=128,
+                  "Неверные материальные маски R4.1");
+            Set<String> uniqueLayers=new HashSet<>();
+            Set<String> tileSet=new HashSet<>();
+            java.util.Map<String,Integer> counts=new java.util.HashMap<>();
+            for(int i=0;i<independent.length();i++){
+                JSONArray layer=independent.getJSONArray(i);
+                check(layer.length()==4,"Неверная запись маски");
+                int tx=layer.getInt(0),tz=layer.getInt(1);
+                String key=layer.getString(2);
+                String mask=layer.getString(3);
+                String pair=tx+":"+tz;
+                check(tx>=-128&&tx<=127&&tz>=-128&&tz<=127&&
+                      validTexture(key)&&uniqueLayers.add(pair+":"+key)&&
+                      mask.length()>=4&&mask.length()<=28000&&
+                      mask.matches("[A-Za-z0-9+/=]+"),
+                      "Неверные материальные слои");
+                tileSet.add(pair);
+                int count=counts.containsKey(pair)?counts.get(pair)+1:1;
+                check(count<=4,"Более 4 материалов на одной плитке");
+                counts.put(pair,count);
+                keys.add(key);
+            }
+            check(tileSet.size()<=32,"Превышено число текстурных участков");
+        }else check(!document.has("paintLayers"),"Неверная версия слоёв R4.1");
         check(keys.size()<=MAX_TEXTURES,"Более 8 пользовательских текстур");
         return keys;
     }
@@ -129,18 +157,19 @@ public final class ProjectArchive {
         if(!ok)throw new IOException(reason);
     }
     private static Set<String> referencedModels(String scene) throws Exception {
-        check(scene.getBytes(StandardCharsets.UTF_8).length<=MAX_SCENE_BYTES,"Сцена больше 200 КБ");
+        check(scene.getBytes(StandardCharsets.UTF_8).length<=MAX_SCENE_BYTES,"Сцена превышает безопасный лимит");
         JSONObject json=new JSONObject(scene);
         int version=json.optInt("version",-1);
-        check(version>=1&&version<=4,"Неподдерживаемая версия сцены");
+        check(version>=1&&version<=5,"Неподдерживаемая версия сцены");
         check(version==1||json.optJSONArray("roads")!=null,"Нет дорожной сети");
         referenceName(scene);
         JSONArray tileData=json.optJSONArray("paintTiles");
-        if(version==4){
-            check(tileData!=null&&tileData.length()<=32,
+        if(version>=4){
+            check((version!=4||tileData!=null)&&
+                  (tileData==null||tileData.length()<=32),
                   "В сцене R4 отсутствуют или превышены текстурные участки");
             Set<String> seenTiles=new HashSet<>();
-            for(int i=0;i<tileData.length();i++){
+            for(int i=0;i<(tileData==null?0:tileData.length());i++){
                 JSONArray tile=tileData.getJSONArray(i);
                 check(tile.length()==3,"Неверный формат R4");
                 int tx=tile.getInt(0),tz=tile.getInt(1);
@@ -150,7 +179,7 @@ public final class ProjectArchive {
                       bytes.length()<=100000&&bytes.matches("[A-Za-z0-9+/=]+"),
                       "Неверный участок кисти R4");
             }
-        }else check(!json.has("paintTiles"),"Участки кисти требуют формат v4");
+        }else check(!json.has("paintTiles"),"Участки кисти требуют формат v4+");
         JSONArray items=json.getJSONArray("items");
         check(items.length()<=300,"Слишком много объектов");
         Set<String> names=new HashSet<>();

@@ -46,6 +46,17 @@ jobs:
           g++ -std=c++17 -O2 -Wall -Wextra -Werror \
             tests/device_quality_profiles_smoke.cpp -o /tmp/oe-quality-test
           /tmp/oe-quality-test
+  terrain-material-layers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Independent terrain layers and material-isolation tests
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -pedantic \
+            tests/material_layers_smoke.cpp \
+            android/src/main/cpp/terrainpaint/material_layers.cpp \
+            -o /tmp/oe-material-layers
+          /tmp/oe-material-layers
   terrain-paint-tiles:
     runs-on: ubuntu-latest
     steps:

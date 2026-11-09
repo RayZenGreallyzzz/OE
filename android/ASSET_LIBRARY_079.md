@@ -1,4 +1,4 @@
-# OE 0.7.9 — Medieval object library (experimental PR #20)
+# OE 0.7.9–0.7.10 — Medieval object library (experimental PR #20)
 
 ## Goal
 
@@ -8,15 +8,46 @@ are individually selectable, placed and saved as independent editor entities.
 
 The Android test app keeps its original package isolation from OE main.
 
+## 0.7.10 — Kenney assets are truly BUILT INTO the APK
+
+The previous 0.7.9 APK only included an empty ZIP importer and depended on a
+user adding a library manually. 0.7.10 corrects that mistake:
+
+- Android CI downloads the official *Kenney Retro Fantasy Kit 2.0* archive
+  and verifies its exact SHA-256 before shipping it:
+  `d3462b453018d0d150406d85af3c4ae1322ceef8f1754c4eb4e6355adfeaab0f`.
+- The build extracts and embeds **105 individual GLBs**, their **10 original
+  PNG textures**, and the **CC0 licence** into the APK as a compact ZIP asset.
+  Every GLB and PNG is copied byte-for-byte from the verified original pack.
+- On first opening the library, a background worker copies this one compressed
+  archive to the app's private library index, without placing any models or
+  allocating GL resources. Thereafter, open **Дома / Деревья / Крепость /
+  Декорации → 📚 Встроенные модели + свои ZIP**. No file picker, Wi-Fi or
+  extra ZIP download is needed for these 105 built-in models.
+- Original Kenney GLBs point at **external** sibling `Textures/*.png` files.
+  On selecting an object, the importer safely resolves those references
+  inside the bundled ZIP and packages the **unaltered PNG image bytes** into
+  the selected GLB. Without this step many models would appear untextured.
+- **105 catalogue entries is not 105 GPU objects loaded at launch.** Only
+  individually selected/used models are decoded into the renderer. At most
+  32 different GLB resources can be resident, subject to memory limits.
+  Duplicate scene instances share resource data.
+- The **two Kenney plant models** `tree-large.glb` and `tree-shrub.glb`
+  are included among the 105. The separate realistic **28-tree atlas is
+  still an optional external ZIP**; bundling its 19 MiB in the APK requires
+  an additional decision and independent asset-rights/format testing.
+- This version is isolated and unmerged. Test model previews/textures,
+  save/restore, APK size and 4 GiB tablet memory before release.
+
 ## How to use
 
-1. Install **OE 0.7.9 ASSET LIBRARY TEST**.
+1. Install **OE 0.7.10 BUILTIN MEDIEVAL ASSETS TEST**.
 2. Open **☰ Каталог → Деревья / Дома / Крепость / Декорации**.
-3. Select **📦 Добавить набор моделей ZIP** and choose one of the supplied
+3. **105 Kenney objects are already included**. For *additional* sets only, select **📦 Добавить набор моделей ZIP** and choose one of the supplied
    ZIPs, e.g. `kenney_builtin_105.zip`,
    `OE_Trees_28_Separate_Lightweight.zip`, or
    `OE_Medieval_Trees_Separate_GLTF.zip`.
-4. Select **📚 Выбрать отдельную модель из ZIP**, tap a named object and
+4. Select **📚 Встроенные модели + свои ZIP**, tap a named object and
    place it on the terrain. Move, rotate, scale, duplicate and delete it like
    an ordinary imported GLB. The original tavern, smithy and auction-house
    models are unchanged.
@@ -49,10 +80,9 @@ The Android test app keeps its original package isolation from OE main.
 
 ## Important limitations
 
-- **The large third-party ZIP assets are NOT bundled into the APK.**
-  This keeps the test APK small. Import the ZIP once on the tablet;
-  then its models appear in the on-device catalogue without extracting all
-  texture files into app storage.
+- **105 small Kenney GLBs and their original textures ARE bundled into APK.**
+  The 28 large realistic tree models remain separately importable in ZIP form;
+  they are not bundled at this stage. Bundled Kenney models appear offline.
 - **More entries than resident model slots** can appear in the list: 105 or 28
   *selectable* does not mean all can be rendered simultaneously. Up to 32
   **distinct** resident GLBs remain subject to a 96 MiB retained texture cache,

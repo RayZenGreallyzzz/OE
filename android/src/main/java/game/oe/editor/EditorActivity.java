@@ -1202,7 +1202,7 @@ public class EditorActivity extends Activity {
                 "oe-project-cleanup").start();
     }
     private void addLibraryButtons(String category){
-        addPaletteOption("📚 Выбрать отдельную модель из ZIP",()->
+        addPaletteOption("📚 Встроенные модели + свои ZIP",()->
             showLibraryObjects(category));
         addPaletteOption("📦 Добавить набор моделей ZIP",()->
             pickLibrary(category));
@@ -1240,11 +1240,14 @@ public class EditorActivity extends Activity {
         activeLibraryTab=category;
         new Thread(()->{
             try{
+                // Seed all 105 verified Kenney objects from APK once.
+                // Runs in the library worker, never on the UI or GLES thread.
+                AssetLibrary.ensureBundled(getAssets(),getFilesDir());
                 final java.util.List<AssetLibrary.Entry> items=
                         AssetLibrary.list(getFilesDir(),category);
                 ui(()->{
                     if(items.isEmpty()){
-                        message("Моделей в разделе пока нет. Нажми «Добавить набор моделей ZIP».");
+                        message("В этой категории пока нет моделей. Попробуй другую или добавь отдельный ZIP.");
                         return;
                     }
                     String[] labels=new String[items.size()];

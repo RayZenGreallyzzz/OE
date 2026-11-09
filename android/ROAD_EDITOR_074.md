@@ -77,6 +77,17 @@ Goal: a grounded medieval town with a little mysterious fantasy at the castle, r
 
 **Tablet acceptance tests:** paint a cobblestone main street, a dirt path next to houses, a gravel road toward the wall and a short ancient-slate lane. Test intersections between mixed styles and a very long road at 4 GB RAM. Switch materials on selected roads, Undo/Redo, save/load, export/import .oezip, reopen a legacy four-element road, and verify that setting material 0 preserves old modern markings. Verify setting the medieval preset does not unexpectedly recolour existing roads.
 
+## 0.7.9 — Medieval object ZIP library
+
+See `android/ASSET_LIBRARY_079.md` for the separate model library and device QA.
+New catalogue tabs: **Дома**, **Деревья**, **Крепость**, **Декорации**.
+The original built-in ready-made houses and existing scene format are unchanged.
+Install a ZIP containing separate GLB or glTF models, then pick and place one
+asset at a time. All original source textures are kept byte-identical; the
+GPU preview may reduce texture resolution according to the existing quality
+setting. The large asset ZIPs are user-imported, not embedded into the APK,
+so baseline app installation remains small.
+
 ## Persistence
 
 - Scene JSON remains **version 1**, with optional `roads` array.

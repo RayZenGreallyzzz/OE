@@ -59,6 +59,14 @@ int main(){
                           road(15,{{-10,1.5},{10,1.5}})},alleys));
  assert(alleys.junctionCount==0&&alleys.edges.size()==2);
  assert(std::abs(alleys.roads[1].controlPoints.front().z-1.5)<1e-6);
+ // End-to-end streets 60 cm apart snap to one canonical older endpoint.
+ RoadTopology gap;
+ assert(buildRoadTopology({road(20,{{0,0},{8,0}}),
+                           road(21,{{8.6,0},{16,0}})},gap));
+ assert(gap.junctionCount==1);
+ assert(std::abs(gap.roads[0].controlPoints.back().x-8)<1e-6);
+ assert(std::abs(gap.roads[1].controlPoints.front().x-8)<1e-6);
+ assert(junction(gap,8,0)->degree==2);
  // Shared point exact (no false duplicate edges).
  RoadTopology endpoint;
  assert(buildRoadTopology({road(7,{{0,0},{5,0}}),

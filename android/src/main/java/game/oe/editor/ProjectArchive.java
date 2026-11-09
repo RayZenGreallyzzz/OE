@@ -51,7 +51,7 @@ public final class ProjectArchive {
         JSONObject json=new JSONObject(scene);
         int version=json.optInt("version",-1);
         JSONObject guide=json.optJSONObject("mapReference");
-        check(version>=1&&version<=5,"Неподдерживаемая версия сцены");
+        check(version>=1&&version<=6,"Неподдерживаемая версия сцены");
         if(version<3){
             check(!json.has("mapReference"),"Подложка требует сцену версии 3+");
             return null;
@@ -124,13 +124,15 @@ public final class ProjectArchive {
         }
         JSONArray independent=document.optJSONArray("paintLayers");
         int version=document.optInt("version",-1);
-        if(version==5){
-            check(independent!=null&&independent.length()<=128,
+        if(version>=5){
+            check((version!=5||independent!=null)&&
+                  (!document.has("paintLayers")||independent!=null)&&
+                  (independent==null||independent.length()<=128),
                   "Неверные материальные маски R4.1");
             Set<String> uniqueLayers=new HashSet<>();
             Set<String> tileSet=new HashSet<>();
             java.util.Map<String,Integer> counts=new java.util.HashMap<>();
-            for(int i=0;i<independent.length();i++){
+            for(int i=0;i<(independent==null?0:independent.length());i++){
                 JSONArray layer=independent.getJSONArray(i);
                 check(layer.length()==4,"Неверная запись маски");
                 int tx=layer.getInt(0),tz=layer.getInt(1);
@@ -160,7 +162,7 @@ public final class ProjectArchive {
         check(scene.getBytes(StandardCharsets.UTF_8).length<=MAX_SCENE_BYTES,"Сцена превышает безопасный лимит");
         JSONObject json=new JSONObject(scene);
         int version=json.optInt("version",-1);
-        check(version>=1&&version<=5,"Неподдерживаемая версия сцены");
+        check(version>=1&&version<=6,"Неподдерживаемая версия сцены");
         check(version==1||json.optJSONArray("roads")!=null,"Нет дорожной сети");
         referenceName(scene);
         JSONArray tileData=json.optJSONArray("paintTiles");
@@ -185,7 +187,10 @@ public final class ProjectArchive {
         Set<String> names=new HashSet<>();
         for(int i=0;i<items.length();i++){
             JSONObject item=items.getJSONObject(i);
-            if(item.getInt("type")!=6)continue;
+            int kind=item.getInt("type");
+            check(kind>=0&&kind<=19&&(kind<=16||version>=6),
+                  "Недопустимый тип средневекового объекта");
+            if(kind!=6)continue;
             String key=item.getString("asset");
             check(validModel(key),"Недопустимое имя модели");
             names.add(key);

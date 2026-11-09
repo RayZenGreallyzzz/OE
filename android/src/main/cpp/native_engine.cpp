@@ -94,7 +94,9 @@ size_t textureCacheBytes(){
   bytes+=tex.bytes.size();
  return bytes;
 }
-static constexpr int MAX_ASSETS=12;
+// Up to 32 *distinct* meshes; many scene instances share one GPU asset.
+// Still bounded by MAX_TEXTURE_CACHE_BYTES and MAX_LOD_CACHE_BYTES.
+static constexpr int MAX_ASSETS=32;
 static constexpr int MAX_IMPORTED_TRIANGLES=90000;
 static Shader gShader;
 static std::vector<Entity> gEntities;
@@ -2141,6 +2143,26 @@ JNIEXPORT jobjectArray JNICALL Java_game_oe_editor_EditorActivity_nativeLoadedAs
 }
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeCanRegisterMore(JNIEnv*,jclass,jint count){
  return count>=0 && static_cast<size_t>(count)<=MAX_ASSETS-gAssets.size()?JNI_TRUE:JNI_FALSE;
+}
+// Remove GPU resources only when neither active entities nor bounded Undo/Redo
+// snapshots refer to them. All calls happen on the GLES thread.
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeTrimUnusedAssets(JNIEnv*,jclass){
+ auto referenced=[](const std::string&key)->bool{
+  for(const auto&e:gEntities)if(e.type==6&&e.asset==key)return true;
+  for(const auto&s:gUndo)for(const auto&e:s.entities)
+   if(e.type==6&&e.asset==key)return true;
+  for(const auto&s:gRedo)for(const auto&e:s.entities)
+   if(e.type==6&&e.asset==key)return true;
+  return false;
+ };
+ int count=0;
+ for(auto it=gAssets.begin();it!=gAssets.end();){
+  if(referenced(it->first)){++it;continue;}
+  releaseAssetGpu(it->second);
+  it=gAssets.erase(it);
+  ++count;
+ }
+ return count;
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDiscardUnusedAsset(JNIEnv*env,jclass,jstring key){
  if(!key)return;

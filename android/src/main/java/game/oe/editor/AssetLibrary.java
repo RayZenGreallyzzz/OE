@@ -39,6 +39,7 @@ import java.util.zip.ZipFile;
 final class AssetLibrary {
     static final int PICK_LIBRARY = 706;
     static final String BUILTIN_KENNEY="medieval/kenney_retro_105.zip";
+    static final String BUILTIN_MEDIEVAL="medieval/oe_medieval_editor_addon.zip";
     static final long MAX_PACK_BYTES = 190L*1024*1024;
     private static final long MAX_EXPANDED = 550L*1024*1024;
     private static final int MAX_FILES = 650;
@@ -46,7 +47,7 @@ final class AssetLibrary {
     private static final int MAX_JSON_BYTES = 1024*1024;
     private static final int MAX_SCAN_CACHE = 8;
     static final String TREES="Деревья",HOUSES="Дома",FORTRESS="Крепость",
-                        DECOR="Декорации";
+                        DECOR="Декорации",ENVIRONMENT="Окружение";
     static final class Entry {
         final File pack;
         final String path,name,category;
@@ -81,6 +82,9 @@ final class AssetLibrary {
            s.contains("fortified")||s.contains("wall-gate")||
            s.contains("wall-flat-gate")||s.contains("wall-fort")||
            s.contains("gate"))return FORTRESS;
+        if(s.contains("environment")||s.contains("grass")||s.contains("ground")||
+           s.contains("rock")||s.contains("terrain")||s.contains("landscape")||
+           s.contains("lamp")||s.contains("crate"))return ENVIRONMENT;
         if(s.contains("roof")||s.contains("wall-pane")||
            s.contains("floor")||s.contains("structure")||s.contains("house")||
            s.contains("building")||s.contains("stairs")||s.contains("column"))
@@ -170,6 +174,28 @@ final class AssetLibrary {
             Files.move(pending.toPath(),installedFlag.toPath(),
                     StandardCopyOption.REPLACE_EXISTING);
         }finally{Files.deleteIfExists(pending.toPath());}
+    }
+    /** Bundled paid asset data is optional at build time; the final signed test
+     *  APK includes the exact extra ZIP inside /assets/medieval/. If the
+     *  archive is not present, only the verified Kenney baseline is shown.
+     *  A marker is written only after the entire pack is scanned and
+     *  atomically installed; no silent empty library.
+     */
+    static void ensureMedievalAddon(AssetManager manager,File root) throws Exception {
+        final File marker=new File(directory(root),"medieval-addon-011-v1.ok");
+        if(marker.isFile())return;
+        try(InputStream stream=manager.open(BUILTIN_MEDIEVAL)){
+            int total=install(stream,root);
+            if(total<140)
+                throw new Exception("Неполная средневековая библиотека: "+total+" объектов");
+        }catch(java.io.FileNotFoundException e){
+            return; // CI without paid external assets: offline tree/building add-on absent.
+        }
+        final File tmp=new File(marker.getPath()+".part");
+        try{
+            Files.write(tmp.toPath(),"medieval-ok".getBytes(StandardCharsets.UTF_8));
+            Files.move(tmp.toPath(),marker.toPath(),StandardCopyOption.REPLACE_EXISTING);
+        }finally{Files.deleteIfExists(tmp.toPath());}
     }
     static List<Entry> list(File root,String category) throws Exception {
         final List<Entry> list=new ArrayList<>();

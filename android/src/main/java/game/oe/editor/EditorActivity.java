@@ -252,7 +252,7 @@ public class EditorActivity extends Activity {
         top.setPadding(dp(5),dp(2),dp(5),dp(2));
         top.setBackgroundColor(Color.argb(220,14,21,32));
         TextView title=new TextView(this);
-        title.setText("OE 0.7.10 / BUILT-IN MEDIEVAL ASSETS TEST");
+        title.setText("OE 0.7.11 / FULL MEDIEVAL EDITOR TEST");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
         title.setTextSize(12);
@@ -284,7 +284,7 @@ public class EditorActivity extends Activity {
         HorizontalScrollView categoryScroll=new HorizontalScrollView(this);
         categoryScroll.setHorizontalScrollBarEnabled(false);
         LinearLayout categoryRow=row();
-        for(String category:new String[]{"Дома","Деревья","Крепость","Декорации",
+        for(String category:new String[]{"Дома","Деревья","Крепость","Декорации","Окружение",
                 "Детали","Декор","Рельеф","Дороги","Текстуры","Проект"}){
             Button tab=button(category,()->showPalette(category));
             LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(dp(98),dp(44));
@@ -431,6 +431,8 @@ public class EditorActivity extends Activity {
             addPaletteOption("🪨 Камни OE",()->enterPlaceMode(7,null));
             addPaletteOption("🧺 Лавка OE",()->enterPlaceMode(9,null));
             addLibraryButtons(AssetLibrary.DECOR);
+        }else if("Окружение".equals(category)){
+            addLibraryButtons(AssetLibrary.ENVIRONMENT);
         }else if("Детали".equals(category)){
             addPaletteOption("▧ Стена",()->enterPlaceMode(10,null));
             addPaletteOption("▤ Пол",()->enterPlaceMode(11,null));
@@ -1243,6 +1245,7 @@ public class EditorActivity extends Activity {
                 // Seed all 105 verified Kenney objects from APK once.
                 // Runs in the library worker, never on the UI or GLES thread.
                 AssetLibrary.ensureBundled(getAssets(),getFilesDir());
+                AssetLibrary.ensureMedievalAddon(getAssets(),getFilesDir());
                 final java.util.List<AssetLibrary.Entry> items=
                         AssetLibrary.list(getFilesDir(),category);
                 ui(()->{

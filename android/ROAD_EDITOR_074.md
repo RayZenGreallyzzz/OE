@@ -1,9 +1,9 @@
-# OE 0.7.4–0.7.7 — experimental 3D Road Editor
+# OE 0.7.4–0.7.8 — experimental 3D Road Editor
 
 **Branch:** `test/road-editor-074`; **base:** `test/basisu-ktx2-073`.
 Isolated editor feature. Does **not** merge into `main` or the game runtime PRs.
 
-**Installation safety:** the Android test app has its own application ID `game.oe.editor.roadstest` and launcher name **OE ROADS 0.7.7 TEST**. It installs alongside stable OE and the BasisU test. Existing locally stored projects remain in the original app; export a `.oezip` archive there and import it into this test app to try roads on a copy. Do not rely on test-only storage as your only backup.
+**Installation safety:** the Android test app has its own application ID `game.oe.editor.roadstest` and launcher name **OE MEDIEVAL ROADS 0.7.8**. It installs alongside stable OE and the BasisU test. Existing locally stored projects remain in the original app; export a `.oezip` archive there and import it into this test app to try roads on a copy. Do not rely on test-only storage as your only backup.
 
 ## Use on Android
 
@@ -53,6 +53,30 @@ Roads are curved through control points (Catmull-Rom cubic Hermite), drawn in on
 - **Boundaries:** this is *visual* street furniture, not walkable collision meshes or accessible curb ramps. No zebra traffic signals, traffic controls, NPC route planning, tactile paving, slope engineering, or real-world road standard certification.
 - **Tests:** `tests/road_pedestrian_geometry_smoke.cpp` validates four-way and T crossings, corner curbs avoiding road mouths, crossing bar widths/orientation, short roads, old/no junctions and map borders.
 
+## 0.7.8 — Medieval Streets, with subtle dark-fantasy elements
+
+Goal: a grounded medieval town with a little mysterious fantasy at the castle, ruined temple and older neighbourhoods — NOT a modern traffic simulation. Existing asphalt remains available for other OE worlds.
+
+**Choose a surface in ☰ Каталог → Дороги → 🪨 Покрытие дороги**:
+
+| ID | Surface | Intended use | Rendering |
+| --- | --- | --- | --- |
+| 0 | Asphalt | Compatibility and modern scenes | Old charcoal road, optional white/yellow markings |
+| 1 | Cobblestone | Town streets, squares, castle entrance | Warm-grey grouted stone blocks with deterministic variation |
+| 2 | Dirt | Cart lanes, village outskirts | Brown earth, patches and two wagon wheel ruts |
+| 3 | Gravel | Fort tracks and courtyard edges | Fine uneven grey-brown pebbled patches |
+| 4 | Ancient dark slate | A little dark fantasy around ancient ruins | Cool slate-blue stone blocks with rare bluish accents |
+
+**🏰 Средневековый пресет улиц** chooses **4 m cobblestone**, disables modern road markings as the *default for newly created roads* and turns off scene-wide modern concrete sidewalks and zebra crossings. It **does not delete or recolour existing roads**. Any road can be changed independently using the surface selector. The existing surface selectors for width, edit handles, snap to other roads and Undo/Redo continue working.
+
+**Geometry & performance:** the four medieval surfaces use small precomputed vertex-colour quads, not imported texture assets, custom shaders, CPU-per-frame randomness or network downloads. Per-road detail budgets share an upper bound of 14,000 quads across the scene; long or complex roads show a lower sampling density rather than allocate extra VRAM. Cobblestone and ancient-slate crossings inherit the predominant incoming road's surface colour and get restrained inlaid stone detail. Dirt roads display basic twin cart ruts. No material changes the collision model.
+
+**Persistence:** scene JSON version remains **1**. Older roads use `[id,width,markings,[[x,z],...]]` and load as asphalt (material ID 0). New roads append the optional fifth field: `[id,width,markings,[[x,z],...],material]`. Material IDs outside 0–4 or invalid road structures reject the scene before replacement. Legacy projects do not silently change styles. Updated projects also travel in `.oezip` archives.
+
+**Medieval art direction:** keep most streets grounded in European medieval architecture (small irregular cobbles, dirt, gravel, wooden carts, stone castles), with the dark-slate surface reserved for special quarters. This feature does *not* yet add rune emission, custom PBR materials, real 3D loose stones, castle props, decals, wet surfaces, shadows or atmospheric lighting.
+
+**Tablet acceptance tests:** paint a cobblestone main street, a dirt path next to houses, a gravel road toward the wall and a short ancient-slate lane. Test intersections between mixed styles and a very long road at 4 GB RAM. Switch materials on selected roads, Undo/Redo, save/load, export/import .oezip, reopen a legacy four-element road, and verify that setting material 0 preserves old modern markings. Verify setting the medieval preset does not unexpectedly recolour existing roads.
+
 ## Persistence
 
 - Scene JSON remains **version 1**, with optional `roads` array.
@@ -71,7 +95,7 @@ Example schema:
 
 ## Safety and limits
 
-- Up to 24 roads; 48 control points per road; width 2–18 metres.
+- Up to 24 roads; 48 control points per road; width 2–18 metres; five surface materials including asphalt.
 - The engine still displays its old built-in **demo roads** when enabled; custom road splines are separate and editable. Demo road geometry is *not* converted into editable paths.
 - Intersecting roads have width-aware convex asphalt intersection surfaces with clipped lane markings; production curb-radius engineering and traffic-grade lanes are not implemented.
 - Traffic rules/lanes, accessible curb ramps, bridges, tunnels, vehicles, physics collisions, and NPC pathfinding are **not** implemented.
@@ -92,6 +116,6 @@ Example schema:
 - Test a gap <3 metres before/after completing a road, and a gap >3 metres (must remain separate).
 - Drag an endpoint toward another road; Undo and Redo the snap; remove one of the connected roads; save/reload the graph.
 - Verify selection and gizmo manipulation after exit, frame time, memory, EGL loss and orientation changes.
-- Run `tests/road_model_smoke.cpp`, `tests/road_network_smoke.cpp`, `tests/road_junction_geometry_smoke.cpp`, `tests/road_pedestrian_geometry_smoke.cpp` and the GitHub Android APK workflow.
+- Run `tests/road_model_smoke.cpp`, `tests/road_network_smoke.cpp`, `tests/road_junction_geometry_smoke.cpp`, `tests/road_pedestrian_geometry_smoke.cpp`, `tests/road_materials_smoke.cpp` and the GitHub Android APK workflow.
 
 **Never merge or release without reviewing CI and testing on device.**

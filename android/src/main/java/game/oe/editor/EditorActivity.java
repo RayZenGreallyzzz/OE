@@ -104,6 +104,11 @@ public class EditorActivity extends Activity {
     private static native void nativeSnapSelectedToGround();
     private static native int nativeApplyTerrainBrushAtScreen(float x,float y,float radius,float amount);
     private static native int nativeTerrainBrushCount();
+    private static native int nativeLakePlaceAtScreen(float x,float y,float radius,float fillDepth);
+    private static native String[] nativeLakeNames();
+    private static native boolean nativeLakeSelect(int index);
+    private static native boolean nativeLakeAdjust(float deltaHeight,float deltaRadius);
+    private static native boolean nativeLakeDelete();
     private static native void nativeSetGizmoMode(int mode);
     private static native int nativeGizmoHit(float x,float y);
     private static native boolean nativeGizmoBegin(int axis);
@@ -179,6 +184,8 @@ public class EditorActivity extends Activity {
     private volatile int placingKind = -1;
     private volatile String placingGlb = null;
     private volatile int terrainMode=0; // -1 lower, +1 raise
+    private volatile boolean lakeMode=false; // tap to fill an excavated depression
+    private volatile float lakeRadius=64f,lakeFillDepth=8f;
     private volatile float terrainRadius=96f;
     private volatile float terrainStrength=20f;
     private volatile float moveStep=.001f,turnStep=5f,scaleStep=1.05f;
@@ -304,7 +311,7 @@ public class EditorActivity extends Activity {
         HorizontalScrollView categoryScroll=new HorizontalScrollView(this);
         categoryScroll.setHorizontalScrollBarEnabled(false);
         LinearLayout categoryRow=row();
-        for(String category:new String[]{"Здания","Детали","Мосты","Фундаменты","Декор","Рельеф","Дороги","Текстуры","Проект"}){
+        for(String category:new String[]{"Здания","Детали","Мосты","Фундаменты","Декор","Рельеф","Вода","Дороги","Текстуры","Проект"}){
             Button tab=button(category,()->showPalette(category));
             LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(dp(98),dp(44));
             p.setMargins(dp(2),0,dp(2),0);categoryRow.addView(tab,p);
@@ -481,6 +488,17 @@ public class EditorActivity extends Activity {
             addPaletteOption("⛰ Опустить землю",()->enterTerrainMode(-1));
             addPaletteOption("📐 Радиус и сила кисти",this::chooseTerrainBrush);
             addPaletteOption("✕ Завершить изменение",this::cancelPlace);
+        }else if("Вода".equals(category)){
+            addPaletteOption("⛏ Вырыть чашу для озера",this::startLakeExcavation);
+            addPaletteOption("🌊 Залить озеро касанием",this::beginLakePlacement);
+            addPaletteOption("📏 Радиус и глубина заполнения",this::chooseLakeSettings);
+            addPaletteOption("📋 Выбрать существующее озеро",this::chooseLake);
+            addPaletteOption("⬆ Поднять воду на 1 м",()->adjustLake(1f,0f));
+            addPaletteOption("⬇ Опустить воду на 1 м",()->adjustLake(-1f,0f));
+            addPaletteOption("↔ Увеличить радиус на 8 м",()->adjustLake(0f,8f));
+            addPaletteOption("↔ Уменьшить радиус на 8 м",()->adjustLake(0f,-8f));
+            addPaletteOption("🗑 Удалить выбранное озеро",this::deleteLake);
+            addPaletteOption("✕ Завершить работу с водой",this::cancelPlace);
         }else if("Дороги".equals(category)){
             addPaletteOption("🗺 Загрузить PNG-план города",this::pickMapReference);
             addPaletteOption("📍 Положение и масштаб плана",this::configureMapReference);
@@ -577,7 +595,7 @@ public class EditorActivity extends Activity {
     }
     private void enterPlaceMode(int kind, String asset) {
         if(importing) { message("Сначала дождись завершения импорта"); return; }
-        terrainMode=0;paintTerrainMode=false;roadMode=false;roadMoveMode=false;precisionPaintMode=false;materialPaintMode=false;
+        terrainMode=0;lakeMode=false;paintTerrainMode=false;roadMode=false;roadMoveMode=false;precisionPaintMode=false;materialPaintMode=false;
         materialPaintMode=false;
          surface.queueEvent(()->{nativePaintStrokeEnd();nativeLayerStrokeEnd();});
         surface.queueEvent(EditorActivity::nativeRoadFinish);
@@ -589,15 +607,81 @@ public class EditorActivity extends Activity {
     private void cancelPlace() {
         paintTerrainMode=false;roadMode=false;roadMoveMode=false;precisionPaintMode=false;
         surface.queueEvent(()->{nativeRoadFinish();nativePaintStrokeEnd();nativeLayerStrokeEnd();});
-        terrainMode=0;
+        terrainMode=0;lakeMode=false;
         placingKind = -1;
         placingGlb = null;
         statusText.setText("Режим выбора · два пальца — перемещение; кнопки «Размер карты» и «Координаты» — большой мир.");
         message("Размещение отменено");
     }
+    private void startLakeExcavation(){
+        terrainRadius=64f;terrainStrength=12f;
+        enterTerrainMode(-1);
+        message("Создай углубление, затем открой «Вода → Залить озеро»");
+    }
+    private void beginLakePlacement(){
+        if(importing){message("Сначала дождись загрузки");return;}
+        cancelPlace();
+        lakeMode=true;
+        statusText.setText("ОЗЕРО: коснись дна углубления · радиус "+
+            (int)lakeRadius+" м, заполнение +"+(int)lakeFillDepth+" м.");
+        message("Коснись дна будущего озера; уровень можно изменить после заливки");
+    }
+    private void chooseLakeSettings(){
+        final String[] options={
+            "Пруд · радиус 16 м / слой 2 м",
+            "Маленькое озеро · 32 м / 4 м",
+            "Озеро · 64 м / 8 м",
+            "Большое озеро · 96 м / 12 м",
+            "Долина · 128 м / 20 м",
+            "Водохранилище · 160 м / 30 м"
+        };
+        final float[] radius={16,32,64,96,128,160};
+        final float[] depth={2,4,8,12,20,30};
+        new AlertDialog.Builder(this).setTitle("Радиус и глубина заполнения")
+            .setItems(options,(dialog,index)->{
+                lakeRadius=radius[index];lakeFillDepth=depth[index];
+                message("Озеро: радиус "+(int)lakeRadius+
+                        " м, уровень выше дна на "+(int)lakeFillDepth+" м");
+            }).setNegativeButton("Отмена",null).show();
+    }
+    private void chooseLake(){
+        if(importing)return;
+        surface.queueEvent(()->{
+            final String[] options=nativeLakeNames();
+            ui(()->{
+                if(options==null||options.length==0){
+                    message("В проекте пока нет озёр");return;
+                }
+                new AlertDialog.Builder(this).setTitle("Выбери озеро для редактирования")
+                    .setItems(options,(dialog,index)->{
+                        surface.queueEvent(()->{
+                            if(nativeLakeSelect(index))
+                                message("Озеро выбрано · меняй уровень и радиус в разделе «Вода»");
+                        });
+                    }).setNegativeButton("Отмена",null).show();
+            });
+        });
+    }
+    private void adjustLake(float level,float radius){
+        if(importing)return;
+        edit(()->{
+            if(nativeLakeAdjust(level,radius))
+                message("Озеро изменено · ↶ можно отменить");
+            else message("Сначала выбери озеро; проверь допустимые уровень и радиус");
+        });
+    }
+    private void deleteLake(){
+        if(importing)return;
+        new AlertDialog.Builder(this).setTitle("Удалить озеро?")
+            .setMessage("Исходный ландшафт останется без изменений. Можно отменить через ↶.")
+            .setPositiveButton("Удалить",(d,w)->edit(()->{
+                if(nativeLakeDelete())message("Вода убрана, рельеф остался · ↶ отменить");
+                else message("Сначала выбери озеро в списке");
+            })).setNegativeButton("Отмена",null).show();
+    }
     private void enterTerrainMode(int direction){
         if(importing){message("Дождись завершения операции");return;}
-        placingKind=-1;placingGlb=null;paintTerrainMode=false;roadMode=false;roadMoveMode=false;
+        placingKind=-1;placingGlb=null;paintTerrainMode=false;roadMode=false;roadMoveMode=false;lakeMode=false;
         precisionPaintMode=false;materialPaintMode=false;
         surface.queueEvent(()->{nativeRoadFinish();nativePaintStrokeEnd();});
         terrainMode=direction;

@@ -68,6 +68,21 @@ jobs:
             android/src/main/cpp/terrainpaint/paint_tiles.cpp \
             -o /tmp/oe-terrain-paint
           /tmp/oe-terrain-paint
+  road-texture-mapping:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify textured winding streets, junctions and safe per-road UV repeat
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -pedantic \
+            tests/road_texture_smoke.cpp \
+            android/src/main/cpp/roads/road_network.cpp \
+            android/src/main/cpp/roads/road_topology.cpp \
+            android/src/main/cpp/roads/medieval_surface.cpp \
+            -o /tmp/oe-road-texture-smoke
+          /tmp/oe-road-texture-smoke
+      - name: Check Road→Texture→APK scene v8 archive wiring
+        run: python3 tests/road_texture_integration_smoke.py
   road-bridge-traversal:
     runs-on: ubuntu-latest
     steps:

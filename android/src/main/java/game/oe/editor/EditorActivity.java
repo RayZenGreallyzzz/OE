@@ -146,6 +146,7 @@ public class EditorActivity extends Activity {
     private TextView statusText;
     private TextView renderStatsText;
     private LinearLayout toolDrawer, paletteItems, inspectorPanel, advancedInspector;
+    private android.widget.ScrollView advancedScroll;
     private boolean drawerOpen=false;
     private volatile int gizmoMode=0;
     private volatile boolean snapRotation15=false;
@@ -331,8 +332,8 @@ public class EditorActivity extends Activity {
         inspectorPanel.addView(modes);
         LinearLayout quick=row();
         addControl(quick,"⚙ Точно",()->{
-            boolean open=advancedInspector.getVisibility()!=View.VISIBLE;
-            advancedInspector.setVisibility(open?View.VISIBLE:View.GONE);
+            boolean open=advancedScroll.getVisibility()!=View.VISIBLE;
+            advancedScroll.setVisibility(open?View.VISIBLE:View.GONE);
         });
         addControl(quick,"К земле",()->edit(EditorActivity::nativeSnapSelectedToGround));
         addControl(quick,"⧉ Копия",this::duplicateAction);
@@ -341,7 +342,10 @@ public class EditorActivity extends Activity {
 
         advancedInspector=new LinearLayout(this);
         advancedInspector.setOrientation(LinearLayout.VERTICAL);
-        advancedInspector.setVisibility(View.GONE);
+        advancedScroll=new android.widget.ScrollView(this);
+        advancedScroll.setFillViewport(false);
+        advancedScroll.setVerticalScrollBarEnabled(true);
+        advancedScroll.setVisibility(View.GONE);
         LinearLayout moveRow=row();
         addControl(moveRow,"X −",()->edit(()->nativeNudge(-moveStep,0)));
         addControl(moveRow,"X +",()->edit(()->nativeNudge(moveStep,0)));
@@ -391,7 +395,10 @@ public class EditorActivity extends Activity {
             addControl(axisRow,name+" + масштаб",()->edit(()->nativeScaleSelectedAxis(targetAxis,scaleStep)));
             advancedInspector.addView(axisRow);
         }
-        inspectorPanel.addView(advancedInspector);
+        advancedScroll.addView(advancedInspector);
+        // Keep ring controls and precise XYZ rotation accessible even when
+        // the screen is short, in landscape or under Android display scaling.
+        inspectorPanel.addView(advancedScroll,new LinearLayout.LayoutParams(-1,dp(220)));
         FrameLayout.LayoutParams ip=new FrameLayout.LayoutParams(dp(360),-2,Gravity.BOTTOM|Gravity.RIGHT);
         ip.setMargins(0,0,dp(8),dp(12));
         root.addView(inspectorPanel,ip);

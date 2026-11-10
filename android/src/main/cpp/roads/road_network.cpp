@@ -43,6 +43,7 @@ bool validRoad(const Road& road) noexcept {
     if(!road.id||road.name.size()>128||road.material.empty()||
        road.material.size()>128||!finite(road.widthMetres)||
        road.widthMetres<kMinRoadWidth||road.widthMetres>kMaxRoadWidth||
+       (!finite(road.tileMetres)||road.tileMetres<0.5||road.tileMetres>32.0)||
        road.controlPoints.size()<2||road.controlPoints.size()>kMaxControlPoints)
         return false;
     double travelled=0.0;

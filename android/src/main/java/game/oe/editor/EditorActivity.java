@@ -514,7 +514,7 @@ public class EditorActivity extends Activity {
         root.addView(walkJoystick,pad);
         walkJoystick.setVisibility(View.GONE);
         walkJumpButton=button("🦘 Прыжок",()->{
-            if(walkControlsActive)walkJumpQueued=true;
+            if(walkControlsActive||playModeActive)walkJumpQueued=true;
         });
         FrameLayout.LayoutParams jump=new FrameLayout.LayoutParams(
             dp(116),dp(54),Gravity.RIGHT|Gravity.BOTTOM);
@@ -1001,7 +1001,7 @@ public class EditorActivity extends Activity {
             brush.setStyle(Paint.Style.FILL);
         }
         @Override public boolean onTouchEvent(MotionEvent event){
-            if(!walkControlsActive)return false;
+            if(!walkControlsActive&&!playModeActive)return false;
             final int action=event.getActionMasked();
             if(action==MotionEvent.ACTION_DOWN){
                 pointer=event.getPointerId(event.getActionIndex());
@@ -2030,6 +2030,7 @@ public class EditorActivity extends Activity {
     private File saveFile() { return new File(getFilesDir(), "oe_scene_v1.json"); }
     // AtomicFile preserves the last valid scene if Android stops the app during a write.
     private void saveScene() {
+        if(playModeActive||playStartPending){message("Сначала нажми ■ Stop");return;}
         if(importing){message("Дождись завершения загрузки сцены");return;}
         surface.queueEvent(() -> {
             AtomicFile atomic=new AtomicFile(saveFile());
@@ -2281,6 +2282,7 @@ public class EditorActivity extends Activity {
     }
     private void exportToUri(Uri uri){
         if(importing)return;
+        finishPlayMode();
         finishWalkControls();
         importing=true;
         surface.queueEvent(() -> {
@@ -2304,6 +2306,7 @@ public class EditorActivity extends Activity {
     }
     private void importFromUri(Uri uri){
         if(importing)return;
+        finishPlayMode();
         finishWalkControls();
         importing=true;
         message("Проверяю архив проекта и модели…");
@@ -2447,6 +2450,7 @@ public class EditorActivity extends Activity {
     }
     private void loadScene() {
         if(importing){message("Импорт или загрузка уже выполняется");return;}
+        finishPlayMode();
         finishWalkControls();
         importing=true;
         // Take a consistent snapshot of the registered GPU assets. The reader

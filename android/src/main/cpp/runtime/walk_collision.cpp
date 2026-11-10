@@ -56,7 +56,7 @@ bool validSurface(const roads::WalkSurface&s){
  return finite(a)&&finite(b)&&std::abs(a)>.001&&std::abs(b)>.001&&
         a*b>0.;
 }
-bool validTerrain(roads::TerrainHeight&terrain,double x,double z,double&h){
+bool validTerrain(const roads::TerrainHeight&terrain,double x,double z,double&h){
  if(!terrain)return false;
  h=terrain(x,z);
  return finite(h)&&std::abs(h)<kMaxHeight;
@@ -95,10 +95,10 @@ bool WalkController::query(double x,double z,double referenceFeet,
  double terrainY=0.;
  // Terrain geometry is always present even when a custom road exists.
  // A lake is VISUAL ONLY here; no false buoyancy/contact at water level.
- if(!validTerrain(const_cast<roads::TerrainHeight&>(terrain_),x,z,terrainY))
+ if(!validTerrain(terrain_,x,z,terrainY))
   return false;
  const auto height=[&](double px,double pz,double&h)->bool{
-  return validTerrain(const_cast<roads::TerrainHeight&>(terrain_),px,pz,h);
+  return validTerrain(terrain_,px,pz,h);
  };
  const double d=.25;
  double right=0,left=0,forward=0,back=0;
@@ -155,7 +155,7 @@ bool WalkController::advance(double dx,double dz,bool jump,std::size_t ticks){
    return false;
   const double elevation=target.hit.height-next.feet.y;
   const bool steep=target.slope>kWalkMaxSlope;
-  const bool blocked=steep||
+  const bool blocked=(steep&&elevation>=-kWalkStepHeight)||
       (next.grounded&&elevation>kWalkStepHeight);
   if(!blocked){
    next.feet.x=desiredX;next.feet.z=desiredZ;

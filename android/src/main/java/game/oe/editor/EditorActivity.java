@@ -530,6 +530,7 @@ public class EditorActivity extends Activity {
             addPaletteOption("↶ Удалить последнюю точку",this::removeRoadPoint);
             addPaletteOption("↔ Ширина дороги",this::chooseRoadWidth);
             addPaletteOption("🎨 Покрытие дороги",this::chooseRoadMaterial);
+            addPaletteOption("🖼 Загрузить PNG/JPG для дороги",this::pickPaintTexture);
             addPaletteOption("🖼 Выбрать PNG/JPG-текстуру дороги",this::chooseRoadTexture);
             addPaletteOption("🪨 Нанести активную текстуру",this::applyActiveRoadTexture);
             addPaletteOption("📏 Повторение камней по дороге",this::chooseRoadTextureSize);

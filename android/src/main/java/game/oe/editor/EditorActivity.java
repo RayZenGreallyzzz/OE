@@ -146,6 +146,12 @@ public class EditorActivity extends Activity {
             boolean jump,int fixedTicks);
     private static native void nativeWalkPreviewStop();
     private static native double[] nativeWalkPreviewState();
+    private static native boolean nativePlayStart();
+    private static native boolean nativePlayStep(float axisX,float axisZ,
+            boolean jump,int fixedTicks);
+    private static native void nativePlayOrbit(float dx,float dy);
+    private static native void nativePlayStop();
+    private static native double[] nativePlayState();
     private static native boolean nativeBridgeAutoAlign();
     private static native int[] nativeMedievalSurfaceStats();
     private static native boolean nativeRoadBakeTopology();
@@ -181,6 +187,9 @@ public class EditorActivity extends Activity {
     private LinearLayout toolDrawer, paletteItems, inspectorPanel, advancedInspector;
     private WalkJoystick walkJoystick;
     private Button walkJumpButton,walkStopButton;
+    private Button editorMenuButton,editorSaveButton,editorUndoButton,editorRedoButton;
+    private Button editorPlayButton;
+    private boolean playModeActive=false,playStartPending=false;
     private boolean walkControlsActive=false,walkTickPending=false;
     private boolean walkStartPending=false,walkActivityPaused=false;
     private boolean walkJumpQueued=false,walkAirborne=false;
@@ -192,31 +201,37 @@ public class EditorActivity extends Activity {
     // pause/idle never queues hundreds of catch-up steps on a 4GiB tablet.
     private final Runnable walkTick=new Runnable(){
         @Override public void run(){
-            if(!walkControlsActive||surface==null||importing)return;
+            if((!walkControlsActive&&!playModeActive)||surface==null||importing)return;
             final boolean moving=Math.hypot(walkAxisX,walkAxisZ)>.05;
             final boolean jump=walkJumpQueued;
             if(!walkTickPending&&(moving||jump||walkAirborne)){
                 final float dx=walkAxisX,dz=walkAxisZ;
                 final int session=walkSessionGeneration;
+                final boolean playing=playModeActive;
                 walkJumpQueued=false;walkTickPending=true;
                 surface.queueEvent(()->{
                     if(session!=walkSessionGeneration)return;
-                    boolean ok=nativeWalkPreviewStep(dx,dz,jump,2);
-                    final double[] state=ok?nativeWalkPreviewState():null;
+                    boolean ok=playing?nativePlayStep(dx,dz,jump,2):
+                                       nativeWalkPreviewStep(dx,dz,jump,2);
+                    final double[] state=ok?
+                            (playing?nativePlayState():nativeWalkPreviewState()):null;
                     surface.requestRender();
                     ui(()->{
                         if(session!=walkSessionGeneration)return;
                         walkTickPending=false;
                         if(!ok||state==null){
-                            finishWalkControls();
-                            message("Путник остановлен: достигнут край карты либо изменена сцена");
+                            if(playing)finishPlayMode();
+                            else finishWalkControls();
+                            message(playing?"Play завершён: достигнут край карты":
+                                    "Путник остановлен: достигнут край карты либо изменена сцена");
                             return;
                         }
                         walkAirborne=state[3]<.5;
                         long now=SystemClock.uptimeMillis();
                         if(now-lastWalkHudAt>350){
                             lastWalkHudAt=now;
-                            statusText.setText(walkPreviewDescription(state));
+                            statusText.setText(playing?playPreviewDescription(state):
+                                                      walkPreviewDescription(state));
                         }
                     });
                 });
@@ -272,6 +287,10 @@ public class EditorActivity extends Activity {
         ui(() -> Toast.makeText(this, s, Toast.LENGTH_SHORT).show());
     }
     private void edit(Runnable work) {
+        if(playModeActive||playStartPending){
+            message("Сначала нажми ■ Stop — редактор во время Play заблокирован");
+            return;
+        }
         if(walkControlsActive||walkStartPending)finishWalkControls();
         if(importing) {message("Дождись завершения загрузки сцены");return;}
         surface.queueEvent(() -> {
@@ -285,7 +304,9 @@ public class EditorActivity extends Activity {
         final boolean hasSelection=!info.startsWith("Выбери");
         ui(() -> {
             if(selectionText!=null)selectionText.setText(info);
-            if(inspectorPanel!=null)inspectorPanel.setVisibility(hasSelection?View.VISIBLE:View.GONE);
+            if(inspectorPanel!=null)
+                inspectorPanel.setVisibility((playModeActive||playStartPending)?
+                        View.GONE:(hasSelection?View.VISIBLE:View.GONE));
         });
     }
     private Button button(String title, Runnable action) {
@@ -347,21 +368,23 @@ public class EditorActivity extends Activity {
         top.setPadding(dp(5),dp(2),dp(5),dp(2));
         top.setBackgroundColor(Color.argb(220,14,21,32));
         TextView title=new TextView(this);
-        title.setText("OE BANK SEAMS R5.8a TEST");
+        title.setText("OE PLAY/STOP R5.8b TEST");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
         title.setTextSize(12);
         title.setGravity(Gravity.CENTER_VERTICAL);
         title.setPadding(dp(8),0,dp(5),0);
         top.addView(title,new LinearLayout.LayoutParams(0,dp(45),1f));
-        Button menu=button("☰ Каталог",()->toggleDrawer(!drawerOpen));
-        top.addView(menu,new LinearLayout.LayoutParams(dp(110),dp(43)));
-        Button save=button("💾 Сохранить",this::saveScene);
-        top.addView(save,new LinearLayout.LayoutParams(dp(112),dp(43)));
-        Button undo=button("↶",this::undoAction);
-        top.addView(undo,new LinearLayout.LayoutParams(dp(45),dp(43)));
-        Button redo=button("↷",this::redoAction);
-        top.addView(redo,new LinearLayout.LayoutParams(dp(45),dp(43)));
+        editorPlayButton=button("▶ Play",this::startPlayMode);
+        top.addView(editorPlayButton,new LinearLayout.LayoutParams(dp(88),dp(43)));
+        editorMenuButton=button("☰ Каталог",()->toggleDrawer(!drawerOpen));
+        top.addView(editorMenuButton,new LinearLayout.LayoutParams(dp(110),dp(43)));
+        editorSaveButton=button("💾 Сохранить",this::saveScene);
+        top.addView(editorSaveButton,new LinearLayout.LayoutParams(dp(112),dp(43)));
+        editorUndoButton=button("↶",this::undoAction);
+        top.addView(editorUndoButton,new LinearLayout.LayoutParams(dp(45),dp(43)));
+        editorRedoButton=button("↷",this::redoAction);
+        top.addView(editorRedoButton,new LinearLayout.LayoutParams(dp(45),dp(43)));
         root.addView(top,new FrameLayout.LayoutParams(-1,dp(49),Gravity.TOP));
 
         // Left drawer opens on demand and is vertically scrollable.
@@ -653,6 +676,7 @@ public class EditorActivity extends Activity {
                     +"Draco пока не поддерживается. KTX2 BasisU ETC1S/UASTC LDR -> ETC2 подключён (тест).")
                 .setPositiveButton("Понятно",null).show());
         }else if("Проект".equals(category)){
+            addPaletteOption("▶ Play — отдельная игровая сцена R5.8b",this::startPlayMode);
             addPaletteOption("🧠 Ядро игры · проверить",this::showRuntimeCoreStatus);
             addPaletteOption("⚡ Графика и качество",this::chooseDeviceProfile);
             addPaletteOption("🖥 Информация о GPU",this::showDeviceCapabilities);
@@ -1005,6 +1029,87 @@ public class EditorActivity extends Activity {
             return true;
         }
     }
+    private void setPlayEditorLocked(boolean locked){
+        if(editorPlayButton!=null)editorPlayButton.setEnabled(!locked);
+        if(editorMenuButton!=null)editorMenuButton.setEnabled(!locked);
+        if(editorSaveButton!=null)editorSaveButton.setEnabled(!locked);
+        if(editorUndoButton!=null)editorUndoButton.setEnabled(!locked);
+        if(editorRedoButton!=null)editorRedoButton.setEnabled(!locked);
+        if(locked){
+            toggleDrawer(false);
+            if(inspectorPanel!=null)inspectorPanel.setVisibility(View.GONE);
+        }else if(surface!=null){
+            surface.queueEvent(this::refreshSelected);
+        }
+    }
+    private void startPlayMode(){
+        if(importing||walkActivityPaused||playModeActive||playStartPending)return;
+        if(walkControlsActive||walkStartPending)finishWalkControls();
+        cancelPlace(); // stop active painting, road drawing and placement first
+        playStartPending=true;
+        setPlayEditorLocked(true);
+        final int session=++walkSessionGeneration;
+        surface.queueEvent(()->{
+            if(session!=walkSessionGeneration)return;
+            boolean ok=nativePlayStart();
+            final double[] state=ok?nativePlayState():null;
+            ui(()->{
+                if(session!=walkSessionGeneration)return;
+                if(walkActivityPaused||importing){
+                    finishPlayMode();
+                    return;
+                }
+                playStartPending=false;
+                if(!ok||state==null){
+                    setPlayEditorLocked(false);
+                    message("Play не стартовал: проверь сцену, рельеф и место появления");
+                    return;
+                }
+                playModeActive=true;
+                walkAxisX=0f;walkAxisZ=0f;walkJumpQueued=false;
+                walkTickPending=false;walkAirborne=false;
+                walkJoystick.setVisibility(View.VISIBLE);
+                walkJumpButton.setVisibility(View.VISIBLE);
+                walkStopButton.setText("■ Stop");
+                walkStopButton.setVisibility(View.VISIBLE);
+                statusText.setText(playPreviewDescription(state));
+                walkHandler.removeCallbacks(walkTick);
+                walkHandler.post(walkTick);
+                message("Режим Play: джойстик — движение, жест справа — поворот камеры, ■ Stop — назад в редактор");
+            });
+            surface.requestRender();
+        });
+    }
+    private static String playPreviewDescription(double[] st){
+        if(st==null||st.length!=8)return "Play не запущен";
+        return String.format(java.util.Locale.ROOT,
+            "▶ Play · X %.1f / Y %.1f / Z %.1f · %s · %d объектов · %d тиков",
+            st[0],st[1],st[2],st[3]>.5?"на земле":"в прыжке",
+            (int)st[7],(int)st[6]);
+    }
+    private void finishPlayMode(){
+        if(!playModeActive&&!playStartPending)return;
+        playModeActive=false;playStartPending=false;
+        ++walkSessionGeneration;
+        walkHandler.removeCallbacks(walkTick);
+        walkAxisX=0f;walkAxisZ=0f;walkJumpQueued=false;
+        walkAirborne=false;walkTickPending=false;
+        if(walkJoystick!=null){
+            walkJoystick.setVisibility(View.GONE);
+            walkJoystick.invalidate();
+        }
+        if(walkJumpButton!=null)walkJumpButton.setVisibility(View.GONE);
+        if(walkStopButton!=null){
+            walkStopButton.setVisibility(View.GONE);
+            walkStopButton.setText("✕ Тест");
+        }
+        setPlayEditorLocked(false);
+        statusText.setText("■ Stop · сцена редактора и несохранённые изменения сохранены");
+        if(surface!=null)surface.queueEvent(()->{
+            nativePlayStop();
+            surface.requestRender();
+        });
+    }
     private void finishWalkControls(){
         if(!walkControlsActive&&!walkStartPending)return;
         walkControlsActive=false;walkStartPending=false;
@@ -1024,7 +1129,7 @@ public class EditorActivity extends Activity {
         });
     }
     private void startWalkCollisionPreview(){
-        if(importing||walkActivityPaused)return;
+        if(importing||walkActivityPaused||playModeActive||playStartPending)return;
         if(walkControlsActive||walkStartPending)finishWalkControls();
         cancelPlace(); // close all editor paint/road modes before walking
         walkStartPending=true;
@@ -1102,6 +1207,7 @@ public class EditorActivity extends Activity {
         });
     }
     private void stopWalkCollisionPreview(){
+        if(playModeActive||playStartPending){finishPlayMode();return;}
         finishWalkControls();
         statusText.setText("Тест физики завершён. Город не изменён.");
     }
@@ -2842,6 +2948,7 @@ public class EditorActivity extends Activity {
     }
     @Override protected void onPause() {
         walkActivityPaused=true;
+        finishPlayMode();
         finishWalkControls(); // also invalidates a start still waiting on GL
         if(surface!=null)surface.onPause();
         super.onPause();
@@ -2928,6 +3035,18 @@ public class EditorActivity extends Activity {
             return (float)Math.hypot(e.getX(0)-e.getX(1),e.getY(0)-e.getY(1));
         }
         @Override public boolean onTouchEvent(MotionEvent e) {
+            if(playModeActive||playStartPending){
+                final int action=e.getActionMasked();
+                if(action==MotionEvent.ACTION_DOWN){
+                    lastX=e.getX();lastY=e.getY();
+                }else if(action==MotionEvent.ACTION_MOVE&&playModeActive){
+                    final float dx=(e.getX()-lastX)*.006f;
+                    final float dy=(e.getY()-lastY)*.005f;
+                    lastX=e.getX();lastY=e.getY();
+                    queueEvent(()->{nativePlayOrbit(dx,dy);requestRender();});
+                }
+                return true; // never pick, paint, place or move editor objects
+            }
             if(importing)return true; // Prevent input changes during scene replacement.
             int action=e.getActionMasked();
             if(action==MotionEvent.ACTION_DOWN) {

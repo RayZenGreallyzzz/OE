@@ -8,15 +8,15 @@ android {
         applicationId 'game.oe.editor'
         minSdk 26
         targetSdk 34
-        versionCode 38
-        versionName '0.8.8-isolated-playstop-r58b'
+        versionCode 39
+        versionName '0.8.9-play-solid-collision-r59a'
         ndk { abiFilters 'arm64-v8a' }
         externalNativeBuild {
             cmake { cppFlags '-std=c++17 -O2 -Wall -Wextra' }
         }
     }
     buildTypes {
-        debug { debuggable true; applicationIdSuffix '.playstop' }
+        debug { debuggable true; applicationIdSuffix '.solids' }
         release { minifyEnabled false }
     }
     compileOptions {

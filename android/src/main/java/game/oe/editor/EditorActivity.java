@@ -1024,6 +1024,8 @@ public class EditorActivity extends Activity {
     }
     private void startWalkCollisionPreview(){
         if(importing)return;
+        if(walkControlsActive)finishWalkControls();
+        cancelPlace(); // close all editor paint/road modes before walking
         surface.queueEvent(()->{
             boolean ok=nativeWalkPreviewStart();
             double[] state=ok?nativeWalkPreviewState():null;
@@ -1034,8 +1036,16 @@ public class EditorActivity extends Activity {
                     return;
                 }
                 statusText.setText(walkPreviewDescription(state));
-                message("Путник создан у первой точки выбранной дороги. " +
-                    "Теперь используй стрелки в каталоге «Дороги».");
+                walkControlsActive=true;walkTickPending=false;
+                walkJumpQueued=false;walkAirborne=false;
+                walkAxisX=0f;walkAxisZ=0f;++walkSessionGeneration;
+                walkJoystick.setVisibility(View.VISIBLE);
+                walkJumpButton.setVisibility(View.VISIBLE);
+                walkStopButton.setVisibility(View.VISIBLE);
+                toggleDrawer(false);
+                walkHandler.removeCallbacks(walkTick);
+                walkHandler.post(walkTick);
+                message("Круг слева — непрерывное движение. Прыжок и ✕ Тест справа.");
             });
             surface.requestRender();
         });
@@ -1045,7 +1055,7 @@ public class EditorActivity extends Activity {
         String ground=st[4]==3.?"мост":st[4]==2.?"дорога":
                        st[4]==1.?"земля":"в воздухе";
         return String.format(java.util.Locale.ROOT,
-            "Физика R5.6 · X %.1f / Y %.1f / Z %.1f · %s · %s · %d тиков",
+            "Физика R5.7 · X %.1f / Y %.1f / Z %.1f · %s · %s · %d тиков",
             st[0],st[1],st[2],st[3]>.5?"стоит":"падает/прыгает",
             ground,(int)st[6]);
     }
@@ -1069,23 +1079,20 @@ public class EditorActivity extends Activity {
         surface.queueEvent(()->{
             double[] state=nativeWalkPreviewState();
             ui(()->new AlertDialog.Builder(this)
-                .setTitle("Реальная опора под ногами · R5.6")
+                .setTitle("Опора под ногами · R5.7")
                 .setMessage(walkPreviewDescription(state)+"\n\n"+
                     "Зелёный — стоит на земле/дороге, золотой — на мосту, " +
                     "красный — находится в прыжке или падает.\n"+
-                    "Тестовая фигурка НЕ входит в проект. Касания кнопок " +
-                    "двигают её на 1 секунду симуляции при 60 Гц.\n"+
+                    "Путник не сохраняется в проекте. Сенсорный круг слева " +
+                    "двигает непрерывно, прыжок — справа. Физика 60 Гц.\n"+
                     "Пока нет столкновений со стенами, водой и перилами. " +
                     "В будущем это будет частью Play/Stop.")
                 .setPositiveButton("Понятно",null).show());
         });
     }
     private void stopWalkCollisionPreview(){
-        surface.queueEvent(()->{
-            nativeWalkPreviewStop();
-            ui(()->statusText.setText("Тест физики завершён. Город не изменён."));
-            surface.requestRender();
-        });
+        finishWalkControls();
+        statusText.setText("Тест физики завершён. Город не изменён.");
     }
     private void showBridgeTraversalStatus(){
         if(importing)return;

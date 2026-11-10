@@ -71,15 +71,16 @@ int main(){
  BridgeInstance steep=bridge;steep.y=-1.30; // deck .54 vs bank .14
  assert(buildTraversalGraph(shortGap,{steep},river,graph));
  assert(graph.fullBridges==0&&graph.approachSurfaces==0);
+ const TerrainHeight flat=[](double,double){return 0.;};
  // A sideways road cap directly beside the bridge mouth is NOT a ramp:
  // old R5.7 declared a full bridge but generated degenerate XZ triangles.
  RoadTopology sideways;
  assert(buildRoadTopology({road(1,{{-16,1.6},{-4.05,1.6}}),
                            road(2,{{5.25,0},{16,0}})},sideways,0.));
- assert(buildTraversalGraph(sideways,{bridge},river,graph));
+ assert(buildTraversalGraph(sideways,{bridge},flat,graph));
  assert(graph.fullBridges==0&&graph.oneEndedBridges==1);
  assert(graph.approachSurfaces==0);
- assert(walker.configure(graph,river,512)); // previously failed to configure
+ assert(walker.configure(graph,flat,512)); // previously failed to configure
 
  // A 0.6 m rise over 1.46 m diagonally seems safe, but only 0.4 m
  // lies along the bridge axis. Its actual triangle grade is 1.5: reject.
@@ -99,9 +100,9 @@ int main(){
  RoadTopology angled;
  assert(buildRoadTopology({road(1,{{-7,1},{-5.25,0}}),
                            road(2,{{5.25,0},{16,0}})},angled,0.));
- assert(buildTraversalGraph(angled,{bridge},river,graph));
+ assert(buildTraversalGraph(angled,{bridge},flat,graph));
  assert(graph.fullBridges==1&&graph.approachSurfaces==2);
- assert(walker.configure(graph,river,512));
+ assert(walker.configure(graph,flat,512));
 
  // A forced bad height source cannot corrupt the previous graph.
  const auto previous=graph;

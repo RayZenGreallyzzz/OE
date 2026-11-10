@@ -1327,6 +1327,8 @@ void drawMapGuide(const Mat4& vp){
  glUniform1f(gShader.locTextured,0.f);
 }
 
+// Declared in JNI resource section; road GPU build needs key validation early.
+bool validPaintKey(const std::string&key);
 Color roadPreviewColor(const std::string& material){
  if(material=="builtin:dirt")return {.50f,.33f,.19f};
  if(material=="builtin:sand")return {.77f,.68f,.43f};

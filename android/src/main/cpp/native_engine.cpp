@@ -3059,10 +3059,11 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  jfloatArray painting,jobjectArray terrainPaintKeys,jlongArray roadIds,
  jobjectArray roadNames,jobjectArray roadMaterials,jdoubleArray roadWidths,
  jobjectArray roadPoints,jintArray tileCoords,jobjectArray tileData,
- jintArray layerCoords,jobjectArray layerKeys,jobjectArray layerMasks){
+ jintArray layerCoords,jobjectArray layerKeys,jobjectArray layerMasks,
+ jfloatArray lakeData){
  if(!allowedWorldSize(size)||!kinds||!transforms||!modelKeys||!terrainData||
     !objectPaintKeys||!painting||!terrainPaintKeys||!roadIds||!roadNames||
-    !roadMaterials||!roadWidths||!roadPoints||!tileCoords||!tileData||!layerCoords||!layerKeys||!layerMasks)
+    !roadMaterials||!roadWidths||!roadPoints||!tileCoords||!tileData||!layerCoords||!layerKeys||!layerMasks||!lakeData)
     return JNI_FALSE;
  const jsize n=env->GetArrayLength(kinds);
  if(n<0||n>MAX_ENTITIES||env->GetArrayLength(transforms)!=n*8||
@@ -3087,6 +3088,24 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
   if(env->ExceptionCheck())return JNI_FALSE;
  }
  const float half=static_cast<float>(size)*.5f;
+ // Preflight lake bodies before ANY scene state is replaced. Older scene
+ // versions pass an empty array, which clears previously authored lakes.
+ const jsize lakeFloats=env->GetArrayLength(lakeData);
+ if(lakeFloats<0||lakeFloats%4!=0||
+    lakeFloats>static_cast<jsize>(oe::water::kMaxLakes*4))return JNI_FALSE;
+ std::array<jfloat,oe::water::kMaxLakes*4> lakeRaw{};
+ if(lakeFloats){
+  env->GetFloatArrayRegion(lakeData,0,lakeFloats,lakeRaw.data());
+  if(env->ExceptionCheck())return JNI_FALSE;
+ }
+ std::vector<oe::water::Lake> stagedLakes;
+ stagedLakes.reserve(static_cast<std::size_t>(lakeFloats/4));
+ for(jsize i=0;i<lakeFloats;i+=4){
+  const oe::water::Lake lake{lakeRaw[i],lakeRaw[i+1],
+                              lakeRaw[i+2],lakeRaw[i+3]};
+  if(!oe::water::validLake(lake,half))return JNI_FALSE;
+  stagedLakes.push_back(lake);
+ }
  std::vector<TerrainBrush> stagedBrushes;
  stagedBrushes.reserve(static_cast<size_t>(brushFloats/4));
  for(jsize i=0;i<brushFloats;i+=4){
@@ -3275,6 +3294,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  if(!nextLayerCanvas.replaceAll(std::move(loadedLayers),size))return JNI_FALSE;
  // Commit: no validation or allocation failures below this point.
  gEntities.swap(staged);gBrushes.swap(stagedBrushes);
+ gLakes.swap(stagedLakes);gSelectedLake=-1;++gLakeRevision;
  gTerrainPaint.swap(stagedPaint);gTerrainRevision++;
  gRoads=std::move(nextRoads);gSelectedRoad=0;gActiveRoad=0;gRoadPending=false;
  for(auto& gpu:gPaintTileGpu)if(gpu.second.texture)glDeleteTextures(1,&gpu.second.texture);

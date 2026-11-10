@@ -31,6 +31,26 @@ int main(){
  assert(graph.surfaces.size()==3);
  assert(graph.edges.size()==3); // 2 real roads + isolated bridge deck
  assert(graph.surfaces.back().bridge&&graph.surfaces.back().ownerId==100);
+ // The editor can propose all four bridge pose fields (XZ, yaw, Y) after
+ // a rough touch placement; it must never silently move an authored street.
+ BridgeInstance coarse=stone;
+ coarse.center={.7,.4};coarse.y=.2;coarse.yaw=.03;
+ BridgeAlignment alignment{};
+ assert(suggestBridgeRoadAlignment(roads,coarse,flat,alignment));
+ assert(std::abs(alignment.center.x)<.001);
+ assert(std::abs(alignment.center.z)<.001);
+ assert(std::abs(alignment.yaw)<.001);
+ assert(std::abs(alignment.y+1.70)<.001);
+ BridgeInstance fitted=coarse;
+ fitted.center=alignment.center;fitted.yaw=alignment.yaw;fitted.y=alignment.y;
+ assert(buildTraversalGraph(roads,{fitted},flat,graph));
+ assert(graph.fullBridges==1&&graph.bridges[0].endsConnected==2);
+ // A bridge too far from the mouths must not relocate itself unexpectedly.
+ BridgeInstance remote=stone;remote.center={100,100};
+ const BridgeAlignment remembered=alignment;
+ assert(!suggestBridgeRoadAlignment(roads,remote,flat,alignment));
+ assert(std::abs(alignment.center.x-remembered.center.x)<1.e-12);
+ assert(std::abs(alignment.y-remembered.y)<1.e-12);
  double suggested=999.;
  assert(suggestBridgeDeckHeight(roads,stone,flat,suggested));
  assert(std::abs(suggested-(-1.70))<.001);

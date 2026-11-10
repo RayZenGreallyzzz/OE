@@ -57,7 +57,13 @@ These features are implemented in experimental branches with successful automate
 - Test crossing connectivity, saving, scene loading, and performance. Avoid claiming full traffic AI at this stage.
 - Bridge road link is derived from existing v7 scene roads and medieval objects; no file-format migration. Previous lake-enabled editor archived as `backup/oe-r53-lakes-2026-11-10`.
 
-### R5.5 — actual character/runtime collision integration (not yet implemented)
+### R5.5 — actual PNG/JPG road surface texturing (experimental, tablet QA pending)
+- User-requested completion of street authoring BEFORE Play/Stop: transparent PNG map guide → tap control points → assign genuine PNG/JPG cobblestone/earth texture → repeat along winding streets → preview X/T/Y patched junctions → export and import everything in .oezip.
+- Uses the existing safe 8-image texture library and GLES3 repeat sampler; each road stores its own tileMetres (0.5–32m) and durable material key. Joined junction mosaic uses terrain-following world-XZ projection.
+- New scene version v8 only for road image assets/custom UV sizes; archive now includes the road images, protects legacy scenes v1–v7 including lakes, medieval bridges, terrain materials and PNG plan. Preserve source snapshot `backup/oe-r54-before-road-textures-2026-11-10`.
+- Limits: PNG guide is NOT parsed automatically into a road network. Hard material boundaries at intersections still require visual QA/polish.
+
+### R5.6 — actual character/runtime collision integration (not yet implemented)
 - Integrate road/bridge walk quads as real runtime collision surfaces, add slope checks and a safe player controller.
 - Polish visible street-bank / bridge transitions and verify shore geometry on the actual Android tablet before claiming physically traversable bridges.
 

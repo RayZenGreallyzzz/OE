@@ -31,7 +31,8 @@ void triangle(SurfaceMesh&mesh,const WalkPoint&a,const WalkPoint&b,
 bool buildBankVisualSeams(const TraversalGraph&graph,
                           std::vector<BankVisualPart>&out){
  if(graph.surfaces.size()>kMaxTraversalSurfaces||
-    graph.bridges.size()>kMaxTraversalBridges)return false;
+    graph.bridges.size()>kMaxTraversalBridges||
+    graph.approachSurfaces>graph.surfaces.size())return false;
  std::set<std::uint64_t> full;
  for(const auto&b:graph.bridges)
   if(b.walkable&&b.endsConnected==2)full.insert(b.id);

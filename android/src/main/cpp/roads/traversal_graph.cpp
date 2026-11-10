@@ -15,7 +15,8 @@ constexpr double kPi=3.14159265358979323846;
 constexpr std::uint64_t kBridgeNodeBit=1ULL<<63;
 struct Deck {double length,width,height;};
 struct End {
- std::uint64_t id=0;Point xz{};double y=0; // real authored road dead-end
+ std::uint64_t id=0;Point xz{};double y=0;
+ Point towardStreet{}; // tangent from terminal node back into its street
 };
 struct BridgePose {WalkPoint a,b;double width=0;};
 struct Snap {
@@ -68,11 +69,26 @@ bool pose(const BridgeInstance&b,BridgePose&out){
 bool collectRoadEnds(const RoadTopology& graph,const TerrainHeight&ground,
                      std::vector<End>& ends){
  ends.clear();ends.reserve(graph.nodes.size());
+ std::map<std::uint64_t,Point> positions;
+ for(const auto&node:graph.nodes)positions.emplace(node.id,node.position);
  for(const auto&node:graph.nodes){
   if(node.degree!=1)continue;
   const double h=ground(node.position.x,node.position.z)+kSurfaceLift;
   if(!finite(h)||std::abs(h)>10000)return false;
-  ends.push_back({node.id,node.position,h});
+  std::uint64_t neighbour=0;
+  for(const auto&edge:graph.edges){
+   if(edge.from==node.id||edge.to==node.id){
+    neighbour=edge.from==node.id?edge.to:edge.from;
+    break;
+   }
+  }
+  const auto opposite=positions.find(neighbour);
+  if(opposite==positions.end())return false;
+  const double dx=opposite->second.x-node.position.x;
+  const double dz=opposite->second.z-node.position.z;
+  const double dist=std::hypot(dx,dz);
+  if(dist<.01)return false;
+  ends.push_back({node.id,node.position,h,{dx/dist,dz/dist}});
  }
  std::sort(ends.begin(),ends.end(),[](const End&a,const End&b){return a.id<b.id;});
  return true;
@@ -86,6 +102,12 @@ bool closestEnd(const WalkPoint&mouth,const WalkPoint&other,
   const double dx=road.xz.x-mouth.x,dz=road.xz.z-mouth.z;
   const double planar=std::hypot(dx,dz);
   if(planar>kBridgeRoadReach)continue;
+  // Only roads actually approaching the bridge are connected. A road that
+  // happens to pass sideways by a cap is not an accessible entrance.
+  const double bx=other.x-mouth.x,bz=other.z-mouth.z;
+  const double span=std::hypot(bx,bz);
+  if(span<.01||road.towardStreet.x*bx/span+
+                  road.towardStreet.z*bz/span>-.60)continue;
   const double step=std::abs(road.y-mouth.y);
   if(checkHeight&&step>kBridgeStepTolerance)continue;
   // Do not accept a road end near the middle of the other bridge mouth.

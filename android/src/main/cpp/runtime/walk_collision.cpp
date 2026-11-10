@@ -85,9 +85,14 @@ bool WalkController::configure(const roads::TraversalGraph&g,
  }
  // All potentially failing work above finishes before any old session
  // can be replaced. The previous session survives a malformed graph.
- terrain_=std::move(terrain);surfaces_=std::move(next);
+ terrain_=std::move(terrain);surfaces_=std::move(next);solids_.clear();
  worldHalf_=worldHalf;state_={};active_=false;
  return true;
+}
+bool WalkController::setStaticSolids(const std::vector<SolidBox>&solids){
+ if(solids.size()>kMaxPlaySolids)return false;
+ for(const auto&box:solids)if(!validSolidBox(box))return false;
+ solids_=solids;return true;
 }
 bool WalkController::query(double x,double z,double referenceFeet,
                            double maxStepUp,Floor&floor) const{
@@ -127,7 +132,8 @@ bool WalkController::spawn(double x,double z){
  if(!validTerrain(terrain_,x,z,h))return false;
  Floor sample{};
  if(!query(x,z,h,kWalkStepHeight,sample))return false;
- if(sample.slope>kWalkMaxSlope)return false;
+ if(sample.slope>kWalkMaxSlope||
+    solidOverlapsBody(solids_,{x,sample.hit.height,z}))return false;
  state_={};
  state_.feet={x,sample.hit.height,z};
  state_.grounded=true;state_.groundKind=sample.hit.kind;
@@ -147,8 +153,21 @@ bool WalkController::advance(double dx,double dz,bool jump,std::size_t ticks){
    next.verticalVelocity=kJumpSpeed;
    next.grounded=false;next.groundKind=GroundKind::None;next.groundId=0;
   }
-  const double desiredX=next.feet.x+dx*kWalkSpeedMetresPerSecond*kDt;
-  const double desiredZ=next.feet.z+dz*kWalkSpeedMetresPerSecond*kDt;
+  double desiredX=next.feet.x+dx*kWalkSpeedMetresPerSecond*kDt;
+  double desiredZ=next.feet.z+dz*kWalkSpeedMetresPerSecond*kDt;
+  // R5.9a Play-only solid wall/building collision: sweep the player's
+  // 28cm radius, 1.7m upright body, then attempt X/Z sliding if blocked.
+  const Vec3 from=next.feet;
+  const auto blockedByBox=[&](double x,double z){
+   return solidBlocksStep(solids_,from,{x,from.y,z});
+  };
+  if(blockedByBox(desiredX,desiredZ)){
+   const bool xFree=!blockedByBox(desiredX,from.z);
+   const bool zFree=!blockedByBox(from.x,desiredZ);
+   if(xFree&&(!zFree||std::abs(dx)>=std::abs(dz)))desiredZ=from.z;
+   else if(zFree)desiredX=from.x;
+   else{desiredX=from.x;desiredZ=from.z;}
+  }
   if(!inBounds(desiredX,desiredZ))return false;
   Floor target{};
   if(!query(desiredX,desiredZ,next.feet.y,kWalkStepHeight,target))
@@ -205,7 +224,7 @@ bool WalkController::advance(double dx,double dz,bool jump,std::size_t ticks){
  return true;
 }
 void WalkController::clear() noexcept{
- terrain_={};surfaces_.clear();state_={};active_=false;
+ terrain_={};surfaces_.clear();solids_.clear();state_={};active_=false;
 }
 bool WalkController::applyToWorld(World&world,EntityId actor) const noexcept{
  if(!active_||!world.alive(actor))return false;

@@ -242,6 +242,17 @@ Mat4 quaternionMatrix(oe::gizmo::Quaternion q){
  m.m[2]=2*(x*z-y*w);m.m[6]=2*(y*z+x*w);m.m[10]=1-2*(x*x+y*y);
  return m;
 }
+Vec3 entityEulerXYZ(const Entity&e){
+ // Y-X-Z Euler readout only; the actual orientation uses quaternions.
+ const Mat4 m=quaternionMatrix(entityQuaternion(e));
+ const float pitch=std::asin(clampf(-m.m[9],-1.f,1.f));
+ const float cosPitch=std::cos(pitch);
+ const float yaw=std::abs(cosPitch)>.00001f?
+    std::atan2(m.m[8],m.m[10]):std::atan2(-m.m[2],m.m[0]);
+ const float roll=std::abs(cosPitch)>.00001f?
+    std::atan2(m.m[1],m.m[5]):0.f;
+ return {pitch/RAD,yaw/RAD,roll/RAD};
+}
 // All rotations share one visual pivot, including imported models whose
 // normalized mesh is grounded at Y=0. Rotation does not rewrite source GLBs.
 float entityPivotHeight(const Entity&e){
@@ -2105,8 +2116,8 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePick(JNIEnv*,jcl
   float left=1e9f,top=1e9f,right=-1e9f,bottom=-1e9f,minW=1e9f;
   int visible=0;
   for(float xx:{-range,range})for(float zz:{-range,range})for(float yy:{0.f,h}){
-    float a=e.yaw*RAD,k=e.size,c=std::cos(a),s=std::sin(a);
-    Vec4 q=apply(vp,{e.x+(c*xx*e.sx+s*zz*e.sz)*k,e.y+yy*k*e.sy,e.z+(c*zz*e.sz-s*xx*e.sx)*k,1});
+    const Mat4 model=entityModelMatrix(e);
+    const Vec4 q=apply(vp,apply(model,{xx,yy,zz,1.f}));
     if(q.w<.1f)continue;visible++;
     float sx=(q.x/q.w*.5f+.5f)*gWidth, sy=(.5f-q.y/q.w*.5f)*gHeight;
     left=std::min(left,sx);right=std::max(right,sx);
@@ -2211,8 +2222,26 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeChangeSelectedHe
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeSnapSelectedToGround(JNIEnv*,jclass){
  if(Entity*e=selected()){
-  const float y=terrainHeightAt(e->x,e->z);
-  if(y!=e->y){recordEdit();e->y=y;}
+  const float ground=terrainHeightAt(e->x,e->z);
+  float desired=ground;
+  // Imported model may be tipped sideways; the grounding point is the
+  // lowest transformed source vertex, not the original GLB's Y=0 plane.
+  if(e->type==6){
+   auto it=gAssets.find(e->asset);
+   if(it!=gAssets.end()&&it->second.vertexStride==11&&!it->second.vertices.empty()){
+    const Mat4 transform=entityModelMatrix(*e);
+    const auto&v=it->second.vertices;
+    float minY=std::numeric_limits<float>::infinity();
+    for(size_t j=0;j+2<v.size();j+=11){
+     const float transformed=transform.m[1]*v[j]+
+         transform.m[5]*v[j+1]+transform.m[9]*v[j+2]+transform.m[13];
+     minY=std::min(minY,transformed);
+    }
+    if(std::isfinite(minY))desired=ground+e->y-minY;
+   }
+  }
+  desired=clampf(desired,-24.f,160.f);
+  if(std::abs(desired-e->y)>.0001f){recordEdit();e->y=desired;}
  }
 }
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeApplyTerrainBrushAtScreen(
@@ -2229,8 +2258,44 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeTerrainBrushCoun
  return static_cast<jint>(gBrushes.size());
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeRotate(JNIEnv*,jclass,jfloat deg){
- if(!std::isfinite(deg)||deg==0)return;
- if(Entity*e=selected()){recordEdit();e->yaw=std::fmod(e->yaw+deg,360.f);}
+ if(!std::isfinite(deg)||deg==0||std::abs(deg)>360.f)return;
+ if(Entity*e=selected()){recordEdit();rotateEntityWorld(*e,1,deg);}
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeRotateSelectedAxis(
+ JNIEnv*,jclass,jint axis,jfloat degrees){
+ if(axis<0||axis>2||!std::isfinite(degrees)||degrees==0||
+    std::abs(degrees)>360.f)return;
+ if(Entity*e=selected()){
+  recordEdit();rotateEntityWorld(*e,axis,degrees);
+ }
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeResetSelectedRotation(
+ JNIEnv*,jclass){
+ if(Entity*e=selected()){
+  recordEdit();e->yaw=0.f;e->qx=e->qy=e->qz=0.f;e->qw=1.f;
+ }
+}
+JNIEXPORT jdoubleArray JNICALL Java_game_oe_editor_EditorActivity_nativeSelectedRotationEuler(
+ JNIEnv*env,jclass){
+ const Entity*e=selected();if(!e)return nullptr;
+ const Vec3 r=entityEulerXYZ(*e);
+ const jdouble angles[3]={r.x,r.y,r.z};
+ jdoubleArray a=env->NewDoubleArray(3);
+ if(a)env->SetDoubleArrayRegion(a,0,3,angles);
+ return a;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeSetSelectedRotationEuler(
+ JNIEnv*,jclass,jdouble x,jdouble y,jdouble z){
+ if(!std::isfinite(x)||!std::isfinite(y)||!std::isfinite(z)||
+    std::abs(x)>36000.||std::abs(y)>36000.||std::abs(z)>36000.)
+    return JNI_FALSE;
+ Entity*e=selected();if(!e)return JNI_FALSE;
+ const auto q=oe::gizmo::multiply(
+   oe::gizmo::axisAngle(1,static_cast<float>(y)),
+   oe::gizmo::multiply(oe::gizmo::axisAngle(0,static_cast<float>(x)),
+                        oe::gizmo::axisAngle(2,static_cast<float>(z))));
+ recordEdit();setEntityQuaternion(*e,q);
+ return JNI_TRUE;
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeScaleSelectedAxis(
  JNIEnv*,jclass,jint axis,jfloat factor){
@@ -2252,9 +2317,12 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeScale(JNIEnv*,jc
 }
 JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSelectedInfo(JNIEnv*env,jclass){
  Entity*e=selected();if(!e)return env->NewStringUTF("Выбери здание касанием или через список «Объекты»");
- std::ostringstream out;out<<nameFor(e->type)<<" #" <<e->id<<"  |  X "<<std::fixed<<std::setprecision(3)
- <<e->x<<"  Z "<<e->z<<"  Y "<<e->y<<"  ↻ "<<e->yaw<<"°  Размер "<<e->size
- << " XYZ "<<e->sx<<"/"<<e->sy<<"/"<<e->sz;
+ const Vec3 angles=entityEulerXYZ(*e);
+ std::ostringstream out;out<<nameFor(e->type)<<" #" <<e->id<<" | X "<<std::fixed<<std::setprecision(2)
+ <<e->x<<" Z "<<e->z<<" Y "<<e->y<<" | ↻ XYZ "
+ <<std::setprecision(1)<<angles.x<<"°/"<<angles.y<<"°/"<<angles.z<<"°"
+ <<" | Размер "<<std::setprecision(2)<<e->size;
+
  return env->NewStringUTF(out.str().c_str());
 }
 JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSceneSnapshot(JNIEnv*env,jclass){
@@ -2264,7 +2332,8 @@ JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSceneSnapshot
  for(size_t i=0;i<gEntities.size();i++){
   const auto&e=gEntities[i];if(i)out<<",";
   out<<"{\"type\":"<<e.type<<",\"x\":"<<e.x<<",\"z\":"<<e.z
-     <<",\"yaw\":"<<e.yaw<<",\"size\":"<<e.size<<",\"y\":"<<e.y<<",\"sx\":"<<e.sx<<",\"sy\":"<<e.sy<<",\"sz\":"<<e.sz;
+     <<",\"yaw\":"<<e.yaw<<",\"size\":"<<e.size<<",\"y\":"<<e.y<<",\"sx\":"<<e.sx<<",\"sy\":"<<e.sy<<",\"sz\":"<<e.sz
+     <<",\"qx\":"<<e.qx<<",\"qy\":"<<e.qy<<",\"qz\":"<<e.qz<<",\"qw\":"<<e.qw;
   if(e.type==6)out<<",\"asset\":\""<<e.asset<<"\"";
   if(!e.paint.empty())out<<",\"paint\":\""<<e.paint<<"\"";
   out<<"}";

@@ -291,7 +291,7 @@ public class EditorActivity extends Activity {
         top.setPadding(dp(5),dp(2),dp(5),dp(2));
         top.setBackgroundColor(Color.argb(220,14,21,32));
         TextView title=new TextView(this);
-        title.setText("OE BRIDGE ROAD LINKS R5.4 TEST");
+        title.setText("OE ROAD TEXTURES R5.5 TEST");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
         title.setTextSize(12);
@@ -530,6 +530,9 @@ public class EditorActivity extends Activity {
             addPaletteOption("↶ Удалить последнюю точку",this::removeRoadPoint);
             addPaletteOption("↔ Ширина дороги",this::chooseRoadWidth);
             addPaletteOption("🎨 Покрытие дороги",this::chooseRoadMaterial);
+            addPaletteOption("🖼 Выбрать PNG/JPG-текстуру дороги",this::chooseRoadTexture);
+            addPaletteOption("🪨 Нанести активную текстуру",this::applyActiveRoadTexture);
+            addPaletteOption("📏 Повторение камней по дороге",this::chooseRoadTextureSize);
             addPaletteOption("🗑 Удалить выбранную дорогу",this::askDeleteRoad);
             addPaletteOption("ℹ Помощь",()->new AlertDialog.Builder(this)
                 .setTitle("Дороги OE · R3")
@@ -1313,11 +1316,104 @@ public class EditorActivity extends Activity {
 
     private void chooseRoadMaterial(){
         if(importing)return;
-        final String[] options={"Камень (цветовой просмотр)","Грунт","Песок","Трава"};
-        new AlertDialog.Builder(this).setTitle("Покрытие дороги · предпросмотр")
-            .setItems(options,(dialog,index)->edit(()->{
-                if(nativeRoadSetMaterial(index))message("Покрытие: "+options[index]);
-            })).setNegativeButton("Отмена",null).show();
+        final String[] options={"Камень · цвет","Грунт · цвет",
+            "Песок · цвет","Трава · цвет","🎨 Моя PNG/JPG-текстура"};
+        new AlertDialog.Builder(this).setTitle("Настоящее покрытие дороги · R5.5")
+            .setItems(options,(dialog,index)->{
+                if(index==4){chooseRoadTexture();return;}
+                edit(()->{
+                    if(nativeRoadSetMaterial(index))
+                        message("Покрытие: "+options[index]);
+                });
+            }).setNegativeButton("Отмена",null).show();
+    }
+    private void applyActiveRoadTexture(){
+        if(importing)return;
+        final String key=activePaintKey;
+        if(!validTexture(key)){
+            message("Сначала загрузи PNG/JPG через «Текстуры» или «Выбрать PNG/JPG»");
+            return;
+        }
+        edit(()->{
+            if(nativeRoadSetCustomTexture(key))
+                message("Текстура нанесена на дорогу / выбрана для новых улиц · ↶ отменить");
+            else message("Текстура ещё не загружена в GPU. Выбери её из библиотеки дорог.");
+        });
+    }
+    private void chooseRoadTexture(){
+        if(importing)return;
+        try{
+            File[] files=textureDir().listFiles((dir,name)->validTexture(name));
+            if(files==null||files.length==0){
+                message("Импортируй PNG/JPG: Каталог → Текстуры → Загрузить");
+                return;
+            }
+            java.util.Arrays.sort(files,(a,b)->a.getName().compareTo(b.getName()));
+            String[] names=new String[files.length];
+            for(int i=0;i<files.length;i++)
+                names[i]="🪨 "+files[i].getName().substring(3,15);
+            new AlertDialog.Builder(this)
+                .setTitle("Текстура булыжника, грунта или песка")
+                .setItems(names,(dialog,index)->useRoadTexture(files[index].getName()))
+                .setNegativeButton("Отмена",null).show();
+        }catch(Exception error){
+            message("Библиотека дорожных текстур: "+error.getMessage());
+        }
+    }
+    private void useRoadTexture(String key){
+        if(importing)return;
+        importing=true;
+        new Thread(()->{
+            try{
+                if(!validTexture(key))throw new Exception("Неверная PNG/JPG-текстура");
+                File file=new File(textureDir(),key);
+                if(!file.isFile()||file.length()<=0||
+                   file.length()>ProjectArchive.MAX_TEXTURE_BYTES)
+                    throw new Exception("Нет файла текстуры");
+                byte[] source=Files.readAllBytes(file.toPath());
+                String mime=textureType(source);
+                if(!key.equals(textureKey(source,mime)))
+                    throw new Exception("Неверная контрольная сумма текстуры");
+                TextureReader.Image decoded=TextureReader.decode(source,mime,1024);
+                surface.queueEvent(()->{
+                    boolean loaded=nativeRegisterPaintTexture(key,decoded.bytes,
+                        decoded.width,decoded.height);
+                    boolean applied=loaded&&nativeRoadSetCustomTexture(key);
+                    importing=false;
+                    if(applied){
+                        activePaintKey=key;
+                        message("Дорога текстурирована · выбери повторение рисунка");
+                    }else message("Не удалось применить: лимит текстур или GPU");
+                    surface.requestRender();
+                    refreshSelected();
+                });
+            }catch(Exception error){
+                importing=false;
+                message("Не удалось выбрать дорожную текстуру: "+error.getMessage());
+            }
+        },"oe-road-texture").start();
+    }
+    private void chooseRoadTextureSize(){
+        if(importing)return;
+        final double[] sizes={.5,1.,2.,4.,8.,16.,32.};
+        final String[] labels={
+            "0,5 м · очень мелкий булыжник",
+            "1 м · мелкие камни",
+            "2 м · обычная брусчатка",
+            "4 м · средние плиты",
+            "8 м · крупные камни",
+            "16 м · большие узоры",
+            "32 м · масштабный рисунок"
+        };
+        surface.queueEvent(()->{
+            final double current=nativeRoadSelectedTileMetres();
+            ui(()->new AlertDialog.Builder(this)
+                .setTitle("Повторение PNG/JPG на дороге · сейчас "+current+" м")
+                .setItems(labels,(dialog,index)->edit(()->{
+                    if(nativeRoadSetTileMetres(sizes[index]))
+                        message("Рисунок повторяется каждые "+sizes[index]+" м · ↶ отменить");
+                })).setNegativeButton("Отмена",null).show());
+        });
     }
     private void removeRoadPoint(){
         if(importing)return;

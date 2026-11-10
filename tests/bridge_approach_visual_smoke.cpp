@@ -46,10 +46,14 @@ int main(){
  assert(buildBankVisualSeams(graph,visual)&&visual.empty());
  // If unexpected malformed approach data appears, keep prior mesh atomically.
  assert(buildTraversalGraph(topo,{bridge},river,graph));
+ assert(buildBankVisualSeams(graph,visual));
  const auto old=visual;
  for(auto&surface:graph.surfaces)if(surface.approach){
   surface.c=surface.b;break;
  }
+ assert(!buildBankVisualSeams(graph,visual));
+ assert(visual.size()==old.size()&&visual[0].materialRoadId==old[0].materialRoadId);
+ graph.approachSurfaces=graph.surfaces.size()+1;
  assert(!buildBankVisualSeams(graph,visual));
  assert(visual.size()==old.size());
  std::cout<<"OE_BANK_VISUAL_OK: 2 seam meshes, positive winding, road textures, no half bridge\n";

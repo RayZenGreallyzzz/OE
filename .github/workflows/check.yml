@@ -68,6 +68,19 @@ jobs:
             android/src/main/cpp/terrainpaint/paint_tiles.cpp \
             -o /tmp/oe-terrain-paint
           /tmp/oe-terrain-paint
+  water-lakes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify flooded depressions, shorelines and bounded lake meshes
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -pedantic \
+            tests/lake_surface_smoke.cpp \
+            android/src/main/cpp/water/lake_surface.cpp \
+            -o /tmp/oe-water-lakes-test
+          /tmp/oe-water-lakes-test
+      - name: Cross-check lake JNI, save/restore and editor mode
+        run: python3 tests/lake_editor_integration_smoke.py
   medieval-bridge-foundations:
     runs-on: ubuntu-latest
     steps:

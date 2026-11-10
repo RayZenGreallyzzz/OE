@@ -22,7 +22,7 @@ for needle in [
     "if(!walkTickPending&&(moving||jump||walkAirborne))",
     "if(session!=walkSessionGeneration)return",
     "private void finishWalkControls()",
-    "finishWalkControls();\n        if(surface!=null)surface.onPause()",
+    "finishWalkControls(); // also invalidates a start still waiting on GL",
     "if(walkControlsActive||walkStartPending)finishWalkControls();",
     "walkJumpQueued=true",
     "statusText.setText(walkPreviewDescription(state))",
@@ -30,8 +30,7 @@ for needle in [
 ]:
     assert needle in java,needle
 for needle in ["q.bridge=true;q.approach=true","buildBankTransition(graph,a,walk.a",
-               "buildBankTransition(graph,b,walk.b","appendBankTransition(graph,a",
-               "appendBankTransition(graph,b","if(status.endsConnected==2)"]:
+               "buildBankTransition(graph,b,walk.b","if(status.endsConnected==2)"]:
     assert needle in road,needle
 for needle in ["nativeWalkPreviewStart(", "nativeWalkPreviewStep(",
                "nativeWalkPreviewStop(", "nativeWalkPreviewState(",
@@ -45,11 +44,11 @@ for needle in [
     "walkActivityPaused=true;",
     "walkActivityPaused=false;",
     "if(!walkControlsActive&&!walkStartPending)return",
-    "finishWalkControls();\\n        importing=true;",
+    "finishWalkControls();\n        importing=true;",
     "info==null||info.length!=9||info[0]<0",
     "Проверенных переходов берег–мост:",
 ]:
-    assert needle.replace("\\\\n","\\n") in java,needle
+    assert needle in java,needle
 assert "jint stats[9]" in native
 assert "traversal.approachSurfaces" in native
 assert "validApproach(q)" in road

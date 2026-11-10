@@ -29,8 +29,8 @@ for needle in [
     "private void stopWalkCollisionPreview()",
 ]:
     assert needle in java,needle
-for needle in ["q.bridge=true;q.approach=true","buildBankTransition(graph,a,walk.a",
-               "buildBankTransition(graph,b,walk.b","if(status.endsConnected==2)"]:
+for needle in ["q.bridge=true;q.approach=true","closestSafeEnd(graph,roadEnds,walk.a,walk.b,walk",
+               "closestSafeEnd(graph,roadEnds,walk.b,walk.a,walk","if(status.endsConnected==2)"]:
     assert needle in road,needle
 for needle in ["nativeWalkPreviewStart(", "nativeWalkPreviewStep(",
                "nativeWalkPreviewStop(", "nativeWalkPreviewState(",

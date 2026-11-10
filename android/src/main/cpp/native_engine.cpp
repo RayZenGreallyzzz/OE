@@ -1327,8 +1327,14 @@ void drawMapGuide(const Mat4& vp){
  glUniform1f(gShader.locTextured,0.f);
 }
 
-// Declared in JNI resource section; road GPU build needs key validation early.
-bool validPaintKey(const std::string&key);
+// Validated texture key used by road renderer and JNI import.
+bool validPaintKey(const std::string&key){
+ if(key.size()!=31||key.compare(0,3,"tx_")!=0||
+    !(key.substr(27)==".png"||key.substr(27)==".jpg"))return false;
+ for(size_t i=3;i<27;i++)if(!((key[i]>='0'&&key[i]<='9')||
+    (key[i]>='a'&&key[i]<='f')))return false;
+ return true;
+}
 Color roadPreviewColor(const std::string& material){
  if(material=="builtin:dirt")return {.50f,.33f,.19f};
  if(material=="builtin:sand")return {.77f,.68f,.43f};
@@ -1808,13 +1814,7 @@ JNIEXPORT jbyteArray JNICALL Java_game_oe_editor_GlbReader_nativeDecodeMeshopt(
  return decoded;
 }
 // Only RGBA8 decoded on worker thread is accepted; source images remain files.
-bool validPaintKey(const std::string&key){
- if(key.size()!=31||key.compare(0,3,"tx_")!=0||
-    !(key.substr(27)==".png"||key.substr(27)==".jpg"))return false;
- for(size_t i=3;i<27;i++)if(!((key[i]>='0'&&key[i]<='9')||
-    (key[i]>='a'&&key[i]<='f')))return false;
- return true;
-}
+
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterPaintTexture(
  JNIEnv*env,jclass,jstring name,jbyteArray data,jint width,jint height){
  if(!name||!data||width<=0||height<=0||width>1024||height>1024)return JNI_FALSE;

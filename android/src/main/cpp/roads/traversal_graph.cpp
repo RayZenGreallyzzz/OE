@@ -22,6 +22,7 @@ struct Snap {
  std::uint64_t node=0;
  WalkPoint road{};
  double planar=0;
+ Point towardStreet{}; // terminal road tangent for its actual cross-section
 };
 Deck deckFor(int kind){
  switch(kind){
@@ -113,7 +114,7 @@ bool closestEnd(const WalkPoint&mouth,const WalkPoint&other,
   const double otherDistance=std::hypot(road.xz.x-other.x,road.xz.z-other.z);
   if(otherDistance<=planar+.001)continue;
   if(planar<best-1.e-7||(std::abs(planar-best)<=1.e-7&&road.id<result.node)){
-   best=planar;result={road.id,xyzPoint(road.xz,road.y),planar};found=true;
+   best=planar;result={road.id,xyzPoint(road.xz,road.y),planar,road.towardStreet};found=true;
   }
  }
  return found;
@@ -122,15 +123,26 @@ std::uint64_t endpointId(std::uint64_t bridge,int end){
  if(bridge>=(kBridgeNodeBit>>1))return 0;
  return kBridgeNodeBit|(bridge<<1)|static_cast<std::uint64_t>(end);
 }
-// R5.7: real low-poly collision transition between a road's terminal
-// surface and the walking deck. Never silently cross a vertical bank.
-bool rampSafe(const WalkPoint& bank,const WalkPoint& mouth){
- const double gap=std::hypot(bank.x-mouth.x,bank.z-mouth.z);
- if(!finite(gap)||gap>kBridgeRoadReach)return false;
- const double rise=std::abs(bank.y-mouth.y);
- // Small coincident offsets are handled by the existing <=0.65m step.
- return gap<=.08?rise<=kBridgeStepTolerance:
-                   rise/gap<=.85;
+// R5.7.1: the actual XZ triangles must be non-degenerate and walkable.
+// An endpoint's diagonal 3D gap is NOT its real collision-surface grade.
+constexpr double kApproachMaxGrade=.85;
+double triangleGrade(const WalkPoint&a,const WalkPoint&b,const WalkPoint&c,
+                     double&area){
+ const double dx1=b.x-a.x,dz1=b.z-a.z,dx2=c.x-a.x,dz2=c.z-a.z;
+ area=dx1*dz2-dz1*dx2;
+ if(!finite(area)||std::abs(area)<=.001)
+  return std::numeric_limits<double>::infinity();
+ const double dh1=b.y-a.y,dh2=c.y-a.y;
+ return std::hypot((dh1*dz2-dh2*dz1)/area,
+                   (dx1*dh2-dx2*dh1)/area);
+}
+bool validApproach(const WalkSurface&q){
+ double areaA=0.,areaB=0.;
+ const double gradeA=triangleGrade(q.a,q.b,q.c,areaA);
+ const double gradeB=triangleGrade(q.a,q.c,q.d,areaB);
+ return finite(gradeA)&&finite(gradeB)&&areaA*areaB>0.&&
+        gradeA<=kApproachMaxGrade+1.e-6&&
+        gradeB<=kApproachMaxGrade+1.e-6;
 }
 double terminalRoadWidth(const RoadTopology&graph,std::uint64_t node){
  for(const auto&edge:graph.edges){
@@ -140,26 +152,44 @@ double terminalRoadWidth(const RoadTopology&graph,std::uint64_t node){
  }
  return 0.;
 }
-bool appendBankTransition(const RoadTopology&graph,const Snap&bank,
-                          const WalkPoint&mouth,const BridgePose&bridge,
-                          double yaw,std::uint64_t id,
-                          TraversalGraph&draft){
+bool buildBankTransition(const RoadTopology&graph,const Snap&bank,
+                         const WalkPoint&mouth,const BridgePose&bridge,
+                         double yaw,std::uint64_t id,
+                         const TerrainHeight&ground,
+                         WalkSurface&out,bool&needsSurface){
+ needsSurface=false;
  const double length=std::hypot(bank.road.x-mouth.x,bank.road.z-mouth.z);
- if(length<=.08)return true; // coincident bridge-road caps already touch
+ const double rise=std::abs(bank.road.y-mouth.y);
+ if(!finite(length)||length>kBridgeRoadReach||
+    !finite(rise)||rise>kBridgeStepTolerance)return false;
+ if(length<=.08)return true; // near-coincident caps: existing step solver
  const double available=terminalRoadWidth(graph,bank.node);
  const double width=std::min(bridge.width,available);
- if(!finite(width)||width<=.10||!rampSafe(bank.road,mouth))return false;
- const double half=width*.5,px=-std::sin(yaw)*half,
-                            pz=std::cos(yaw)*half;
+ if(!finite(width)||width<=.10)return false;
+ const double bridgeSideX=-std::sin(yaw),bridgeSideZ=std::cos(yaw);
+ const double deltaX=mouth.x-bank.road.x,deltaZ=mouth.z-bank.road.z;
+ const double towardMouth=-(deltaX*bank.towardStreet.x+
+                            deltaZ*bank.towardStreet.z);
+ const double sideOffset=std::abs(deltaX*bridgeSideX+deltaZ*bridgeSideZ);
+ // A road cap beside the bridge is not a real bank-to-deck entrance.
+ if(towardMouth<=.05||sideOffset>width*.5)return false;
+ // Match the actual road terminal edge, not a bridge-oriented fake cap.
+ double roadSideX=-bank.towardStreet.z,roadSideZ=bank.towardStreet.x;
+ if(roadSideX*bridgeSideX+roadSideZ*bridgeSideZ<0.){
+  roadSideX=-roadSideX;roadSideZ=-roadSideZ;
+ }
+ const double half=width*.5;
  WalkSurface q;
  q.ownerId=id;q.bridge=true;q.approach=true;
- q.a={bank.road.x+px,bank.road.y,bank.road.z+pz};
- q.b={bank.road.x-px,bank.road.y,bank.road.z-pz};
- q.c={mouth.x-px,mouth.y,mouth.z-pz};
- q.d={mouth.x+px,mouth.y,mouth.z+pz};
- if(!xyz(q.a)||!xyz(q.b)||!xyz(q.c)||!xyz(q.d)||
-    draft.surfaces.size()>=kMaxTraversalSurfaces)return false;
- draft.surfaces.push_back(q);++draft.approachSurfaces;
+ q.a={bank.road.x+roadSideX*half,0.,bank.road.z+roadSideZ*half};
+ q.b={bank.road.x-roadSideX*half,0.,bank.road.z-roadSideZ*half};
+ q.c={mouth.x-bridgeSideX*half,mouth.y,mouth.z-bridgeSideZ*half};
+ q.d={mouth.x+bridgeSideX*half,mouth.y,mouth.z+bridgeSideZ*half};
+ if(!xyz(q.a)||!xyz(q.b)||!xyz(q.c)||!xyz(q.d))return false;
+ q.a.y=ground(q.a.x,q.a.z)+kSurfaceLift;
+ q.b.y=ground(q.b.x,q.b.z)+kSurfaceLift;
+ if(!xyz(q.a)||!xyz(q.b)||!validApproach(q))return false;
+ out=q;needsSurface=true;
  return true;
 }
 bool addRoad(const RoadTopology&g,const TerrainHeight&terrain,
@@ -232,10 +262,14 @@ bool buildTraversalGraph(const RoadTopology& graph,
      draft.surfaces.size()>=kMaxTraversalSurfaces)return false;
   draft.surfaces.push_back(floor);++draft.bridgeSurfaces;
   Snap a{},b{};
+  WalkSurface approachA{},approachB{};
+  bool addA=false,addB=false;
   const bool connectedA=closestEnd(walk.a,walk.b,roadEnds,a,true)&&
-                        rampSafe(a.road,walk.a);
+      buildBankTransition(graph,a,walk.a,walk,bridge.yaw,bridge.id,ground,
+                          approachA,addA);
   const bool connectedB=closestEnd(walk.b,walk.a,roadEnds,b,true)&&
-                        rampSafe(b.road,walk.b);
+      buildBankTransition(graph,b,walk.b,walk,bridge.yaw,bridge.id,ground,
+                          approachB,addB);
   const bool distinct=!connectedA||!connectedB||a.node!=b.node;
   if(connectedA&&distinct){
    ++status.endsConnected;
@@ -254,9 +288,10 @@ bool buildTraversalGraph(const RoadTopology& graph,
   if(status.endsConnected==2){
    // Do not install half-bridges: both entrances and the continuous deck
    // must be present for any physical player to use these quads.
-   if(!appendBankTransition(graph,a,walk.a,walk,bridge.yaw,bridge.id,draft)||
-      !appendBankTransition(graph,b,walk.b,walk,bridge.yaw,bridge.id,draft))
-    return false; // output stays unchanged
+   if(draft.surfaces.size()+(addA?1:0)+(addB?1:0)>
+      kMaxTraversalSurfaces)return false; // preserve the previous graph
+   if(addA){draft.surfaces.push_back(approachA);++draft.approachSurfaces;}
+   if(addB){draft.surfaces.push_back(approachB);++draft.approachSurfaces;}
    ++draft.fullBridges;
   }
   else if(status.endsConnected==1)++draft.oneEndedBridges;

@@ -94,7 +94,7 @@ public class EditorActivity extends Activity {
             int[] kinds, float[] transforms, String[] modelKeys, float[] terrain,
             String[] objectPaintKeys, float[] painting, String[] terrainPaintKeys,
             long[] roadIds, String[] roadNames, String[] roadMaterials,
-            double[] roadWidths, double[][] roadPoints,int[] tileCoords,byte[][] tileData,
+            double[] roadWidths, double[] roadTileMetres,double[][] roadPoints,int[] tileCoords,byte[][] tileData,
             int[] layerCoords,String[] layerKeys,byte[][] layerMasks,float[] lakes);
     private static native boolean nativeRegisterPaintTexture(String key, byte[] rgba,int width,int height);
     private static native boolean nativePaintSelected(String key);
@@ -124,6 +124,9 @@ public class EditorActivity extends Activity {
     private static native boolean nativeRoadSetWidth(double width);
     private static native double nativeRoadSelectedWidth();
     private static native boolean nativeRoadSetMaterial(int choice);
+    private static native boolean nativeRoadSetCustomTexture(String key);
+    private static native boolean nativeRoadSetTileMetres(double metres);
+    private static native double nativeRoadSelectedTileMetres();
     private static native boolean nativeRoadRemoveLastPoint();
     private static native boolean nativeRoadDeleteSelected();
     private static native double[] nativeRoadPointCoords();
@@ -288,7 +291,7 @@ public class EditorActivity extends Activity {
         top.setPadding(dp(5),dp(2),dp(5),dp(2));
         top.setBackgroundColor(Color.argb(220,14,21,32));
         TextView title=new TextView(this);
-        title.setText("OE BRIDGE ROAD LINKS R5.4 TEST");
+        title.setText("OE ROAD TEXTURES R5.5 TEST");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
         title.setTextSize(12);
@@ -527,6 +530,10 @@ public class EditorActivity extends Activity {
             addPaletteOption("↶ Удалить последнюю точку",this::removeRoadPoint);
             addPaletteOption("↔ Ширина дороги",this::chooseRoadWidth);
             addPaletteOption("🎨 Покрытие дороги",this::chooseRoadMaterial);
+            addPaletteOption("🖼 Загрузить PNG/JPG для дороги",this::pickPaintTexture);
+            addPaletteOption("🖼 Выбрать PNG/JPG-текстуру дороги",this::chooseRoadTexture);
+            addPaletteOption("🪨 Нанести активную текстуру",this::applyActiveRoadTexture);
+            addPaletteOption("📏 Повторение камней по дороге",this::chooseRoadTextureSize);
             addPaletteOption("🗑 Удалить выбранную дорогу",this::askDeleteRoad);
             addPaletteOption("ℹ Помощь",()->new AlertDialog.Builder(this)
                 .setTitle("Дороги OE · R3")
@@ -1146,6 +1153,17 @@ public class EditorActivity extends Activity {
         JSONArray water=json.optJSONArray("lakes");
         if(water!=null&&water.length()>0)json.put("version",7);
         else json.remove("lakes");
+        // R5.5 scene v8: authored JPEG/PNG road material and tiling size.
+        // Earlier cities keep their old file format until the first custom
+        // road is painted or its tiling size is changed.
+        JSONArray savedRoads=json.optJSONArray("roads");
+        if(savedRoads!=null)for(int i=0;i<savedRoads.length();i++){
+            JSONObject road=savedRoads.getJSONObject(i);
+            String key=road.optString("material","");
+            if(validTexture(key)||road.has("tileMetres")){
+                json.put("version",8);break;
+            }
+        }
         String result=json.toString();
         if(result.getBytes(StandardCharsets.UTF_8).length>ProjectArchive.MAX_SCENE_BYTES)
             throw new Exception("Рисунок R4 превысил безопасный размер проекта");
@@ -1299,11 +1317,104 @@ public class EditorActivity extends Activity {
 
     private void chooseRoadMaterial(){
         if(importing)return;
-        final String[] options={"Камень (цветовой просмотр)","Грунт","Песок","Трава"};
-        new AlertDialog.Builder(this).setTitle("Покрытие дороги · предпросмотр")
-            .setItems(options,(dialog,index)->edit(()->{
-                if(nativeRoadSetMaterial(index))message("Покрытие: "+options[index]);
-            })).setNegativeButton("Отмена",null).show();
+        final String[] options={"Камень · цвет","Грунт · цвет",
+            "Песок · цвет","Трава · цвет","🎨 Моя PNG/JPG-текстура"};
+        new AlertDialog.Builder(this).setTitle("Настоящее покрытие дороги · R5.5")
+            .setItems(options,(dialog,index)->{
+                if(index==4){chooseRoadTexture();return;}
+                edit(()->{
+                    if(nativeRoadSetMaterial(index))
+                        message("Покрытие: "+options[index]);
+                });
+            }).setNegativeButton("Отмена",null).show();
+    }
+    private void applyActiveRoadTexture(){
+        if(importing)return;
+        final String key=activePaintKey;
+        if(!validTexture(key)){
+            message("Сначала загрузи PNG/JPG через «Текстуры» или «Выбрать PNG/JPG»");
+            return;
+        }
+        edit(()->{
+            if(nativeRoadSetCustomTexture(key))
+                message("Текстура нанесена на дорогу / выбрана для новых улиц · ↶ отменить");
+            else message("Текстура ещё не загружена в GPU. Выбери её из библиотеки дорог.");
+        });
+    }
+    private void chooseRoadTexture(){
+        if(importing)return;
+        try{
+            File[] files=textureDir().listFiles((dir,name)->validTexture(name));
+            if(files==null||files.length==0){
+                message("Импортируй PNG/JPG: Каталог → Текстуры → Загрузить");
+                return;
+            }
+            java.util.Arrays.sort(files,(a,b)->a.getName().compareTo(b.getName()));
+            String[] names=new String[files.length];
+            for(int i=0;i<files.length;i++)
+                names[i]="🪨 "+files[i].getName().substring(3,15);
+            new AlertDialog.Builder(this)
+                .setTitle("Текстура булыжника, грунта или песка")
+                .setItems(names,(dialog,index)->useRoadTexture(files[index].getName()))
+                .setNegativeButton("Отмена",null).show();
+        }catch(Exception error){
+            message("Библиотека дорожных текстур: "+error.getMessage());
+        }
+    }
+    private void useRoadTexture(String key){
+        if(importing)return;
+        importing=true;
+        new Thread(()->{
+            try{
+                if(!validTexture(key))throw new Exception("Неверная PNG/JPG-текстура");
+                File file=new File(textureDir(),key);
+                if(!file.isFile()||file.length()<=0||
+                   file.length()>ProjectArchive.MAX_TEXTURE_BYTES)
+                    throw new Exception("Нет файла текстуры");
+                byte[] source=Files.readAllBytes(file.toPath());
+                String mime=textureType(source);
+                if(!key.equals(textureKey(source,mime)))
+                    throw new Exception("Неверная контрольная сумма текстуры");
+                TextureReader.Image decoded=TextureReader.decode(source,mime,1024);
+                surface.queueEvent(()->{
+                    boolean loaded=nativeRegisterPaintTexture(key,decoded.bytes,
+                        decoded.width,decoded.height);
+                    boolean applied=loaded&&nativeRoadSetCustomTexture(key);
+                    importing=false;
+                    if(applied){
+                        activePaintKey=key;
+                        message("Дорога текстурирована · выбери повторение рисунка");
+                    }else message("Не удалось применить: лимит текстур или GPU");
+                    surface.requestRender();
+                    refreshSelected();
+                });
+            }catch(Exception error){
+                importing=false;
+                message("Не удалось выбрать дорожную текстуру: "+error.getMessage());
+            }
+        },"oe-road-texture").start();
+    }
+    private void chooseRoadTextureSize(){
+        if(importing)return;
+        final double[] sizes={.5,1.,2.,4.,8.,16.,32.};
+        final String[] labels={
+            "0,5 м · очень мелкий булыжник",
+            "1 м · мелкие камни",
+            "2 м · обычная брусчатка",
+            "4 м · средние плиты",
+            "8 м · крупные камни",
+            "16 м · большие узоры",
+            "32 м · масштабный рисунок"
+        };
+        surface.queueEvent(()->{
+            final double current=nativeRoadSelectedTileMetres();
+            ui(()->new AlertDialog.Builder(this)
+                .setTitle("Повторение PNG/JPG на дороге · сейчас "+current+" м")
+                .setItems(labels,(dialog,index)->edit(()->{
+                    if(nativeRoadSetTileMetres(sizes[index]))
+                        message("Рисунок повторяется каждые "+sizes[index]+" м · ↶ отменить");
+                })).setNegativeButton("Отмена",null).show());
+        });
     }
     private void removeRoadPoint(){
         if(importing)return;
@@ -2009,8 +2120,8 @@ public class EditorActivity extends Activity {
             }
             JSONObject document=new JSONObject(new String(jsonBytes.toByteArray(),StandardCharsets.UTF_8));
             final int sceneVersion=document.optInt("version",-1);
-            if(sceneVersion<1||sceneVersion>7)
-                throw new Exception("Неверная версия сцены (нужна 1–7)");
+            if(sceneVersion<1||sceneVersion>8)
+                throw new Exception("Неверная версия сцены (нужна 1–8)");
             final boolean demoRoads=document.optBoolean("demoRoads",false);
             final int worldSize=document.optInt("worldSize",1024);
             if(worldSize!=1024&&worldSize!=2048&&worldSize!=4096&&worldSize!=8192&&worldSize!=16384)
@@ -2234,7 +2345,7 @@ public class EditorActivity extends Activity {
             if(roadCount>256)throw new Exception("Слишком много дорог");
             long[] roadIds=new long[roadCount];
             String[] roadNames=new String[roadCount],roadMaterials=new String[roadCount];
-            double[] roadWidths=new double[roadCount];
+            double[] roadWidths=new double[roadCount],roadTileMetres=new double[roadCount];
             double[][] roadPaths=new double[roadCount][];
             HashSet<Long> usedRoadIds=new HashSet<>();
             int totalPoints=0,roadVertices=0;
@@ -2252,8 +2363,15 @@ public class EditorActivity extends Activity {
                 if(!material.equals("builtin:cobblestone")&&
                    !material.equals("builtin:dirt")&&
                    !material.equals("builtin:sand")&&
-                   !material.equals("builtin:grass"))
+                   !material.equals("builtin:grass")&&
+                   !(sceneVersion>=8&&validTexture(material)))
                     throw new Exception("Неизвестное покрытие дороги");
+                if(validTexture(material))referencedPaint.add(material);
+                if(sceneVersion<8&&road.has("tileMetres"))
+                    throw new Exception("Настройка текстуры дороги требует v8");
+                double tiling=road.optDouble("tileMetres",4.0);
+                if(!Double.isFinite(tiling)||tiling<.5||tiling>32)
+                    throw new Exception("Размер плитки дороги: 0.5–32 метра");
                 double width=road.getDouble("widthMetres");
                 if(!Double.isFinite(width)||width<.25||width>32)
                     throw new Exception("Неверная ширина дороги");
@@ -2283,7 +2401,7 @@ public class EditorActivity extends Activity {
                     }
                 }
                 roadIds[i]=id;roadNames[i]=name;roadMaterials[i]=material;
-                roadWidths[i]=width;roadPaths[i]=xy;
+                roadWidths[i]=width;roadTileMetres[i]=tiling;roadPaths[i]=xy;
             }
             if(assets.size()>MAX_ASSETS)throw new Exception("Слишком много разных GLB-моделей");
             if(referencedPaint.size()>8)throw new Exception("Слишком много текстур (макс. 8)");
@@ -2414,7 +2532,7 @@ public class EditorActivity extends Activity {
                     }
                     if(!nativeReplaceScene(worldSize,demoRoads,kinds,transforms,modelKeys,
                             terrainBrushes,objectPaintKeys,paintBrushes,paintBrushKeys,
-                            roadIds,roadNames,roadMaterials,roadWidths,roadPaths,
+                            roadIds,roadNames,roadMaterials,roadWidths,roadTileMetres,roadPaths,
                             preciseTileCoords,preciseTileBytes,
                             materialCoords,materialKeys,materialWeights,lakeData))
                         throw new Exception("Сцена не прошла полную проверку в движке");

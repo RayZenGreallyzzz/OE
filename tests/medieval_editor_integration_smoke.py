@@ -45,9 +45,9 @@ for entry in (
 # Only scenes containing new object types move to version six.
 assert 'json.put("version",6)' in java
 assert "kind>=17&&kind<=28" in java
-assert "sceneVersion>7" in java
+assert "sceneVersion>8" in java
 assert "(e.type>=17&&sceneVersion<6)" in java
-assert "version>=1&&version<=7" in archive
+assert "version>=1&&version<=8" in archive
 assert "kind>=0&&kind<=28&&(kind<=16||version>=6)" in archive
 assert "(version!=5||independent!=null)" in archive
 assert "medieval/structures.cpp" in cmake

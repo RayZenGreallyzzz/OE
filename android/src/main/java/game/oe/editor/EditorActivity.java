@@ -182,6 +182,7 @@ public class EditorActivity extends Activity {
     private WalkJoystick walkJoystick;
     private Button walkJumpButton,walkStopButton;
     private boolean walkControlsActive=false,walkTickPending=false;
+    private boolean walkStartPending=false,walkActivityPaused=false;
     private boolean walkJumpQueued=false,walkAirborne=false;
     private float walkAxisX=0f,walkAxisZ=0f;
     private volatile int walkSessionGeneration=0;
@@ -271,7 +272,7 @@ public class EditorActivity extends Activity {
         ui(() -> Toast.makeText(this, s, Toast.LENGTH_SHORT).show());
     }
     private void edit(Runnable work) {
-        if(walkControlsActive)finishWalkControls();
+        if(walkControlsActive||walkStartPending)finishWalkControls();
         if(importing) {message("Дождись завершения загрузки сцены");return;}
         surface.queueEvent(() -> {
             work.run();
@@ -546,7 +547,7 @@ public class EditorActivity extends Activity {
             addPaletteOption("🌾 Настил через болото · 9 м",()->enterPlaceMode(28,null));
             addPaletteOption("🧲 Подогнать выбранный мост к дорогам",this::alignSelectedBridge);
             addPaletteOption("👣 Проверить проходы по мостам",this::showBridgeTraversalStatus);
-            addPaletteOption("🧍 Проверить реальную ходьбу · R5.6",this::startWalkCollisionPreview);
+            addPaletteOption("🧍 Проверить реальную ходьбу · R5.7.1",this::startWalkCollisionPreview);
             addPaletteOption("🔍 Статус путника",this::showWalkPreviewState);
             addPaletteOption("ℹ Регулировка высоты",()->new AlertDialog.Builder(this)
                 .setTitle("Мосты и переправы OE")
@@ -604,7 +605,7 @@ public class EditorActivity extends Activity {
             addPaletteOption("🔗 Соединить старые дороги",this::bakeExistingRoadTopology);
             addPaletteOption("✣ Узлы дорожной сети",this::showJunctionStatus);
             addPaletteOption("👣 Проходы через мосты · R5.4",this::showBridgeTraversalStatus);
-            addPaletteOption("🧍 Физика R5.6: путник на дороге",this::startWalkCollisionPreview);
+            addPaletteOption("🧍 Физика R5.7.1: путник на дороге",this::startWalkCollisionPreview);
             addPaletteOption("⬆ Путник: север −Z",()->moveWalkPreview(0f,-1f,false));
             addPaletteOption("⬇ Путник: юг +Z",()->moveWalkPreview(0f,1f,false));
             addPaletteOption("⬅ Путник: запад −X",()->moveWalkPreview(-1f,0f,false));
@@ -1005,8 +1006,8 @@ public class EditorActivity extends Activity {
         }
     }
     private void finishWalkControls(){
-        if(!walkControlsActive)return;
-        walkControlsActive=false;
+        if(!walkControlsActive&&!walkStartPending)return;
+        walkControlsActive=false;walkStartPending=false;
         ++walkSessionGeneration;
         walkHandler.removeCallbacks(walkTick);
         walkAxisX=0f;walkAxisZ=0f;walkJumpQueued=false;
@@ -1023,13 +1024,23 @@ public class EditorActivity extends Activity {
         });
     }
     private void startWalkCollisionPreview(){
-        if(importing)return;
-        if(walkControlsActive)finishWalkControls();
+        if(importing||walkActivityPaused)return;
+        if(walkControlsActive||walkStartPending)finishWalkControls();
         cancelPlace(); // close all editor paint/road modes before walking
+        walkStartPending=true;
+        final int startSession=++walkSessionGeneration;
         surface.queueEvent(()->{
+            // Pause, edit, or a newer start may invalidate this queued request.
+            if(startSession!=walkSessionGeneration)return;
             boolean ok=nativeWalkPreviewStart();
             double[] state=ok?nativeWalkPreviewState():null;
             ui(()->{
+                if(startSession!=walkSessionGeneration)return;
+                if(walkActivityPaused||importing){
+                    finishWalkControls();
+                    return;
+                }
+                walkStartPending=false;
                 if(!ok||state==null){
                     message("Не удалось поставить путника: проверь дорожные узлы, " +
                         "высоту земли и уклон. Выдели дорогу для точной точки старта.");
@@ -1038,7 +1049,7 @@ public class EditorActivity extends Activity {
                 statusText.setText(walkPreviewDescription(state));
                 walkControlsActive=true;walkTickPending=false;
                 walkJumpQueued=false;walkAirborne=false;
-                walkAxisX=0f;walkAxisZ=0f;++walkSessionGeneration;
+                walkAxisX=0f;walkAxisZ=0f;
                 walkJoystick.setVisibility(View.VISIBLE);
                 walkJumpButton.setVisibility(View.VISIBLE);
                 walkStopButton.setVisibility(View.VISIBLE);
@@ -1055,7 +1066,7 @@ public class EditorActivity extends Activity {
         String ground=st[4]==3.?"мост":st[4]==2.?"дорога":
                        st[4]==1.?"земля":"в воздухе";
         return String.format(java.util.Locale.ROOT,
-            "Физика R5.7 · X %.1f / Y %.1f / Z %.1f · %s · %s · %d тиков",
+            "Физика R5.7.1 · X %.1f / Y %.1f / Z %.1f · %s · %s · %d тиков",
             st[0],st[1],st[2],st[3]>.5?"стоит":"падает/прыгает",
             ground,(int)st[6]);
     }
@@ -1069,7 +1080,7 @@ public class EditorActivity extends Activity {
             ui(()->{
                 if(ok&&state!=null)statusText.setText(walkPreviewDescription(state));
                 else message("Путник не запущен либо достиг края карты: " +
-                    "нажми «Физика R5.6: путник на дороге»");
+                    "нажми «Физика R5.7.1: путник на дороге»");
             });
             surface.requestRender();
         });
@@ -1099,8 +1110,8 @@ public class EditorActivity extends Activity {
         surface.queueEvent(()->{
             final int[] info=nativeBridgeTraversalStats();
             ui(()->new AlertDialog.Builder(this)
-                .setTitle("Проходимость дорог и мостов · R5.4")
-                .setMessage(info==null||info.length!=8||info[0]<0?
+                .setTitle("Проходимость дорог и мостов · R5.7.1")
+                .setMessage(info==null||info.length!=9||info[0]<0?
                     "Не удалось собрать сеть проходов. Проверь дорожные " +
                     "контрольные точки, наложенные улицы и допустимые масштабы мостов.":
                     "Участков дорожной сети: "+info[0]+"\n"+
@@ -1110,13 +1121,14 @@ public class EditorActivity extends Activity {
                     "Пока без соединений: "+info[4]+"\n"+
                     "Четырёхугольников дороги: "+info[5]+"\n"+
                     "Настилов мостов: "+info[6]+"\n"+
-                    "Рёбер для будущей навигации: "+info[7]+"\n\n"+
+                    "Рёбер для будущей навигации: "+info[7]+"\n"+
+                    "Проверенных переходов берег–мост: "+info[8]+"\n\n"+
                     "Для соединения нужна настоящая КОНЦЕВАЯ точка дороги " +
                     "у каждого входа на мост (до 2,5 м), подход по направлению " +
                     "и перепад уровня до 0,65 м.\n"+
                     "Каменный брод — отдельные камни, не непрерывный настил.\n\n"+
-                    "Это данные для будущей физики и маршрутов NPC, " +
-                    "а не готовое столкновение персонажа.")
+                    "Настилы и переходы используются физикой путника, " +
+                    "если оба берега реально подключены. NPC пока не реализованы.")
                 .setPositiveButton("Понятно",null).show());
         });
     }
@@ -1416,6 +1428,7 @@ public class EditorActivity extends Activity {
     }
     private void importMapReference(Uri uri){
         if(importing)return;
+        finishWalkControls();
         importing=true;
         surface.queueEvent(()->{
             final double[] target=nativeMapTarget();
@@ -1591,6 +1604,7 @@ public class EditorActivity extends Activity {
     }
     private void useRoadTexture(String key){
         if(importing)return;
+        finishWalkControls();
         importing=true;
         new Thread(()->{
             try{
@@ -1995,6 +2009,7 @@ public class EditorActivity extends Activity {
     }
     private void importPaintTexture(Uri uri){
         if(importing)return;
+        finishWalkControls();
         importing=true;
         new Thread(()->{
             try{
@@ -2031,6 +2046,7 @@ public class EditorActivity extends Activity {
     }
     private void usePaintTexture(String key){
         if(importing)return;
+        finishWalkControls();
         importing=true;
         new Thread(()->{
             try{
@@ -2159,6 +2175,7 @@ public class EditorActivity extends Activity {
     }
     private void exportToUri(Uri uri){
         if(importing)return;
+        finishWalkControls();
         importing=true;
         surface.queueEvent(() -> {
             final String scene;
@@ -2181,6 +2198,7 @@ public class EditorActivity extends Activity {
     }
     private void importFromUri(Uri uri){
         if(importing)return;
+        finishWalkControls();
         importing=true;
         message("Проверяю архив проекта и модели…");
         new Thread(() -> {
@@ -2237,6 +2255,7 @@ public class EditorActivity extends Activity {
         if(requestCode!=PICK_GLB || resultCode!=RESULT_OK || intent==null || intent.getData()==null)return;
         final Uri uri=intent.getData();
         if(importing)return;
+        finishWalkControls();
         importing=true;
         message("Распознаю GLB / glTF / VOX…");
         new Thread(() -> {
@@ -2322,6 +2341,7 @@ public class EditorActivity extends Activity {
     }
     private void loadScene() {
         if(importing){message("Импорт или загрузка уже выполняется");return;}
+        finishWalkControls();
         importing=true;
         // Take a consistent snapshot of the registered GPU assets. The reader
         // thread can skip expensive decode work for those immutable GLBs.
@@ -2815,9 +2835,14 @@ public class EditorActivity extends Activity {
             })
             .setNegativeButton("Отмена",null).show();
     }
-    @Override protected void onResume() { super.onResume(); if (surface != null) surface.onResume(); }
+    @Override protected void onResume() {
+        super.onResume();
+        walkActivityPaused=false;
+        if(surface!=null)surface.onResume();
+    }
     @Override protected void onPause() {
-        finishWalkControls();
+        walkActivityPaused=true;
+        finishWalkControls(); // also invalidates a start still waiting on GL
         if(surface!=null)surface.onPause();
         super.onPause();
     }

@@ -208,6 +208,25 @@ jobs:
           /tmp/oe-bank-visuals
       - name: Ensure JNI road renderer invalidates for bridge transforms
         run: python3 tests/bridge_visual_editor_integration_smoke.py
+  isolated-playstop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Runtime ECS scene snapshot, player physics, camera and Stop isolation
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -pedantic \
+            tests/play_session_smoke.cpp \
+            android/src/main/cpp/runtime/oe_runtime.cpp \
+            android/src/main/cpp/runtime/walk_collision.cpp \
+            android/src/main/cpp/runtime/play_session.cpp \
+            android/src/main/cpp/roads/road_network.cpp \
+            android/src/main/cpp/roads/road_topology.cpp \
+            android/src/main/cpp/roads/traversal_graph.cpp \
+            android/src/main/cpp/medieval/structures.cpp \
+            -o /tmp/oe-play-session
+          /tmp/oe-play-session
+      - name: Verify Android Play/Stop GL-only integration and legacy scene compatibility
+        run: python3 tests/play_editor_integration_smoke.py
   runtime-walk-collisions:
     runs-on: ubuntu-latest
     steps:

@@ -4,6 +4,7 @@
 #include "quality_profiles.h"
 #include "runtime/oe_runtime.h"
 #include "runtime/walk_collision.h"
+#include "runtime/play_session.h"
 #include "roads/road_network.h"
 #include "roads/road_junctions.h"
 #include "roads/road_topology.h"
@@ -23,6 +24,7 @@
 #include <chrono>
 #include <limits>
 #include <mutex>
+#include <memory>
 #include <iomanip>
 #include <sstream>
 #include <string>
@@ -185,6 +187,10 @@ static std::vector<RoadDrawRange> gRoadRanges;
 // R5.6 editor-only collision test walker. Never a persisted entity or
 // attached renderer/mesh; only a ghost drawn from portable runtime state.
 static oe::runtime::WalkController gWalkPreview;
+// R5.8b: separate ECS and collision session; editor entities and camera stay
+// untouched throughout Play. The shared road/terrain GLES meshes are read-only.
+static std::unique_ptr<oe::runtime::PlaySession> gPlaySession;
+static std::vector<Entity> gPlaySceneObjects;
 static constexpr size_t MAX_ROAD_GPU_VERTICES=120000;
 // Lake data is editor-owned, saved with the scene, and rendered with a
 // single cached translucent GPU mesh. Revisions also invalidate after Undo.
@@ -336,7 +342,22 @@ Vec4 apply(const Mat4&m,Vec4 p){
  };
 }
 Vec3 cameraEye(){float c=std::cos(gPitch);return {gTarget.x+std::sin(gYaw)*c*gDistance,gTarget.y+std::sin(gPitch)*gDistance,gTarget.z+std::cos(gYaw)*c*gDistance};}
-Mat4 viewProjection(){return mul(perspective(float(gWidth)/std::max(1,gHeight)),lookAt(cameraEye(),gTarget));}
+Mat4 viewProjection(){
+ if(gPlaySession&&gPlaySession->active()){
+  const auto&feet=gPlaySession->player().feet;
+  const Vec3 target{static_cast<float>(feet.x),static_cast<float>(feet.y+1.45),
+                    static_cast<float>(feet.z)};
+  const float yaw=static_cast<float>(gPlaySession->yaw());
+  const float pitch=static_cast<float>(gPlaySession->pitch());
+  constexpr float dist=7.5f;
+  const float c=std::cos(pitch);
+  const Vec3 eye{target.x+std::sin(yaw)*c*dist,
+                 target.y+std::sin(pitch)*dist,
+                 target.z+std::cos(yaw)*c*dist};
+  return mul(perspective(float(gWidth)/std::max(1,gHeight)),lookAt(eye,target));
+ }
+ return mul(perspective(float(gWidth)/std::max(1,gHeight)),lookAt(cameraEye(),gTarget));
+}
 void addVertex(std::vector<float>&d,Vec3 p,Vec3 n){d.insert(d.end(),{p.x,p.y,p.z,n.x,n.y,n.z});}
 void triangle(std::vector<float>&d,Vec3 a,Vec3 b,Vec3 c){Vec3 n=unit(cross(sub(b,a),sub(c,a)));addVertex(d,a,n);addVertex(d,b,n);addVertex(d,c,n);}
 void quad(std::vector<float>&d,Vec3 a,Vec3 b,Vec3 c,Vec3 e){triangle(d,a,b,c);triangle(d,a,c,e);}
@@ -2140,11 +2161,26 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDraw(JNIEnv*,jcl
  drawTerrainPaint(vp);
  drawPrecisionPaint(vp);
  drawMaterialLayers(vp);
- drawMapGuide(vp);
+ if(!gPlaySession||!gPlaySession->active())drawMapGuide(vp);
  drawRoads(vp);
- for(const auto&e:gEntities)drawEntity(vp,frustum,e);
+ const auto&renderObjects=(gPlaySession&&gPlaySession->active())?
+                           gPlaySceneObjects:gEntities;
+ for(const auto&e:renderObjects)drawEntity(vp,frustum,e);
  drawLakes(vp);
- if(gWalkPreview.active()){
+ if(gPlaySession&&gPlaySession->active()){
+  const auto&state=gPlaySession->player();
+  const Vec3 place{static_cast<float>(state.feet.x),
+                   static_cast<float>(state.feet.y+.75),
+                   static_cast<float>(state.feet.z)};
+  const Color tint=state.grounded?
+      state.groundKind==oe::runtime::GroundKind::Bridge?
+      Color{.98f,.69f,.20f}:Color{.28f,.88f,.55f}:
+      Color{.98f,.35f,.26f};
+  glUniform1f(gShader.locMaterialLayer,0.f);
+  glUniform1f(gShader.locOverlay,0.f);
+  glUniform1f(gShader.locPaintOverride,0.f);
+  draw(vp,2,place,{.46f,1.5f,.46f},0.f,tint);
+ }else if(gWalkPreview.active()){
   const auto&state=gWalkPreview.state();
   const Vec3 place{static_cast<float>(state.feet.x),
                    static_cast<float>(state.feet.y+.75),
@@ -2158,9 +2194,11 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDraw(JNIEnv*,jcl
   glUniform1f(gShader.locPaintOverride,0.f);
   draw(vp,2,place,{.46f,1.5f,.46f},0.f,tint);
  }
- drawGizmo(vp);
- drawRoadHandles(vp);
- drawPrecisionCursor(vp);
+ if(!gPlaySession||!gPlaySession->active()){
+  drawGizmo(vp);
+  drawRoadHandles(vp);
+  drawPrecisionCursor(vp);
+ }
  glBindVertexArray(0);
  const auto end=std::chrono::steady_clock::now();
  gSubmitCpuMs=std::chrono::duration<float,std::milli>(end-begin).count();
@@ -2694,6 +2732,95 @@ static bool oeCurrentTraversalGraph(oe::roads::TraversalGraph&result){
   return terrainHeightAt(static_cast<float>(x),static_cast<float>(z));
  };
  return oe::roads::buildTraversalGraph(graph,bridges,terrain,result);
+}
+// R5.8b: a separate gameplay ECS, physical walker and third-person camera.
+// Inputs are received only on the GLES thread; no global editor history,
+// selection, gTarget or terrain/road objects are written during Play.
+static oe::roads::TerrainHeight oePlayTerrainCopy(){
+ const auto terrainBrushes=gBrushes; // captured by value, NOT a live editor ref
+ return [terrainBrushes](double x,double z)->double{
+  const float xf=static_cast<float>(x),zf=static_cast<float>(z);
+  float h=0.f;
+  for(const auto&b:terrainBrushes){
+   const float dx=xf-b.x,dz=zf-b.z,d2=dx*dx+dz*dz;
+   if(d2>=b.radius*b.radius)continue;
+   const float t=1.f-std::sqrt(d2)/b.radius;
+   h+=b.strength*t*t*(3.f-2.f*t);
+  }
+  return std::max(-24.f,std::min(140.f,h));
+ };
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativePlayStart(
+ JNIEnv*,jclass){
+ // A Play request must not end or commit a half-painted or half-authored
+ // scene. Reject until the user finishes it explicitly in the editor.
+ if(gRoadPending||gPrecisionPaintActive||gMaterialStrokeActive||
+    gGizmoActive||(gPlaySession&&gPlaySession->active()))return JNI_FALSE;
+ oe::roads::TraversalGraph traversal;
+ if(!oeCurrentTraversalGraph(traversal))return JNI_FALSE;
+ std::vector<oe::runtime::SceneItem> items;
+ items.reserve(gEntities.size());
+ for(const auto&e:gEntities){
+  oe::runtime::SceneItem item;
+  item.name="Object "+std::to_string(e.id);
+  item.meshAsset=e.type==6?e.asset:"builtin:"+std::to_string(e.type);
+  item.transform.position={e.x,e.y,e.z};
+  // The ECS runtime uses positive scales; the authored GLES instance
+  // (including handedness/sign) is kept in the separate render-only copy.
+  item.transform.scale={
+   std::max(.001,static_cast<double>(std::abs(e.size*e.sx))),
+   std::max(.001,static_cast<double>(std::abs(e.size*e.sy))),
+   std::max(.001,static_cast<double>(std::abs(e.size*e.sz)))};
+  const double a=static_cast<double>(e.yaw)*RAD*.5;
+  item.transform.orientation={0.,std::sin(a),0.,std::cos(a)};
+  items.push_back(std::move(item));
+ }
+ double x=gTarget.x,z=gTarget.z;
+ if(const auto*selected=gRoads.find(gSelectedRoad)){
+  if(!selected->controlPoints.empty()){
+   x=selected->controlPoints.front().x;
+   z=selected->controlPoints.front().z;
+  }
+ }
+ auto stage=std::make_unique<oe::runtime::PlaySession>(512);
+ if(!stage->start(items,traversal,oePlayTerrainCopy(),worldHalf(),x,z,gYaw))
+  return JNI_FALSE;
+ // A failure above leaves ALL editor data and the old preview unchanged.
+ std::vector<Entity> copied=gEntities;
+ gWalkPreview.clear();
+ gPlaySceneObjects.swap(copied);
+ gPlaySession=std::move(stage);
+ return JNI_TRUE;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativePlayStep(
+ JNIEnv*,jclass,jfloat x,jfloat z,jboolean jump,jint ticks){
+ if(!gPlaySession||!gPlaySession->active()||ticks<1||ticks>8)return JNI_FALSE;
+ return gPlaySession->step(x,z,jump==JNI_TRUE,
+                            static_cast<std::size_t>(ticks))?JNI_TRUE:JNI_FALSE;
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativePlayOrbit(
+ JNIEnv*,jclass,jfloat dx,jfloat dy){
+ if(gPlaySession&&gPlaySession->active())gPlaySession->orbit(dx,dy);
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativePlayStop(
+ JNIEnv*,jclass){
+ if(gPlaySession)gPlaySession->stop();
+ gPlaySession.reset();
+ gPlaySceneObjects.clear();
+}
+JNIEXPORT jdoubleArray JNICALL Java_game_oe_editor_EditorActivity_nativePlayState(
+ JNIEnv*env,jclass){
+ if(!gPlaySession||!gPlaySession->active())return nullptr;
+ const auto&st=gPlaySession->player();
+ const jdouble state[8]={
+  st.feet.x,st.feet.y,st.feet.z,st.grounded?1.:0.,
+  static_cast<jdouble>(st.groundKind),static_cast<jdouble>(st.groundId),
+  static_cast<jdouble>(st.fixedTicks),
+  static_cast<jdouble>(gPlaySession->world().entityCount())
+ };
+ jdoubleArray out=env->NewDoubleArray(8);
+ if(out)env->SetDoubleArrayRegion(out,0,8,state);
+ return out;
 }
 // The R5.6 ghost is NOT part of the saved editor scene. It uses the actual
 // portable Character WalkController, with terrain and bridge deck collision.

@@ -2694,12 +2694,12 @@ JNIEXPORT jdoubleArray JNICALL Java_game_oe_editor_EditorActivity_nativeWalkPrev
 }
 // JNI: [walkable road segments, bridge objects, both banks connected,
 //       one bank, no banks, road collision quads, bridge deck quads,
-//       graph traversal edges] ; -1 first value means invalid graph.
+//       graph traversal edges, validated bank approach quads] ; -1 means invalid graph.
 JNIEXPORT jintArray JNICALL Java_game_oe_editor_EditorActivity_nativeBridgeTraversalStats(
  JNIEnv*env,jclass){
  oe::roads::TraversalGraph traversal;
  const bool valid=oeCurrentTraversalGraph(traversal);
- jint stats[8]={
+ jint stats[9]={
   valid?static_cast<jint>(traversal.roadSurfaces):-1,
   valid?static_cast<jint>(traversal.bridges.size()):0,
   valid?static_cast<jint>(traversal.fullBridges):0,
@@ -2707,10 +2707,11 @@ JNIEXPORT jintArray JNICALL Java_game_oe_editor_EditorActivity_nativeBridgeTrave
   valid?static_cast<jint>(traversal.detachedBridges):0,
   valid?static_cast<jint>(traversal.roadSurfaces):0,
   valid?static_cast<jint>(traversal.bridgeSurfaces):0,
-  valid?static_cast<jint>(traversal.edges.size()):0
+  valid?static_cast<jint>(traversal.edges.size()):0,
+  valid?static_cast<jint>(traversal.approachSurfaces):0
  };
- jintArray array=env->NewIntArray(8);
- if(array)env->SetIntArrayRegion(array,0,8,stats);
+ jintArray array=env->NewIntArray(9);
+ if(array)env->SetIntArrayRegion(array,0,9,stats);
  return array;
 }
 // Explicit one-Undo operation for a selected existing bridge. Does NOT move

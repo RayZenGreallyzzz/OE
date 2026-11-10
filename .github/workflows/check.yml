@@ -82,6 +82,8 @@ jobs:
             android/src/main/cpp/medieval/structures.cpp \
             -o /tmp/oe-bridge-traversal-test
           /tmp/oe-bridge-traversal-test
+      - name: Check editor bridge alignment and road traversal JNI wiring
+        run: python3 tests/bridge_editor_integration_smoke.py
   water-lakes:
     runs-on: ubuntu-latest
     steps:

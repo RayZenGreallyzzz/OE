@@ -7,6 +7,7 @@
 #include "roads/road_network.h"
 #include "roads/road_junction_geometry.h"
 #include "roads/road_pedestrian_geometry.h"
+#include "gizmo_rotation.h"
 #include <GLES3/gl3.h>
 #include <android/log.h>
 #include <algorithm>
@@ -30,7 +31,12 @@ struct Vec3 {float x, y, z;};
 struct Vec4 {float x, y, z, w;};
 struct Mat4 {float m[16]{};};
 struct Mesh {GLuint vao=0, buffer=0; GLsizei count=0;};
-struct Entity {int id=0, type=0; float x=0, z=0, yaw=0, size=1; std::string asset; float y=0.f, sx=1.f,sy=1.f,sz=1.f; std::string paint;};
+struct Entity {int id=0, type=0; float x=0, z=0, yaw=0, size=1; std::string asset;
+ float y=0.f, sx=1.f,sy=1.f,sz=1.f; std::string paint;
+ // Extra world-space orientation is optional in v1 scenes. Existing yaw is
+ // folded into this normalized quaternion on first 3-axis rotation.
+ float qx=0.f,qy=0.f,qz=0.f,qw=1.f;
+};
 struct Color {float r,g,b;};
 struct Shader {
  GLuint program=0;
@@ -60,6 +66,7 @@ struct Asset {
 static Mesh gMeshes[3];
 static Mesh gStaticMeshes[17];
 static Mesh gPaintMesh; // Every decorative object is a single combined draw.
+static Mesh gRotationRings[3]; // Three colored XYZ torus strips; 3 draw calls.
 static Mesh gRoadMesh; // Cached terrain-conforming road splines.
 void bakeStaticMesh(int type);
 // Cached, combined flat terrain: one GLES draw call per frame instead of one per tile.
@@ -101,7 +108,11 @@ static constexpr int MAX_IMPORTED_TRIANGLES=90000;
 static Shader gShader;
 static std::vector<Entity> gEntities;
 static int gNextId=1, gSelected=0, gWidth=1, gHeight=1;
-static int gGizmoMode=0; // 0=move,1=yaw,2=scale
+static int gGizmoMode=0; // 0=move arrows, 1=XYZ 360 rings, 2=scale
+static bool gRotationSnap15=false;
+static Vec3 gGizmoLastPlane{};
+static bool gGizmoLastPlaneValid=false;
+static float gGizmoUnsnapped=0.f,gGizmoApplied=0.f;
 static bool gGizmoActive=false;
 static int gGizmoActiveId=0;
 static float gYaw=.55f, gPitch=.45f, gDistance=28.f;
@@ -209,6 +220,43 @@ Mat4 mul(const Mat4&a,const Mat4&b){
 Mat4 translate(Vec3 v){auto m=identity();m.m[12]=v.x;m.m[13]=v.y;m.m[14]=v.z;return m;}
 Mat4 scale(Vec3 v){Mat4 m;m.m[0]=v.x;m.m[5]=v.y;m.m[10]=v.z;m.m[15]=1;return m;}
 Mat4 rotateY(float a){Mat4 m=identity();float c=std::cos(a),s=std::sin(a);m.m[0]=c;m.m[8]=s;m.m[2]=-s;m.m[10]=c;return m;}
+oe::gizmo::Quaternion entityQuaternion(const Entity&e){
+ return oe::gizmo::multiply(oe::gizmo::axisAngle(1,e.yaw),
+                            {e.qx,e.qy,e.qz,e.qw});
+}
+void setEntityQuaternion(Entity&e,oe::gizmo::Quaternion q){
+ q=oe::gizmo::normalized(q);
+ e.yaw=0.f;e.qx=q.x;e.qy=q.y;e.qz=q.z;e.qw=q.w;
+}
+void rotateEntityWorld(Entity&e,int axis,float degrees){
+ if(axis<0||axis>2||!std::isfinite(degrees)||degrees==0)return;
+ setEntityQuaternion(e,oe::gizmo::rotatedWorld(entityQuaternion(e),axis,degrees));
+}
+Mat4 quaternionMatrix(oe::gizmo::Quaternion q){
+ q=oe::gizmo::normalized(q);
+ const float x=q.x,y=q.y,z=q.z,w=q.w;
+ Mat4 m=identity();
+ m.m[0]=1-2*(y*y+z*z);m.m[4]=2*(x*y-z*w);m.m[8]=2*(x*z+y*w);
+ m.m[1]=2*(x*y+z*w);m.m[5]=1-2*(x*x+z*z);m.m[9]=2*(y*z-x*w);
+ m.m[2]=2*(x*z-y*w);m.m[6]=2*(y*z+x*w);m.m[10]=1-2*(x*x+y*y);
+ return m;
+}
+// All rotations share one visual pivot, including imported models whose
+// normalized mesh is grounded at Y=0. Rotation does not rewrite source GLBs.
+float entityPivotHeight(const Entity&e){
+ if(e.type==6){
+  const auto it=gAssets.find(e.asset);
+  if(it!=gAssets.end())return it->second.centerY*e.size*e.sy;
+ }
+ return clampf(e.size*1.45f,.7f,3.f);
+}
+Mat4 entityModelMatrix(const Entity&e){
+ const float pivot=entityPivotHeight(e);
+ const Mat4 rotation=quaternionMatrix(entityQuaternion(e));
+ const Mat4 objectScale=scale({e.size*e.sx,e.size*e.sy,e.size*e.sz});
+ return mul(mul(translate({e.x,e.y+pivot,e.z}),rotation),
+            mul(translate({0.f,-pivot,0.f}),objectScale));
+}
 Mat4 perspective(float aspect){
  float f=1/std::tan(PI/6), near=.1f, far=560.f;Mat4 m;
  m.m[0]=f/aspect;m.m[5]=f;
@@ -572,8 +620,7 @@ void bindPaint(const TextureResource*paint);
 void drawImported(const Mat4&vp,const Entity&e){
  auto it=gAssets.find(e.asset);
  if(it==gAssets.end()||it->second.gpu.count==0)return;
- const Mat4 model=mul(mul(translate({e.x,e.y,e.z}),rotateY(e.yaw*RAD)),
-  scale({e.size*e.sx,e.size*e.sy,e.size*e.sz}));
+ const Mat4 model=entityModelMatrix(e);
  const Mat4 mvp=mul(vp,model);
  glUniformMatrix4fv(gShader.locMvp,1,GL_FALSE,mvp.m);
  glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
@@ -750,8 +797,7 @@ void drawStatic(const Mat4&vp,const Entity&e){
  if(e.type<0||e.type>=17||e.type==6)return;
  const Mesh&m=gStaticMeshes[e.type];
  if(m.count<=0)return;
- const Mat4 model=mul(mul(translate({e.x,e.y,e.z}),rotateY(e.yaw*RAD)),
-  scale({e.size*e.sx,e.size*e.sy,e.size*e.sz}));
+ const Mat4 model=entityModelMatrix(e);
  const Mat4 mvp=mul(vp,model);
  glUniformMatrix4fv(gShader.locMvp,1,GL_FALSE,mvp.m);
  glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);

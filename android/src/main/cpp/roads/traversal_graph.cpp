@@ -144,11 +144,13 @@ bool validApproach(const WalkSurface&q){
         gradeA<=kApproachMaxGrade+1.e-6&&
         gradeB<=kApproachMaxGrade+1.e-6;
 }
-double terminalRoadWidth(const RoadTopology&graph,std::uint64_t node){
+double terminalRoadWidth(const RoadTopology&graph,std::uint64_t node,
+                         std::uint64_t&sourceRoad){
  for(const auto&edge:graph.edges){
   if(edge.from!=node&&edge.to!=node)continue;
-  for(const auto&road:graph.roads)if(road.id==edge.roadId)
-   return road.widthMetres;
+  for(const auto&road:graph.roads)if(road.id==edge.roadId){
+   sourceRoad=road.id;return road.widthMetres;
+  }
  }
  return 0.;
 }
@@ -163,7 +165,8 @@ bool buildBankTransition(const RoadTopology&graph,const Snap&bank,
  if(!finite(length)||length>kBridgeRoadReach||
     !finite(rise)||rise>kBridgeStepTolerance)return false;
  if(length<=.08)return true; // near-coincident caps: existing step solver
- const double available=terminalRoadWidth(graph,bank.node);
+ std::uint64_t sourceRoad=0;
+ const double available=terminalRoadWidth(graph,bank.node,sourceRoad);
  const double width=std::min(bridge.width,available);
  if(!finite(width)||width<=.10)return false;
  const double bridgeSideX=-std::sin(yaw),bridgeSideZ=std::cos(yaw);
@@ -180,7 +183,7 @@ bool buildBankTransition(const RoadTopology&graph,const Snap&bank,
  }
  const double half=width*.5;
  WalkSurface q;
- q.ownerId=id;q.bridge=true;q.approach=true;
+ q.ownerId=id;q.bridge=true;q.approach=true;q.materialRoadId=sourceRoad;
  q.a={bank.road.x+roadSideX*half,0.,bank.road.z+roadSideZ*half};
  q.b={bank.road.x-roadSideX*half,0.,bank.road.z-roadSideZ*half};
  q.c={mouth.x-bridgeSideX*half,mouth.y,mouth.z-bridgeSideZ*half};

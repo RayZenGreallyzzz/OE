@@ -3,6 +3,7 @@
 #include "vendor/meshoptimizer/meshoptimizer.h"
 #include "quality_profiles.h"
 #include "runtime/oe_runtime.h"
+#include "runtime/walk_collision.h"
 #include "roads/road_network.h"
 #include "roads/road_junctions.h"
 #include "roads/road_topology.h"
@@ -177,6 +178,9 @@ static int gRoadRevision=1,gRoadGpuRevision=-1,gRoadGpuTerrainRevision=-1;
 static Mesh gRoadGpu;
 struct RoadDrawRange {GLint first=0;GLsizei count=0;std::uint64_t id=0,materialRoadId=0;};
 static std::vector<RoadDrawRange> gRoadRanges;
+// R5.6 editor-only collision test walker. Never a persisted entity or
+// attached renderer/mesh; only a ghost drawn from portable runtime state.
+static oe::runtime::WalkController gWalkPreview;
 static constexpr size_t MAX_ROAD_GPU_VERTICES=120000;
 // Lake data is editor-owned, saved with the scene, and rendered with a
 // single cached translucent GPU mesh. Revisions also invalidate after Undo.
@@ -221,6 +225,7 @@ static constexpr size_t HISTORY_LIMIT=12; // bounded undo when 2x paint canvases
 SceneSnapshot captureScene(){return {gEntities,gNextId,gSelected,gWorldSize,gDemoRoads,
     gTarget,gDistance,gBrushes,gTerrainPaint,gRoads.all(),gSelectedRoad,gPaintTiles,gMaterialCanvas,gLakes,gSelectedLake};}
 void restoreScene(const SceneSnapshot&s){
+ gWalkPreview.clear(); // Undo/Redo invalidates derived physical surfaces.
  gEntities=s.entities;gNextId=s.nextId;gSelected=s.selected;gWorldSize=s.worldSize;
  gDemoRoads=s.demoRoads;gTarget=s.target;gDistance=s.cameraDistance;
  gBrushes=s.terrain;gTerrainPaint=s.paints;gTerrainRevision++;gSceneInitialized=true;
@@ -238,6 +243,7 @@ void pushBounded(std::vector<SceneSnapshot>&stack,SceneSnapshot value){
  stack.push_back(std::move(value));
 }
 void recordEdit(){
+ gWalkPreview.clear(); // Stop demo before changing real authored geometry.
  if(!gSceneInitialized||gSuspendHistory)return;
  pushBounded(gUndo,captureScene());gRedo.clear();
 }
@@ -1620,6 +1626,7 @@ int add(int type,float x,float z,float yaw,float size){
  int id=gNextId++;gEntities.push_back({id,type,x,z,yaw,size,"",terrainHeightAt(x,z)});gSelected=id;return id;
 }
 void reset(bool demo){
+ gWalkPreview.clear();
  recordEdit(); // demo generation is a single undoable change
  const bool wasMuted=gSuspendHistory;
  gSuspendHistory=true;
@@ -2066,6 +2073,20 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDraw(JNIEnv*,jcl
  drawRoads(vp);
  for(const auto&e:gEntities)drawEntity(vp,frustum,e);
  drawLakes(vp);
+ if(gWalkPreview.active()){
+  const auto&state=gWalkPreview.state();
+  const Vec3 place{static_cast<float>(state.feet.x),
+                   static_cast<float>(state.feet.y+.75),
+                   static_cast<float>(state.feet.z)};
+  const Color tint=state.grounded?
+      state.groundKind==oe::runtime::GroundKind::Bridge?
+      Color{.98f,.69f,.20f}:Color{.28f,.88f,.55f}:
+      Color{.98f,.35f,.26f};
+  glUniform1f(gShader.locMaterialLayer,0.f);
+  glUniform1f(gShader.locOverlay,0.f);
+  glUniform1f(gShader.locPaintOverride,0.f);
+  draw(vp,2,place,{.46f,1.5f,.46f},0.f,tint);
+ }
  drawGizmo(vp);
  drawRoadHandles(vp);
  drawPrecisionCursor(vp);
@@ -2620,6 +2641,56 @@ static bool oeCurrentTraversalGraph(oe::roads::TraversalGraph&result){
   return terrainHeightAt(static_cast<float>(x),static_cast<float>(z));
  };
  return oe::roads::buildTraversalGraph(graph,bridges,terrain,result);
+}
+// The R5.6 ghost is NOT part of the saved editor scene. It uses the actual
+// portable Character WalkController, with terrain and bridge deck collision.
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeWalkPreviewStart(
+ JNIEnv*,jclass){
+ oe::roads::TraversalGraph traversal;
+ if(!oeCurrentTraversalGraph(traversal))return JNI_FALSE;
+ const auto ground=[](double x,double z)->double{
+  return terrainHeightAt(static_cast<float>(x),static_cast<float>(z));
+ };
+ oe::runtime::WalkController demo;
+ if(!demo.configure(traversal,ground,worldHalf()))return JNI_FALSE;
+ double x=gTarget.x,z=gTarget.z;
+ if(const auto* selected=gRoads.find(gSelectedRoad)){
+  if(!selected->controlPoints.empty()){
+   x=selected->controlPoints.front().x;
+   z=selected->controlPoints.front().z;
+  }
+ }
+ if(!demo.spawn(x,z))return JNI_FALSE;
+ gWalkPreview=std::move(demo);
+ const auto&position=gWalkPreview.state().feet;
+ gTarget={static_cast<float>(position.x),static_cast<float>(position.y+1.2),
+          static_cast<float>(position.z)};
+ return JNI_TRUE;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeWalkPreviewStep(
+ JNIEnv*,jclass,jfloat x,jfloat z,jboolean jump,jint ticks){
+ if(!gWalkPreview.active()||ticks<1||ticks>180)return JNI_FALSE;
+ if(!gWalkPreview.advance(x,z,jump==JNI_TRUE,
+                          static_cast<std::size_t>(ticks)))return JNI_FALSE;
+ const auto&feet=gWalkPreview.state().feet;
+ gTarget={static_cast<float>(feet.x),static_cast<float>(feet.y+1.2),
+          static_cast<float>(feet.z)};
+ return JNI_TRUE;
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeWalkPreviewStop(
+ JNIEnv*,jclass){gWalkPreview.clear();}
+JNIEXPORT jdoubleArray JNICALL Java_game_oe_editor_EditorActivity_nativeWalkPreviewState(
+ JNIEnv*env,jclass){
+ const auto&st=gWalkPreview.state();
+ const jdouble data[7]={
+  st.feet.x,st.feet.y,st.feet.z,
+  st.grounded?1.:0.,static_cast<jdouble>(st.groundKind),
+  static_cast<jdouble>(st.groundId),
+  static_cast<jdouble>(st.fixedTicks)
+ };
+ jdoubleArray result=env->NewDoubleArray(7);
+ if(result)env->SetDoubleArrayRegion(result,0,7,data);
+ return result;
 }
 // JNI: [walkable road segments, bridge objects, both banks connected,
 //       one bank, no banks, road collision quads, bridge deck quads,
@@ -3460,6 +3531,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  oe::terrainpaint::MaterialCanvas nextLayerCanvas;
  if(!nextLayerCanvas.replaceAll(std::move(loadedLayers),size))return JNI_FALSE;
  // Commit: no validation or allocation failures below this point.
+ gWalkPreview.clear();
  gEntities.swap(staged);gBrushes.swap(stagedBrushes);
  gLakes.swap(stagedLakes);gSelectedLake=-1;++gLakeRevision;
  gTerrainPaint.swap(stagedPaint);gTerrainRevision++;

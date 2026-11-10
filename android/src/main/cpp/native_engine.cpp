@@ -115,6 +115,7 @@ static bool gGizmoLastPlaneValid=false;
 static float gGizmoUnsnapped=0.f,gGizmoApplied=0.f;
 static bool gGizmoActive=false;
 static int gGizmoActiveId=0;
+static int gGizmoActiveAxis=-1;
 static float gYaw=.55f, gPitch=.45f, gDistance=28.f;
 static Vec3 gTarget{0,1.2f,1.3f};
 static bool gSceneInitialized=false, gDemoRoads=false;
@@ -249,6 +250,11 @@ float entityPivotHeight(const Entity&e){
   if(it!=gAssets.end())return it->second.centerY*e.size*e.sy;
  }
  return clampf(e.size*1.45f,.7f,3.f);
+}
+// Unit ring geometry, right-handed around the desired world axis.
+Vec3 ringPoint(int axis,float a,float radius){
+ const float c=std::cos(a)*radius,t=std::sin(a)*radius;
+ return axis==0?Vec3{0.f,c,t}:(axis==1?Vec3{c,0.f,t}:Vec3{c,t,0.f});
 }
 Mat4 entityModelMatrix(const Entity&e){
  const float pivot=entityPivotHeight(e);
@@ -514,6 +520,35 @@ void setupGL(){
   glDisableVertexAttribArray(2);
   glDisableVertexAttribArray(3);
  }
+ // Build three reusable solid torus-strip meshes ONCE per GLES context,
+ // instead of drawing 200+ boxes per frame. All triangles are untextured.
+ for(int axis=0;axis<3;axis++){
+  std::vector<float> data;data.reserve(72*6*6);
+  const Vec3 n=axis==0?Vec3{1,0,0}:(axis==1?Vec3{0,1,0}:Vec3{0,0,1});
+  const auto append=[&](Vec3 p){
+   data.insert(data.end(),{p.x,p.y,p.z,n.x,n.y,n.z});
+  };
+  for(int i=0;i<72;i++){
+   const float a=i*(2.f*PI/72.f),b=(i+1)*(2.f*PI/72.f);
+   const Vec3 a0=ringPoint(axis,a,.971f),a1=ringPoint(axis,a,1.029f);
+   const Vec3 b0=ringPoint(axis,b,.971f),b1=ringPoint(axis,b,1.029f);
+   append(a0);append(b0);append(a1);
+   append(a1);append(b0);append(b1);
+  }
+  Mesh &m=gRotationRings[axis];m={};
+  m.count=static_cast<GLsizei>(data.size()/6);
+  glGenVertexArrays(1,&m.vao);glBindVertexArray(m.vao);
+  glGenBuffers(1,&m.buffer);glBindBuffer(GL_ARRAY_BUFFER,m.buffer);
+  glBufferData(GL_ARRAY_BUFFER,static_cast<GLsizeiptr>(data.size()*sizeof(float)),
+               data.data(),GL_STATIC_DRAW);
+  glEnableVertexAttribArray(0);
+  glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,6*sizeof(float),nullptr);
+  glEnableVertexAttribArray(1);
+  glVertexAttribPointer(1,3,GL_FLOAT,GL_FALSE,6*sizeof(float),
+                       reinterpret_cast<void*>(3*sizeof(float)));
+  glDisableVertexAttribArray(2);glDisableVertexAttribArray(3);
+ }
+ glBindVertexArray(0);
  for(int kind=0;kind<17;kind++)if(kind!=6)bakeStaticMesh(kind);
  for(auto &kv:gAssets){
   uploadAsset(kv.second);
@@ -1350,12 +1385,14 @@ const char* nameFor(int type){
  return type>=0&&type<17?names[type]:"Объект";
 }
 
-// Touch-friendly axis gizmo; drawn using existing simple meshes (no new shaders
-// or animation loop). X=red, Y=green, Z=blue. Rotation only changes yaw.
+// World-space manipulator. X=red, Y=green, Z=blue. All XYZ rings remain
+// touchable, independent of the orientation of a rotated building.
 Vec3 gizmoBase(const Entity&e){
- return {e.x,e.y+clampf(e.size*1.45f,.7f,3.0f),e.z};
+ return {e.x,e.y+entityPivotHeight(e),e.z};
 }
+
 float gizmoLength(){return clampf(gDistance*.095f,2.0f,13.f);}
+float rotationRingRadius(){return gizmoLength()*1.05f;}
 Vec3 gizmoEndpoint(const Entity&e,int axis){
  Vec3 p=gizmoBase(e);
  const float len=gizmoLength();
@@ -1374,12 +1411,32 @@ bool gizmoProject(Vec3 p,float&px,float&py){
 int gizmoHit(float px,float py){
  if(gGizmoMode<0||!selected()||!std::isfinite(px)||!std::isfinite(py))return -1;
  const Entity&e=*selected();
+ if(gGizmoMode==1){
+  const Vec3 center=gizmoBase(e);
+  const float radius=rotationRingRadius();
+  const float touchRadius=std::max(15.f,gWidth*.018f);
+  int best=-1;float closest=touchRadius;
+  for(int axis=0;axis<3;axis++)for(int i=0;i<72;i++){
+   const float a=i*(2.f*PI/72.f),b=(i+1)*(2.f*PI/72.f);
+   const Vec3 r0=ringPoint(axis,a,radius),r1=ringPoint(axis,b,radius);
+   float x0,y0,x1,y1;
+   if(!gizmoProject({center.x+r0.x,center.y+r0.y,center.z+r0.z},x0,y0)||
+      !gizmoProject({center.x+r1.x,center.y+r1.y,center.z+r1.z},x1,y1))
+      continue;
+   const float ux=x1-x0,uy=y1-y0,len=ux*ux+uy*uy;
+   if(len<.1f)continue;
+   const float t=clampf(((px-x0)*ux+(py-y0)*uy)/len,0.f,1.f);
+   const float dx=px-(x0+t*ux),dy=py-(y0+t*uy);
+   const float distance=std::sqrt(dx*dx+dy*dy);
+   if(distance<closest){closest=distance;best=axis;}
+  }
+  return best;
+ }
  float bx,by;
  if(!gizmoProject(gizmoBase(e),bx,by))return -1;
  int hit=-1;
  float nearest=1e8f;
  for(int axis=0;axis<3;axis++){
-  if(gGizmoMode==1&&axis!=1)continue;
   float ex,ey;
   if(!gizmoProject(gizmoEndpoint(e,axis),ex,ey))continue;
   const float dx=ex-bx,dy=ey-by,len2=dx*dx+dy*dy;
@@ -1401,8 +1458,31 @@ void drawGizmo(const Mat4&vp){
  const bool depth=glIsEnabled(GL_DEPTH_TEST);
  glDisable(GL_DEPTH_TEST); // selected handles always touchable
  const Color axisColor[3]={{.96f,.26f,.29f},{.31f,.90f,.45f},{.27f,.57f,1.f}};
+ if(gGizmoMode==1){
+  const float radius=rotationRingRadius();
+  const Mat4 model=mul(translate(origin),scale({radius,radius,radius}));
+  const Mat4 mvp=mul(vp,model);
+  glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
+  glUniformMatrix4fv(gShader.locMvp,1,GL_FALSE,mvp.m);
+  glUniform1f(gShader.locTextured,0.f);
+  glUniform1f(gShader.locPaintOverride,0.f);
+  glUniform1f(gShader.locOverlay,0.f);
+  for(int axis=0;axis<3;axis++){
+   const Mesh &m=gRotationRings[axis];
+   if(!m.vao||!m.count)continue;
+   Color color=axisColor[axis];
+   if(gGizmoActive&&gGizmoMode==1&&axis==gGizmoActiveAxis)
+    color={1.f,.95f,.46f};
+   glUniform3f(gShader.locColor,color.r,color.g,color.b);
+   glUniform1f(gShader.locLight,0.f);
+   glBindVertexArray(m.vao);glDrawArrays(GL_TRIANGLES,0,m.count);
+   ++gDrawCalls;gTriangles+=m.count/3;
+  }
+  glBindVertexArray(0);
+  if(depth)glEnable(GL_DEPTH_TEST);
+  return;
+ }
  for(int axis=0;axis<3;axis++){
-  if(gGizmoMode==1&&axis!=1)continue;
   Vec3 midpoint=origin,dimensions{thin,thin,thin};
   if(axis==0){midpoint.x+=len*.5f;dimensions.x=len;}
   if(axis==1){midpoint.y+=len*.5f;dimensions.y=len;}

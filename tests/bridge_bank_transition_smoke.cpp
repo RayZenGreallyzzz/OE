@@ -71,11 +71,43 @@ int main(){
  BridgeInstance steep=bridge;steep.y=-1.30; // deck .54 vs bank .14
  assert(buildTraversalGraph(shortGap,{steep},river,graph));
  assert(graph.fullBridges==0&&graph.approachSurfaces==0);
+ // A sideways road cap directly beside the bridge mouth is NOT a ramp:
+ // old R5.7 declared a full bridge but generated degenerate XZ triangles.
+ RoadTopology sideways;
+ assert(buildRoadTopology({road(1,{{-16,1.6},{-4.05,1.6}}),
+                           road(2,{{5.25,0},{16,0}})},sideways,0.));
+ assert(buildTraversalGraph(sideways,{bridge},river,graph));
+ assert(graph.fullBridges==0&&graph.oneEndedBridges==1);
+ assert(graph.approachSurfaces==0);
+ assert(walker.configure(graph,river,512)); // previously failed to configure
+
+ // A 0.6 m rise over 1.46 m diagonally seems safe, but only 0.4 m
+ // lies along the bridge axis. Its actual triangle grade is 1.5: reject.
+ const TerrainHeight highBank=[](double x,double){
+  return x< -4.20?.6:0.;
+ };
+ RoadTopology slanted;
+ assert(buildRoadTopology({road(1,{{-16,1.4},{-4.45,1.4}}),
+                           road(2,{{5.25,0},{16,0}})},slanted,0.));
+ assert(buildTraversalGraph(slanted,{bridge},highBank,graph));
+ assert(graph.fullBridges==0&&graph.oneEndedBridges==1);
+ assert(graph.approachSurfaces==0);
+ assert(walker.configure(graph,highBank,512));
+
+ // A normally angled road is still eligible. The approach's bank edge
+ // follows the REAL road terminal edge, not the bridge's perpendicular.
+ RoadTopology angled;
+ assert(buildRoadTopology({road(1,{{-7,1},{-5.25,0}}),
+                           road(2,{{5.25,0},{16,0}})},angled,0.));
+ assert(buildTraversalGraph(angled,{bridge},river,graph));
+ assert(graph.fullBridges==1&&graph.approachSurfaces==2);
+ assert(walker.configure(graph,river,512));
+
  // A forced bad height source cannot corrupt the previous graph.
  const auto previous=graph;
  assert(!buildTraversalGraph(topo,{bridge},
   [](double,double){return std::numeric_limits<double>::quiet_NaN();},graph));
  assert(graph.surfaces.size()==previous.surfaces.size());
  assert(graph.approachSurfaces==previous.approachSurfaces);
- std::cout<<"OE_BANK_RAMPS_OK: 1.2m bank gaps safely bridged, real walk, no half-bridge or cliff teleport\n";
+ std::cout<<"OE_BANK_RAMPS_OK: 1.2m bank gaps safely bridged, real walk, no half-bridge, sideways cap or steep collision ramps\n";
 }

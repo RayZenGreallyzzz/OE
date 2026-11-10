@@ -1434,6 +1434,67 @@ void drawRoads(const Mat4& vp){
  glBindVertexArray(0);
  glUniform1f(gShader.locLight,0.f);
 }
+// R5.3 editor lake water. The terrain-clipped shoreline mesh is generated
+// ONLY when lakes/terrain change and all current lakes share one GPU draw call.
+void drawLakes(const Mat4& vp){
+ if(gLakes.empty())return;
+ if(gLakeGpu.lakeRevision!=gLakeRevision||
+    gLakeGpu.terrainRevision!=gTerrainRevision){
+  oe::water::LakeSurface surface;
+  const auto terrain=[](double x,double z)->double{
+   return terrainHeightAt(static_cast<float>(x),static_cast<float>(z));
+  };
+  if(!oe::water::buildLakeSurface(gLakes,worldHalf(),terrain,surface))return;
+  std::vector<float> vertices;
+  vertices.reserve(surface.triangles.size()*9);
+  for(const auto&v:surface.triangles){
+   vertices.insert(vertices.end(),{v.x,v.y,v.z,0.f,1.f,0.f,v.r,v.g,v.b});
+  }
+  if(!gLakeGpu.vao){
+   glGenVertexArrays(1,&gLakeGpu.vao);
+   glGenBuffers(1,&gLakeGpu.buffer);
+  }
+  if(!gLakeGpu.vao||!gLakeGpu.buffer)return;
+  glBindVertexArray(gLakeGpu.vao);
+  glBindBuffer(GL_ARRAY_BUFFER,gLakeGpu.buffer);
+  glBufferData(GL_ARRAY_BUFFER,static_cast<GLsizeiptr>(
+      vertices.size()*sizeof(float)),vertices.empty()?nullptr:vertices.data(),
+      GL_DYNAMIC_DRAW);
+  for(int attrib=0;attrib<3;++attrib){
+   glEnableVertexAttribArray(static_cast<GLuint>(attrib));
+   glVertexAttribPointer(static_cast<GLuint>(attrib),3,GL_FLOAT,GL_FALSE,
+      9*sizeof(float),
+      reinterpret_cast<void*>(static_cast<uintptr_t>(attrib*3*sizeof(float))));
+  }
+  glDisableVertexAttribArray(3); // no UV needed for cheap translucent water
+  glBindVertexArray(0);
+  if(glGetError()!=GL_NO_ERROR)return;
+  gLakeGpu.count=static_cast<GLsizei>(vertices.size()/9);
+  gLakeGpu.lakeRevision=gLakeRevision;
+  gLakeGpu.terrainRevision=gTerrainRevision;
+ }
+ if(!gLakeGpu.count)return;
+ glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+ glDepthMask(GL_FALSE);
+ const Mat4 model=identity();
+ glUniformMatrix4fv(gShader.locMvp,1,GL_FALSE,vp.m);
+ glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
+ glUniform3f(gShader.locColor,1.f,1.f,1.f);
+ glUniform1f(gShader.locLight,0.f);
+ glUniform1f(gShader.locTextured,0.f);
+ glUniform1f(gShader.locOverlay,0.f);
+ glUniform1f(gShader.locPaintOverride,0.f);
+ glUniform1f(gShader.locMaterialLayer,0.f);
+ glUniform1f(gShader.locGuide,0.f);
+ glUniform1f(gShader.locOpacity,.77f);
+ glBindVertexArray(gLakeGpu.vao);
+ glDrawArrays(GL_TRIANGLES,0,gLakeGpu.count);
+ ++gDrawCalls;gTriangles+=gLakeGpu.count/3;
+ glBindVertexArray(0);
+ glUniform1f(gShader.locOpacity,1.f);
+ glDepthMask(GL_TRUE);
+ glDisable(GL_BLEND);
+}
 void drawRoadHandles(const Mat4& vp){
  const auto* road=gRoads.find(gSelectedRoad);
  const float marker=clampf(gDistance*.013f,.22f,.9f);
@@ -1983,6 +2044,7 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDraw(JNIEnv*,jcl
  drawMapGuide(vp);
  drawRoads(vp);
  for(const auto&e:gEntities)drawEntity(vp,frustum,e);
+ drawLakes(vp);
  drawGizmo(vp);
  drawRoadHandles(vp);
  drawPrecisionCursor(vp);

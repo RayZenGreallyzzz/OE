@@ -4,6 +4,7 @@
 // the mutable editor scene, GPU buffers, undo stack, or Android lifecycle.
 #include "oe_runtime.h"
 #include "walk_collision.h"
+#include "solid_collision.h"
 #include "../roads/traversal_graph.h"
 #include <cstddef>
 #include <vector>
@@ -17,7 +18,8 @@ class PlaySession final {
   bool start(const std::vector<SceneItem>&scene,
              const roads::TraversalGraph&walkSurfaces,
              roads::TerrainHeight terrain,double worldHalf,
-             double spawnX,double spawnZ,double yaw);
+             double spawnX,double spawnZ,double yaw,
+             const std::vector<SolidBox>&staticSolids={});
   bool step(double axisX,double axisZ,bool jump,std::size_t fixedTicks=2);
   void orbit(double dx,double dy) noexcept;
   void stop() noexcept;

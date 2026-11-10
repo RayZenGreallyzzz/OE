@@ -34,7 +34,7 @@ int main(){
  assert(playerInWorld!=nullptr);
  assert(std::abs(playerInWorld->position.x-play.player().feet.x)<1.e-7);
  // Camera relative input: after a quarter turn, right moves toward -Z.
- play.orbit(1.5707963267948966,0.);
+ for(int turn=0;turn<6;turn++)play.orbit(1.5707963267948966/6.,0.);
  const double oldX=play.player().feet.x,oldZ=play.player().feet.z;
  assert(play.step(1.,0.,false,2));
  assert(play.player().feet.z<oldZ);

@@ -3030,7 +3030,10 @@ JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSceneSnapshot
   if(i)out<<",";
   out<<"{\"id\":\""<<road.id<<"\",\"name\":\""<<road.name
      <<"\",\"material\":\""<<road.material
-     <<"\",\"widthMetres\":"<<road.widthMetres<<",\"controlPoints\":[";
+     <<"\",\"widthMetres\":"<<road.widthMetres;
+  if(validPaintKey(road.material)||std::abs(road.tileMetres-4.)>1.e-6)
+   out<<",\"tileMetres\":"<<road.tileMetres;
+  out<<",\"controlPoints\":[";
   for(size_t j=0;j<road.controlPoints.size();j++){
    if(j)out<<",";
    out<<"["<<road.controlPoints[j].x<<","<<road.controlPoints[j].z<<"]";
@@ -3216,12 +3219,12 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  jobjectArray modelKeys,jfloatArray terrainData,jobjectArray objectPaintKeys,
  jfloatArray painting,jobjectArray terrainPaintKeys,jlongArray roadIds,
  jobjectArray roadNames,jobjectArray roadMaterials,jdoubleArray roadWidths,
- jobjectArray roadPoints,jintArray tileCoords,jobjectArray tileData,
+ jdoubleArray roadTileMetres,jobjectArray roadPoints,jintArray tileCoords,jobjectArray tileData,
  jintArray layerCoords,jobjectArray layerKeys,jobjectArray layerMasks,
  jfloatArray lakeData){
  if(!allowedWorldSize(size)||!kinds||!transforms||!modelKeys||!terrainData||
     !objectPaintKeys||!painting||!terrainPaintKeys||!roadIds||!roadNames||
-    !roadMaterials||!roadWidths||!roadPoints||!tileCoords||!tileData||!layerCoords||!layerKeys||!layerMasks||!lakeData)
+    !roadMaterials||!roadWidths||!roadTileMetres||!roadPoints||!tileCoords||!tileData||!layerCoords||!layerKeys||!layerMasks||!lakeData)
     return JNI_FALSE;
  const jsize n=env->GetArrayLength(kinds);
  if(n<0||n>MAX_ENTITIES||env->GetArrayLength(transforms)!=n*8||
@@ -3333,12 +3336,15 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
     env->GetArrayLength(roadNames)!=roadsCount||
     env->GetArrayLength(roadMaterials)!=roadsCount||
     env->GetArrayLength(roadWidths)!=roadsCount||
+    env->GetArrayLength(roadTileMetres)!=roadsCount||
     env->GetArrayLength(roadPoints)!=roadsCount)return JNI_FALSE;
  std::vector<jlong> ids(static_cast<size_t>(roadsCount));
  std::vector<jdouble> widths(static_cast<size_t>(roadsCount));
+ std::vector<jdouble> tiles(static_cast<size_t>(roadsCount));
  if(roadsCount){
   env->GetLongArrayRegion(roadIds,0,roadsCount,ids.data());
   env->GetDoubleArrayRegion(roadWidths,0,roadsCount,widths.data());
+  env->GetDoubleArrayRegion(roadTileMetres,0,roadsCount,tiles.data());
   if(env->ExceptionCheck())return JNI_FALSE;
  }
  std::vector<oe::roads::Road> stagedRoads;
@@ -3371,12 +3377,15 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
               (c>='0'&&c<='9')||c==' '||c=='-'||c=='_';
      }))return JNI_FALSE;
   if(roadMaterial!="builtin:cobblestone"&&roadMaterial!="builtin:dirt"&&
-     roadMaterial!="builtin:sand"&&roadMaterial!="builtin:grass")return JNI_FALSE;
+     roadMaterial!="builtin:sand"&&roadMaterial!="builtin:grass"&&
+     (!validPaintKey(roadMaterial)||paintTexture(roadMaterial)==nullptr))
+     return JNI_FALSE;
   oe::roads::Road road;
   road.id=static_cast<std::uint64_t>(ids[static_cast<size_t>(i)]);
   road.name=std::move(roadName);
   road.material=std::move(roadMaterial);
   road.widthMetres=widths[static_cast<size_t>(i)];
+  road.tileMetres=tiles[static_cast<size_t>(i)];
   for(jsize j=0;j<coords;j+=2)
    road.controlPoints.push_back({pairs[static_cast<size_t>(j)],
                                  pairs[static_cast<size_t>(j+1)]});

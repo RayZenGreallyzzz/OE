@@ -6,6 +6,7 @@
 #include "roads/road_network.h"
 #include "roads/road_junctions.h"
 #include "roads/road_topology.h"
+#include "roads/traversal_graph.h"
 #include "roads/medieval_surface.h"
 #include "medieval/structures.h"
 #include "water/lake_surface.h"
@@ -2555,6 +2556,92 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeLakeDelete(
  recordEdit();
  gLakes.erase(gLakes.begin()+gSelectedLake);
  gSelectedLake=-1;++gLakeRevision;return JNI_TRUE;
+}
+// A portable traversal/collision-surface snapshot. No ghost collision
+// objects are written to the scene or JSON: it is derived from authored
+// road control points and existing modular bridge entities on demand.
+static bool oeBridgeModuleType(int type){
+ return type==oe::medieval::kStoneBridge||
+        type==oe::medieval::kTimberBridge||
+        type==oe::medieval::kNarrowFootbridge||
+        type==oe::medieval::kRopeBridge||
+        type==oe::medieval::kSteppingStoneFord||
+        type==oe::medieval::kWideCartBridge||
+        type==oe::medieval::kSwampCauseway;
+}
+static oe::roads::BridgeInstance oeBridgeFromEntity(const Entity&e){
+ oe::roads::BridgeInstance bridge;
+ bridge.id=static_cast<std::uint64_t>(e.id);
+ bridge.type=e.type;
+ bridge.center={e.x,e.z};
+ bridge.y=e.y;bridge.yaw=e.yaw;bridge.size=e.size;
+ bridge.sx=e.sx;bridge.sy=e.sy;bridge.sz=e.sz;
+ return bridge;
+}
+static bool oeCurrentRoadGraph(oe::roads::RoadTopology& graph){
+ // Read-only: no automatic snapping/rewriting old saved roads.
+ return oe::roads::buildRoadTopology(gRoads.all(),graph,0.);
+}
+static bool oeCurrentTraversalGraph(oe::roads::TraversalGraph&result){
+ oe::roads::RoadTopology graph;
+ if(!oeCurrentRoadGraph(graph))return false;
+ std::vector<oe::roads::BridgeInstance> bridges;
+ for(const auto& entity:gEntities)
+  if(oeBridgeModuleType(entity.type))
+   bridges.push_back(oeBridgeFromEntity(entity));
+ const auto terrain=[](double x,double z)->double{
+  return terrainHeightAt(static_cast<float>(x),static_cast<float>(z));
+ };
+ return oe::roads::buildTraversalGraph(graph,bridges,terrain,result);
+}
+// JNI: [walkable road segments, bridge objects, both banks connected,
+//       one bank, no banks, road collision quads, bridge deck quads,
+//       graph traversal edges] ; -1 first value means invalid graph.
+JNIEXPORT jintArray JNICALL Java_game_oe_editor_EditorActivity_nativeBridgeTraversalStats(
+ JNIEnv*env,jclass){
+ oe::roads::TraversalGraph traversal;
+ const bool valid=oeCurrentTraversalGraph(traversal);
+ jint stats[8]={
+  valid?static_cast<jint>(traversal.roadSurfaces):-1,
+  valid?static_cast<jint>(traversal.bridges.size()):0,
+  valid?static_cast<jint>(traversal.fullBridges):0,
+  valid?static_cast<jint>(traversal.oneEndedBridges):0,
+  valid?static_cast<jint>(traversal.detachedBridges):0,
+  valid?static_cast<jint>(traversal.roadSurfaces):0,
+  valid?static_cast<jint>(traversal.bridgeSurfaces):0,
+  valid?static_cast<jint>(traversal.edges.size()):0
+ };
+ jintArray array=env->NewIntArray(8);
+ if(array)env->SetIntArrayRegion(array,0,8,stats);
+ return array;
+}
+// Explicit one-Undo operation for a selected existing bridge. Does NOT move
+// roads/terrain, change scale or overwrite imported 3D models.
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeBridgeAutoAlign(
+ JNIEnv*,jclass){
+ Entity*e=selected();
+ if(!e||!oeBridgeModuleType(e->type)||e->type==oe::medieval::kSteppingStoneFord)
+  return JNI_FALSE;
+ oe::roads::RoadTopology graph;
+ if(!oeCurrentRoadGraph(graph))return JNI_FALSE;
+ const auto terrain=[](double x,double z)->double{
+  return terrainHeightAt(static_cast<float>(x),static_cast<float>(z));
+ };
+ oe::roads::BridgeAlignment proposal;
+ if(!oe::roads::suggestBridgeRoadAlignment(
+      graph,oeBridgeFromEntity(*e),terrain,proposal))return JNI_FALSE;
+ if(std::abs(proposal.center.x)>worldHalf()-3.||
+    std::abs(proposal.center.z)>worldHalf()-3.||
+    proposal.y< -24.||proposal.y>160.)return JNI_FALSE;
+ const float nx=static_cast<float>(proposal.center.x);
+ const float nz=static_cast<float>(proposal.center.z);
+ const float ny=static_cast<float>(proposal.y);
+ const float nr=static_cast<float>(proposal.yaw);
+ if(std::abs(e->x-nx)<.0001f&&std::abs(e->z-nz)<.0001f&&
+    std::abs(e->y-ny)<.0001f&&std::abs(e->yaw-nr)<.0001f)return JNI_FALSE;
+ recordEdit();
+ e->x=nx;e->z=nz;e->y=ny;e->yaw=nr;
+ return JNI_TRUE;
 }
 JNIEXPORT jintArray JNICALL Java_game_oe_editor_EditorActivity_nativeRoadTopologyStats(
  JNIEnv*env,jclass){

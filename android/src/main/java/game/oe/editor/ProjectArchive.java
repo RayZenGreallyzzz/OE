@@ -51,7 +51,7 @@ public final class ProjectArchive {
         JSONObject json=new JSONObject(scene);
         int version=json.optInt("version",-1);
         JSONObject guide=json.optJSONObject("mapReference");
-        check(version>=1&&version<=7,"Неподдерживаемая версия сцены");
+        check(version>=1&&version<=8,"Неподдерживаемая версия сцены");
         if(version<3){
             check(!json.has("mapReference"),"Подложка требует сцену версии 3+");
             return null;
@@ -112,6 +112,28 @@ public final class ProjectArchive {
                 check(validTexture(key),"Недопустимая текстура объекта");keys.add(key);
             }
         }
+        // R5.5: road image materials are first-class project assets.
+        // The referenced PNG/JPG must be packed into .oezip just like
+        // a painted building or terrain material; not merely cached in app.
+        JSONArray roads=document.optJSONArray("roads");
+        int sceneVersion=document.optInt("version",-1);
+        if(roads!=null){
+            check(roads.length()<=256,"Слишком много дорог");
+            for(int i=0;i<roads.length();++i){
+                JSONObject road=roads.getJSONObject(i);
+                String material=road.getString("material");
+                boolean custom=validTexture(material);
+                check(!custom||sceneVersion>=8,
+                      "PNG/JPG для дороги требует сцену v8");
+                if(custom)keys.add(material);
+                if(road.has("tileMetres")){
+                    check(sceneVersion>=8,"Масштаб дороги требует v8");
+                    double metres=road.getDouble("tileMetres");
+                    check(Double.isFinite(metres)&&metres>=.5&&metres<=32.,
+                          "Неверный масштаб дорожной текстуры");
+                }
+            }
+        }
         JSONArray strokes=document.optJSONArray("terrainPaint");
         if(strokes!=null){
             check(strokes.length()<=48,"Слишком много кистей текстуры");
@@ -163,7 +185,9 @@ public final class ProjectArchive {
     private static void validateLakes(JSONObject json,int version) throws Exception{
         JSONArray water=json.optJSONArray("lakes");
         check((version==7&&water!=null&&water.length()>0)||
-              (version<7&&!json.has("lakes")),
+              (version<7&&!json.has("lakes"))||
+              (version>=8&&(!json.has("lakes")||
+                  (water!=null&&water.length()>0))),
               "Повреждённые данные озера или несовместимая версия сцены");
         if(water==null)return;
         check(water.length()<=8,"Слишком много водоёмов");
@@ -187,7 +211,7 @@ public final class ProjectArchive {
         check(scene.getBytes(StandardCharsets.UTF_8).length<=MAX_SCENE_BYTES,"Сцена превышает безопасный лимит");
         JSONObject json=new JSONObject(scene);
         int version=json.optInt("version",-1);
-        check(version>=1&&version<=7,"Неподдерживаемая версия сцены");
+        check(version>=1&&version<=8,"Неподдерживаемая версия сцены");
         check(version==1||json.optJSONArray("roads")!=null,"Нет дорожной сети");
         validateLakes(json,version);
         referenceName(scene);

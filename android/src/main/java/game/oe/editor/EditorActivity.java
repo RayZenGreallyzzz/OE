@@ -712,7 +712,7 @@ public class EditorActivity extends Activity {
 
     private void beginNewRoad(){
         if(importing){message("Дождись завершения импорта");return;}
-        placingKind=-1;placingGlb=null;terrainMode=0;paintTerrainMode=false;precisionPaintMode=false;materialPaintMode=false;roadMoveMode=false;roadMode=true;
+        placingKind=-1;placingGlb=null;terrainMode=0;lakeMode=false;paintTerrainMode=false;precisionPaintMode=false;materialPaintMode=false;roadMoveMode=false;roadMode=true;
         surface.queueEvent(()->{nativeRoadBegin();surface.requestRender();});
         statusText.setText("ДОРОГА: коснись земли для 1-й точки, затем для 2-й. "
             +"Следующие касания продолжают дорогу. Два пальца — камера.");
@@ -727,7 +727,7 @@ public class EditorActivity extends Activity {
         if(importing)return;
         surface.queueEvent(()->{
             if(nativeRoadContinue()){
-                roadMoveMode=false;roadMode=true;placingKind=-1;terrainMode=0;paintTerrainMode=false;
+                roadMoveMode=false;roadMode=true;placingKind=-1;terrainMode=0;lakeMode=false;paintTerrainMode=false;
                 ui(()->statusText.setText("Продолжение дороги: касайся земли для добавления точек."));
                 surface.requestRender();
             }else message("Сначала выбери дорогу через «Дороги → Выбрать»");
@@ -798,7 +798,7 @@ public class EditorActivity extends Activity {
         if(byTap){
             roadMode=false;roadMoveMode=true;
             placingKind=-1;placingGlb=null;paintTerrainMode=false;
-            precisionPaintMode=false;materialPaintMode=false;terrainMode=0;
+            precisionPaintMode=false;materialPaintMode=false;terrainMode=0;lakeMode=false;
             surface.queueEvent(()->{
                 nativeRoadFinish();
                 if(nativeRoadPointSelect(index)){
@@ -1690,7 +1690,7 @@ public class EditorActivity extends Activity {
         if(activePaintKey.isEmpty()){
             message("Сначала загрузи и выбери PNG/JPG");return;
         }
-        terrainMode=0;placingKind=-1;placingGlb=null;roadMode=false;roadMoveMode=false;precisionPaintMode=false;materialPaintMode=false;
+        terrainMode=0;lakeMode=false;placingKind=-1;placingGlb=null;roadMode=false;roadMoveMode=false;precisionPaintMode=false;materialPaintMode=false;
         surface.queueEvent(()->{nativeRoadFinish();nativePaintStrokeEnd();});
         paintTerrainMode=true;
         statusText.setText("КИСТЬ ТЕКСТУР: касайся земли · радиус "+(int)paintRadius+
@@ -1702,7 +1702,7 @@ public class EditorActivity extends Activity {
         if(!erase&&activePaintKey.isEmpty()){
             message("Сначала загрузи и выбери текстуру PNG/JPG");return;
         }
-        paintTerrainMode=false;terrainMode=0;placingKind=-1;placingGlb=null;roadMode=false;
+        paintTerrainMode=false;terrainMode=0;lakeMode=false;placingKind=-1;placingGlb=null;roadMode=false;
         precisionPaintErase=erase;precisionPaintMode=true;materialPaintMode=false;roadMoveMode=false;
         surface.queueEvent(()->{nativeRoadFinish();nativePaintStrokeEnd();});
         statusText.setText(erase?"ЛАСТИК R4: веди пальцем · курсор на 70 dp выше пальца":
@@ -1716,7 +1716,7 @@ public class EditorActivity extends Activity {
         if(activePaintKey.isEmpty()){
             message("Сначала выбери материал PNG/JPG в библиотеке текстур");return;
         }
-        paintTerrainMode=false;terrainMode=0;placingKind=-1;placingGlb=null;roadMode=false;
+        paintTerrainMode=false;terrainMode=0;lakeMode=false;placingKind=-1;placingGlb=null;roadMode=false;
         precisionPaintErase=erase;precisionPaintMode=true;materialPaintMode=true;roadMoveMode=false;
         surface.queueEvent(()->{nativeRoadFinish();nativePaintStrokeEnd();nativeLayerStrokeEnd();});
         statusText.setText(erase?
@@ -2527,7 +2527,7 @@ public class EditorActivity extends Activity {
                 }
                 queueEvent(() -> {
                     nativeGizmoEnd();gizmoEditStarted=false;
-                    if(placingKind==-1&&terrainMode==0&&!paintTerrainMode&&!roadMode&&!roadMoveMode)
+                    if(placingKind==-1&&terrainMode==0&&!lakeMode&&!paintTerrainMode&&!roadMode&&!roadMoveMode)
                         touchedGizmoAxis=nativeGizmoHit(px,py);
                 });
                 return true;
@@ -2611,6 +2611,7 @@ public class EditorActivity extends Activity {
                     final int kind=placingKind,brush=terrainMode;
                     final boolean paint=paintTerrainMode;
                     final boolean roadDraw=roadMode;
+                    final boolean lakePlace=lakeMode;
                     final boolean roadPointMove=roadMoveMode;
                     final String paintingKey=activePaintKey;
                     final String asset=placingGlb;
@@ -2640,6 +2641,14 @@ public class EditorActivity extends Activity {
                                 int strokes=nativePaintTerrainAtScreen(px,py,paintRadius,paintingKey);
                                 if(strokes>0)message("Земля окрашена · мазок "+strokes+"/48");
                                 else message("Не получилось покрасить: нет текстуры или лимит 48 кистей");
+                            }else if(lakePlace){
+                                final int count=nativeLakePlaceAtScreen(px,py,lakeRadius,lakeFillDepth);
+                                if(count>0){
+                                    lakeMode=false;
+                                    message("Озеро залито · "+count+"/8 · ↶ отменить");
+                                    ui(()->statusText.setText(
+                                        "Озеро создано · выбери его в разделе «Вода» для изменения уровня"));
+                                }else message("Невозможно залить: лимит 8 озёр, край карты или неверная высота");
                             }else if(brush!=0){
                                 int count=nativeApplyTerrainBrushAtScreen(px,py,terrainRadius,
                                     brush*terrainStrength);

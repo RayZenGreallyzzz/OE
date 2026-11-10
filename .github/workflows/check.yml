@@ -68,6 +68,22 @@ jobs:
             android/src/main/cpp/terrainpaint/paint_tiles.cpp \
             -o /tmp/oe-terrain-paint
           /tmp/oe-terrain-paint
+  road-bridge-traversal:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify connected medieval bridges, grade-safe entrances and walk surfaces
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -pedantic \
+            tests/bridge_traversal_smoke.cpp \
+            android/src/main/cpp/roads/road_network.cpp \
+            android/src/main/cpp/roads/road_topology.cpp \
+            android/src/main/cpp/roads/traversal_graph.cpp \
+            android/src/main/cpp/medieval/structures.cpp \
+            -o /tmp/oe-bridge-traversal-test
+          /tmp/oe-bridge-traversal-test
+      - name: Check editor bridge alignment and road traversal JNI wiring
+        run: python3 tests/bridge_editor_integration_smoke.py
   water-lakes:
     runs-on: ubuntu-latest
     steps:

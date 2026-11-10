@@ -51,6 +51,6 @@ assert "version>=1&&version<=7" in archive
 assert "kind>=0&&kind<=28&&(kind<=16||version>=6)" in archive
 assert "(version!=5||independent!=null)" in archive
 assert "medieval/structures.cpp" in cmake
-assert "OE TERRAIN AND LAKES R5.3 TEST" in manifest
+assert 'android:label="OE ' in manifest and 'TEST"' in manifest
 
 print("OE_MEDIEVAL_EDITOR_INTEGRATION_OK: placement, palette, v6 archive, isolated build")

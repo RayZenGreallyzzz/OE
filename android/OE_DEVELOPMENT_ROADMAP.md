@@ -50,10 +50,16 @@ These features are implemented in experimental branches with successful automate
 - Scene v7, Undo/Redo, explicit `.oezip` validation and forward compatibility check; older v1–v6 scenes continue to load. GitHub backup R5.2b: `backup/oe-medieval-r52b-2026-11-10`.
 - Current priority shift was user-requested; road collision/nav is retained next, **not silently dropped**.
 
-### R5.4 — road navigation and collision-ready data
+### R5.4 — road and bridge traversal/CPU walk surfaces (experimental; tablet QA pending)
 - Build a separate road graph for future vehicles/NPCs, with junction and direction metadata.
+- Implemented bounded C++17 traversal graph: road-to-bridge links only at aligned real road dead ends, ≤2.5m XZ and ≤0.65m walk height difference. Straight bridge deck quads plus terrain-following road quads; explicit editor inspection and Undoable bridge auto-fit. Not active physics/game AI yet.
 - Provide simplified collision mesh or collision shapes for medieval roads, bridges and natural road shoulders (not modern sidewalks/curbs).
 - Test crossing connectivity, saving, scene loading, and performance. Avoid claiming full traffic AI at this stage.
+- Bridge road link is derived from existing v7 scene roads and medieval objects; no file-format migration. Previous lake-enabled editor archived as `backup/oe-r53-lakes-2026-11-10`.
+
+### R5.5 — actual character/runtime collision integration (not yet implemented)
+- Integrate road/bridge walk quads as real runtime collision surfaces, add slope checks and a safe player controller.
+- Polish visible street-bank / bridge transitions and verify shore geometry on the actual Android tablet before claiming physically traversable bridges.
 
 ### Road quality gate
 - Test actual road creation, point moving, smoothing, snapping, multiple T/X/Y junctions, PNG overlays, layered materials, Undo/Redo, local save and .oezip import/export on the target Android tablet.

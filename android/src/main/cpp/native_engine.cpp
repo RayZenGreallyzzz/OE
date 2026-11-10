@@ -1401,6 +1401,31 @@ Vec3 gizmoEndpoint(const Entity&e,int axis){
  if(axis==2)p.z+=len;
  return p;
 }
+// Ray/rotation-plane intersection. The ring gesture is measured in 3D,
+// so rotation remains consistent as the camera orbits the house.
+bool rotationPlanePoint(int axis,float px,float py,Vec3 origin,Vec3&point){
+ if(axis<0||axis>2||!std::isfinite(px)||!std::isfinite(py))return false;
+ const Vec3 eye=cameraEye(),forward=unit(sub(gTarget,eye));
+ const Vec3 right=unit(cross(forward,{0,1,0})),up=cross(right,forward);
+ const float half=std::tan(PI/6.f);
+ const float aspect=static_cast<float>(gWidth)/std::max(1,gHeight);
+ const float u=(px*2.f/gWidth-1.f)*half*aspect;
+ const float v=(1.f-py*2.f/gHeight)*half;
+ const Vec3 ray=unit({forward.x+right.x*u+up.x*v,
+                       forward.y+right.y*u+up.y*v,
+                       forward.z+right.z*u+up.z*v});
+ const float denominator=axis==0?ray.x:axis==1?ray.y:ray.z;
+ if(std::abs(denominator)<.09f)return false;
+ const float originAxis=axis==0?origin.x:axis==1?origin.y:origin.z;
+ const float eyeAxis=axis==0?eye.x:axis==1?eye.y:eye.z;
+ const float t=(originAxis-eyeAxis)/denominator;
+ if(t<=.03f||t>1600.f)return false;
+ Vec3 p=sub({eye.x+ray.x*t,eye.y+ray.y*t,eye.z+ray.z*t},origin);
+ const float length=std::sqrt(dot(p,p));
+ if(!std::isfinite(length)||length<.0001f)return false;
+ point={p.x/length,p.y/length,p.z/length};
+ return true;
+}
 bool gizmoProject(Vec3 p,float&px,float&py){
  const Vec4 q=apply(viewProjection(),{p.x,p.y,p.z,1.f});
  if(q.w<=.1f)return false;
@@ -1893,22 +1918,54 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDraw(JNIEnv*,jcl
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeSetGizmoMode(
  JNIEnv*,jclass,jint mode){
- if(mode>=0&&mode<=2){gGizmoMode=mode;gGizmoActive=false;}
+ if(mode>=0&&mode<=2){gGizmoMode=mode;gGizmoActive=false;gGizmoActiveAxis=-1;}
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeSetRotationSnap(
+ JNIEnv*,jclass,jboolean enabled){
+ gRotationSnap15=enabled==JNI_TRUE;
 }
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeGizmoHit(
  JNIEnv*,jclass,jfloat px,jfloat py){return gizmoHit(px,py);}
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeGizmoBegin(
- JNIEnv*,jclass,jint axis){
- if(!selected()||axis<0||axis>2||(gGizmoMode==1&&axis!=1))
-  return JNI_FALSE;
- recordEdit();gGizmoActive=true;gGizmoActiveId=gSelected;
+ JNIEnv*,jclass,jint axis,jfloat px,jfloat py){
+ if(!selected()||axis<0||axis>2||
+    !std::isfinite(px)||!std::isfinite(py))return JNI_FALSE;
+ recordEdit();gGizmoActive=true;gGizmoActiveId=gSelected;gGizmoActiveAxis=axis;
+ gGizmoUnsnapped=0.f;gGizmoApplied=0.f;
+ gGizmoLastPlaneValid=gGizmoMode==1&&
+  rotationPlanePoint(axis,px,py,gizmoBase(*selected()),gGizmoLastPlane);
  return JNI_TRUE;
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeGizmoDrag(
- JNIEnv*,jclass,jint axis,jfloat dx,jfloat dy){
- if(!gGizmoActive||gGizmoActiveId!=gSelected||!std::isfinite(dx)||!std::isfinite(dy)||
+ JNIEnv*,jclass,jint axis,jfloat dx,jfloat dy,jfloat px,jfloat py){
+ if(!gGizmoActive||gGizmoActiveId!=gSelected||axis!=gGizmoActiveAxis||
+    !std::isfinite(dx)||!std::isfinite(dy)||
+    !std::isfinite(px)||!std::isfinite(py)||
     std::abs(dx)>1000.f||std::abs(dy)>1000.f||axis<0||axis>2)return;
  Entity*e=selected();if(!e)return;
+ if(gGizmoMode==1){
+  Vec3 newPoint{};
+  const bool valid=rotationPlanePoint(axis,px,py,gizmoBase(*e),newPoint);
+  float delta=0.f;
+  if(valid&&gGizmoLastPlaneValid)
+    delta=oe::gizmo::signedPlaneDegrees(
+     gGizmoLastPlane.x,gGizmoLastPlane.y,gGizmoLastPlane.z,
+     newPoint.x,newPoint.y,newPoint.z,axis);
+  else
+    delta=(dx+dy*.25f)*.38f; // Edge-on ring: bounded screen-drag fallback.
+  gGizmoLastPlaneValid=valid;
+  if(valid)gGizmoLastPlane=newPoint;
+  delta=clampf(delta,-30.f,30.f);
+  gGizmoUnsnapped+=delta;
+  const float target=gRotationSnap15?
+    std::round(gGizmoUnsnapped/15.f)*15.f:gGizmoUnsnapped;
+  const float apply=target-gGizmoApplied;
+  if(std::abs(apply)>.00001f){
+   rotateEntityWorld(*e,axis,apply);
+   gGizmoApplied=target;
+  }
+  return;
+ }
  const Vec3 origin=gizmoBase(*e),tip=gizmoEndpoint(*e,axis);
  float bx,by,ex,ey;
  if(!gizmoProject(origin,bx,by)||!gizmoProject(tip,ex,ey))return;
@@ -1920,8 +1977,6 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeGizmoDrag(
   if(axis==0)e->x=clampf(e->x+amount,-worldHalf(),worldHalf());
   if(axis==1)e->y=clampf(e->y+amount,-24.f,160.f);
   if(axis==2)e->z=clampf(e->z+amount,-worldHalf(),worldHalf());
- }else if(gGizmoMode==1&&axis==1){
-  e->yaw=std::fmod(e->yaw+clampf(pixels*.55f,-20.f,20.f)+360.f,360.f);
  }else if(gGizmoMode==2){
   const float factor=std::exp(clampf(pixels*.009f,-.20f,.20f));
   float *value=axis==0?&e->sx:(axis==1?&e->sy:&e->sz);
@@ -1929,7 +1984,8 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeGizmoDrag(
  }
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeGizmoEnd(JNIEnv*,jclass){
- gGizmoActive=false;gGizmoActiveId=0;
+ gGizmoActive=false;gGizmoActiveId=0;gGizmoActiveAxis=-1;
+ gGizmoLastPlaneValid=false;
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeOrbit(JNIEnv*,jclass,jfloat dx,jfloat dy,jfloat zoom){
  gYaw-=dx*.006f;

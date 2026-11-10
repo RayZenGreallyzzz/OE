@@ -1437,16 +1437,20 @@ bool rotationPlanePoint(int axis,float px,float py,Vec3 origin,Vec3&point){
  point={p.x/length,p.y/length,p.z/length};
  return true;
 }
-bool gizmoProject(Vec3 p,float&px,float&py){
- const Vec4 q=apply(viewProjection(),{p.x,p.y,p.z,1.f});
+bool gizmoProjectVp(const Mat4&vp,Vec3 p,float&px,float&py){
+ const Vec4 q=apply(vp,{p.x,p.y,p.z,1.f});
  if(q.w<=.1f)return false;
  px=(q.x/q.w*.5f+.5f)*gWidth;
  py=(.5f-q.y/q.w*.5f)*gHeight;
  return std::isfinite(px)&&std::isfinite(py);
 }
+bool gizmoProject(Vec3 p,float&px,float&py){
+ return gizmoProjectVp(viewProjection(),p,px,py);
+}
 int gizmoHit(float px,float py){
  if(gGizmoMode<0||!selected()||!std::isfinite(px)||!std::isfinite(py))return -1;
  const Entity&e=*selected();
+ const Mat4 vp=viewProjection(); // compute once, not 432 times per touch
  if(gGizmoMode==1){
   const Vec3 center=gizmoBase(e);
   const float radius=rotationRingRadius();
@@ -1456,8 +1460,8 @@ int gizmoHit(float px,float py){
    const float a=i*(2.f*PI/72.f),b=(i+1)*(2.f*PI/72.f);
    const Vec3 r0=ringPoint(axis,a,radius),r1=ringPoint(axis,b,radius);
    float x0,y0,x1,y1;
-   if(!gizmoProject({center.x+r0.x,center.y+r0.y,center.z+r0.z},x0,y0)||
-      !gizmoProject({center.x+r1.x,center.y+r1.y,center.z+r1.z},x1,y1))
+   if(!gizmoProjectVp(vp,{center.x+r0.x,center.y+r0.y,center.z+r0.z},x0,y0)||
+      !gizmoProjectVp(vp,{center.x+r1.x,center.y+r1.y,center.z+r1.z},x1,y1))
       continue;
    const float ux=x1-x0,uy=y1-y0,len=ux*ux+uy*uy;
    if(len<.1f)continue;
@@ -1469,12 +1473,12 @@ int gizmoHit(float px,float py){
   return best;
  }
  float bx,by;
- if(!gizmoProject(gizmoBase(e),bx,by))return -1;
+ if(!gizmoProjectVp(vp,gizmoBase(e),bx,by))return -1;
  int hit=-1;
  float nearest=1e8f;
  for(int axis=0;axis<3;axis++){
   float ex,ey;
-  if(!gizmoProject(gizmoEndpoint(e,axis),ex,ey))continue;
+  if(!gizmoProjectVp(vp,gizmoEndpoint(e,axis),ex,ey))continue;
   const float dx=ex-bx,dy=ey-by,len2=dx*dx+dy*dy;
   if(len2<625.f)continue;
   const float t=((px-bx)*dx+(py-by)*dy)/len2;

@@ -43,6 +43,7 @@ for needle in (
     "const auto terrainBrushes=gBrushes;",
     "std::make_unique<oe::runtime::PlaySession>(512)",
     "std::vector<Entity> copied=gEntities;",
+    "if(gRoadPending||gPrecisionPaintActive||gMaterialStrokeActive||",
     "gPlaySceneObjects.swap(copied);",
     "Java_game_oe_editor_EditorActivity_nativePlayStart(",
     "Java_game_oe_editor_EditorActivity_nativePlayStep(",

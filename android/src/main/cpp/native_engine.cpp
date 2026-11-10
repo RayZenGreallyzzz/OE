@@ -8,6 +8,7 @@
 #include "roads/road_topology.h"
 #include "roads/medieval_surface.h"
 #include "medieval/structures.h"
+#include "water/lake_surface.h"
 #include "terrainpaint/paint_tiles.h"
 #include "terrainpaint/material_layers.h"
 #include "vendor/basisu/transcoder/basisu_transcoder.h"
@@ -175,6 +176,16 @@ static Mesh gRoadGpu;
 struct RoadDrawRange {GLint first=0;GLsizei count=0;std::uint64_t id=0;};
 static std::vector<RoadDrawRange> gRoadRanges;
 static constexpr size_t MAX_ROAD_GPU_VERTICES=120000;
+// Lake data is editor-owned, saved with the scene, and rendered with a
+// single cached translucent GPU mesh. Revisions also invalidate after Undo.
+static std::vector<oe::water::Lake> gLakes;
+static int gSelectedLake=-1,gLakeRevision=1;
+struct LakeGpu {
+ GLuint vao=0,buffer=0;
+ GLsizei count=0;
+ int lakeRevision=-1,terrainRevision=-1;
+};
+static LakeGpu gLakeGpu;
 
 float terrainHeightAt(float x,float z){
  float h=0;
@@ -199,16 +210,19 @@ struct SceneSnapshot {
  std::uint64_t selectedRoad=0;
  oe::terrainpaint::Canvas precisePaint;
  oe::terrainpaint::MaterialCanvas materialPaint;
+ std::vector<oe::water::Lake> lakes;
+ int selectedLake=-1;
 };
 static std::vector<SceneSnapshot> gUndo,gRedo;
 static bool gSuspendHistory=false;
 static constexpr size_t HISTORY_LIMIT=12; // bounded undo when 2x paint canvases are present
 SceneSnapshot captureScene(){return {gEntities,gNextId,gSelected,gWorldSize,gDemoRoads,
-    gTarget,gDistance,gBrushes,gTerrainPaint,gRoads.all(),gSelectedRoad,gPaintTiles,gMaterialCanvas};}
+    gTarget,gDistance,gBrushes,gTerrainPaint,gRoads.all(),gSelectedRoad,gPaintTiles,gMaterialCanvas,gLakes,gSelectedLake};}
 void restoreScene(const SceneSnapshot&s){
  gEntities=s.entities;gNextId=s.nextId;gSelected=s.selected;gWorldSize=s.worldSize;
  gDemoRoads=s.demoRoads;gTarget=s.target;gDistance=s.cameraDistance;
  gBrushes=s.terrain;gTerrainPaint=s.paints;gTerrainRevision++;gSceneInitialized=true;
+ gLakes=s.lakes;gSelectedLake=s.selectedLake;++gLakeRevision;
  gRoads.replaceAll(s.roads);gSelectedRoad=s.selectedRoad;
  gRoadPending=false;gActiveRoad=0;gSelectedRoadPoint=-1;++gRoadRevision;
  gPaintTiles=s.precisePaint;
@@ -497,6 +511,7 @@ void setupGL(){
  gMapGuide.texture=0;gMapGuide.mesh={};gMapGuide.meshRevision=-1;
  gMapStage={};
  gRoadGpu={};gRoadRanges.clear();gRoadGpuRevision=-1;gRoadGpuTerrainRevision=-1;
+ gLakeGpu={}; // Drop stale handles on Android EGL context recreation.
  gPaintTileGpu.clear();gPrecisionPaintActive=false;gPaintCursorVisible=false;
  const char*vert=R"(#version 300 es
  layout(location=0) in vec3 aPos;
@@ -1419,6 +1434,67 @@ void drawRoads(const Mat4& vp){
  glBindVertexArray(0);
  glUniform1f(gShader.locLight,0.f);
 }
+// R5.3 editor lake water. The terrain-clipped shoreline mesh is generated
+// ONLY when lakes/terrain change and all current lakes share one GPU draw call.
+void drawLakes(const Mat4& vp){
+ if(gLakes.empty())return;
+ if(gLakeGpu.lakeRevision!=gLakeRevision||
+    gLakeGpu.terrainRevision!=gTerrainRevision){
+  oe::water::LakeSurface surface;
+  const auto terrain=[](double x,double z)->double{
+   return terrainHeightAt(static_cast<float>(x),static_cast<float>(z));
+  };
+  if(!oe::water::buildLakeSurface(gLakes,worldHalf(),terrain,surface))return;
+  std::vector<float> vertices;
+  vertices.reserve(surface.triangles.size()*9);
+  for(const auto&v:surface.triangles){
+   vertices.insert(vertices.end(),{v.x,v.y,v.z,0.f,1.f,0.f,v.r,v.g,v.b});
+  }
+  if(!gLakeGpu.vao){
+   glGenVertexArrays(1,&gLakeGpu.vao);
+   glGenBuffers(1,&gLakeGpu.buffer);
+  }
+  if(!gLakeGpu.vao||!gLakeGpu.buffer)return;
+  glBindVertexArray(gLakeGpu.vao);
+  glBindBuffer(GL_ARRAY_BUFFER,gLakeGpu.buffer);
+  glBufferData(GL_ARRAY_BUFFER,static_cast<GLsizeiptr>(
+      vertices.size()*sizeof(float)),vertices.empty()?nullptr:vertices.data(),
+      GL_DYNAMIC_DRAW);
+  for(int attrib=0;attrib<3;++attrib){
+   glEnableVertexAttribArray(static_cast<GLuint>(attrib));
+   glVertexAttribPointer(static_cast<GLuint>(attrib),3,GL_FLOAT,GL_FALSE,
+      9*sizeof(float),
+      reinterpret_cast<void*>(static_cast<uintptr_t>(attrib*3*sizeof(float))));
+  }
+  glDisableVertexAttribArray(3); // no UV needed for cheap translucent water
+  glBindVertexArray(0);
+  if(glGetError()!=GL_NO_ERROR)return;
+  gLakeGpu.count=static_cast<GLsizei>(vertices.size()/9);
+  gLakeGpu.lakeRevision=gLakeRevision;
+  gLakeGpu.terrainRevision=gTerrainRevision;
+ }
+ if(!gLakeGpu.count)return;
+ glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+ glDepthMask(GL_FALSE);
+ const Mat4 model=identity();
+ glUniformMatrix4fv(gShader.locMvp,1,GL_FALSE,vp.m);
+ glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
+ glUniform3f(gShader.locColor,1.f,1.f,1.f);
+ glUniform1f(gShader.locLight,0.f);
+ glUniform1f(gShader.locTextured,0.f);
+ glUniform1f(gShader.locOverlay,0.f);
+ glUniform1f(gShader.locPaintOverride,0.f);
+ glUniform1f(gShader.locMaterialLayer,0.f);
+ glUniform1f(gShader.locGuide,0.f);
+ glUniform1f(gShader.locOpacity,.77f);
+ glBindVertexArray(gLakeGpu.vao);
+ glDrawArrays(GL_TRIANGLES,0,gLakeGpu.count);
+ ++gDrawCalls;gTriangles+=gLakeGpu.count/3;
+ glBindVertexArray(0);
+ glUniform1f(gShader.locOpacity,1.f);
+ glDepthMask(GL_TRUE);
+ glDisable(GL_BLEND);
+}
 void drawRoadHandles(const Mat4& vp){
  const auto* road=gRoads.find(gSelectedRoad);
  const float marker=clampf(gDistance*.013f,.22f,.9f);
@@ -1521,6 +1597,7 @@ void reset(bool demo){
  const bool wasMuted=gSuspendHistory;
  gSuspendHistory=true;
  gEntities.clear();gBrushes.clear();gTerrainPaint.clear();gTerrainRevision++;gNextId=1;gSelected=0;
+ gLakes.clear();gSelectedLake=-1;++gLakeRevision;
  gRoads.clear();gSelectedRoad=0;gActiveRoad=0;gSelectedRoadPoint=-1;gRoadPending=false;++gRoadRevision;
  gPaintTiles.clear();gMaterialCanvas.clear();
  clearMaterialGpu();gMaterialStrokeActive=false;
@@ -1967,6 +2044,7 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDraw(JNIEnv*,jcl
  drawMapGuide(vp);
  drawRoads(vp);
  for(const auto&e:gEntities)drawEntity(vp,frustum,e);
+ drawLakes(vp);
  drawGizmo(vp);
  drawRoadHandles(vp);
  drawPrecisionCursor(vp);
@@ -2423,6 +2501,61 @@ JNIEXPORT jintArray JNICALL Java_game_oe_editor_EditorActivity_nativeMedievalSur
  if(array)env->SetIntArrayRegion(array,0,3,stats);
  return array;
 }
+// Every lake is editor-authored water (not game physics). Existing
+// terrain brush is the excavation tool; placed water has a separate level.
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeLakePlaceAtScreen(
+ JNIEnv*,jclass,jfloat px,jfloat py,jfloat radius,jfloat fillDepth){
+ if(gLakes.size()>=oe::water::kMaxLakes||!std::isfinite(fillDepth)||
+    fillDepth<.5f||fillDepth>32.f)return 0;
+ float x=0,z=0;
+ if(!groundPoint(px,py,x,z))return 0;
+ const oe::water::Lake candidate{x,z,radius,terrainHeightAt(x,z)+fillDepth};
+ if(!oe::water::validLake(candidate,worldHalf()))return 0;
+ recordEdit();
+ gLakes.push_back(candidate);gSelectedLake=static_cast<int>(gLakes.size())-1;
+ ++gLakeRevision;
+ return static_cast<jint>(gLakes.size());
+}
+JNIEXPORT jobjectArray JNICALL Java_game_oe_editor_EditorActivity_nativeLakeNames(
+ JNIEnv*env,jclass){
+ jclass klass=env->FindClass("java/lang/String");
+ jobjectArray names=env->NewObjectArray(static_cast<jsize>(gLakes.size()),klass,nullptr);
+ for(jsize i=0;i<static_cast<jsize>(gLakes.size());++i){
+  const auto&lake=gLakes[static_cast<std::size_t>(i)];
+  std::ostringstream line;line<<std::fixed<<std::setprecision(1)
+      <<"Озеро "<<i+1<<" · X "<<lake.x<<" Z "<<lake.z
+      <<" · радиус "<<lake.radius<<" м · вода "<<lake.level<<" м";
+  jstring item=env->NewStringUTF(line.str().c_str());
+  env->SetObjectArrayElement(names,i,item);env->DeleteLocalRef(item);
+ }
+ return names;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeLakeSelect(
+ JNIEnv*,jclass,jint index){
+ if(index<0||static_cast<std::size_t>(index)>=gLakes.size())return JNI_FALSE;
+ gSelectedLake=index;return JNI_TRUE;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeLakeAdjust(
+ JNIEnv*,jclass,jfloat levelDelta,jfloat radiusDelta){
+ if(gSelectedLake<0||static_cast<std::size_t>(gSelectedLake)>=gLakes.size()||
+    !std::isfinite(levelDelta)||!std::isfinite(radiusDelta)||
+    std::abs(levelDelta)>10.f||std::abs(radiusDelta)>32.f||
+    (levelDelta==0.f&&radiusDelta==0.f))return JNI_FALSE;
+ oe::water::Lake updated=gLakes[static_cast<std::size_t>(gSelectedLake)];
+ updated.radius+=radiusDelta;updated.level+=levelDelta;
+ if(!oe::water::validLake(updated,worldHalf()))return JNI_FALSE;
+ recordEdit();
+ gLakes[static_cast<std::size_t>(gSelectedLake)]=updated;
+ ++gLakeRevision;return JNI_TRUE;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeLakeDelete(
+ JNIEnv*,jclass){
+ if(gSelectedLake<0||static_cast<std::size_t>(gSelectedLake)>=gLakes.size())
+   return JNI_FALSE;
+ recordEdit();
+ gLakes.erase(gLakes.begin()+gSelectedLake);
+ gSelectedLake=-1;++gLakeRevision;return JNI_TRUE;
+}
 JNIEXPORT jintArray JNICALL Java_game_oe_editor_EditorActivity_nativeRoadTopologyStats(
  JNIEnv*env,jclass){
  oe::roads::RoadTopology topology;
@@ -2746,6 +2879,12 @@ JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSceneSnapshot
   }
   out<<"]}";
  }
+ out<<"],\"lakes\":[";
+ for(std::size_t i=0;i<gLakes.size();++i){
+  if(i)out<<",";
+  const auto&lake=gLakes[i];
+  out<<"["<<lake.x<<","<<lake.z<<","<<lake.radius<<","<<lake.level<<"]";
+ }
  out<<"]}";return env->NewStringUTF(out.str().c_str());
 }
 JNIEXPORT jobjectArray JNICALL Java_game_oe_editor_EditorActivity_nativeLabels(JNIEnv*env,jclass){
@@ -2920,10 +3059,11 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  jfloatArray painting,jobjectArray terrainPaintKeys,jlongArray roadIds,
  jobjectArray roadNames,jobjectArray roadMaterials,jdoubleArray roadWidths,
  jobjectArray roadPoints,jintArray tileCoords,jobjectArray tileData,
- jintArray layerCoords,jobjectArray layerKeys,jobjectArray layerMasks){
+ jintArray layerCoords,jobjectArray layerKeys,jobjectArray layerMasks,
+ jfloatArray lakeData){
  if(!allowedWorldSize(size)||!kinds||!transforms||!modelKeys||!terrainData||
     !objectPaintKeys||!painting||!terrainPaintKeys||!roadIds||!roadNames||
-    !roadMaterials||!roadWidths||!roadPoints||!tileCoords||!tileData||!layerCoords||!layerKeys||!layerMasks)
+    !roadMaterials||!roadWidths||!roadPoints||!tileCoords||!tileData||!layerCoords||!layerKeys||!layerMasks||!lakeData)
     return JNI_FALSE;
  const jsize n=env->GetArrayLength(kinds);
  if(n<0||n>MAX_ENTITIES||env->GetArrayLength(transforms)!=n*8||
@@ -2948,6 +3088,24 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
   if(env->ExceptionCheck())return JNI_FALSE;
  }
  const float half=static_cast<float>(size)*.5f;
+ // Preflight lake bodies before ANY scene state is replaced. Older scene
+ // versions pass an empty array, which clears previously authored lakes.
+ const jsize lakeFloats=env->GetArrayLength(lakeData);
+ if(lakeFloats<0||lakeFloats%4!=0||
+    lakeFloats>static_cast<jsize>(oe::water::kMaxLakes*4))return JNI_FALSE;
+ std::array<jfloat,oe::water::kMaxLakes*4> lakeRaw{};
+ if(lakeFloats){
+  env->GetFloatArrayRegion(lakeData,0,lakeFloats,lakeRaw.data());
+  if(env->ExceptionCheck())return JNI_FALSE;
+ }
+ std::vector<oe::water::Lake> stagedLakes;
+ stagedLakes.reserve(static_cast<std::size_t>(lakeFloats/4));
+ for(jsize i=0;i<lakeFloats;i+=4){
+  const oe::water::Lake lake{lakeRaw[i],lakeRaw[i+1],
+                              lakeRaw[i+2],lakeRaw[i+3]};
+  if(!oe::water::validLake(lake,half))return JNI_FALSE;
+  stagedLakes.push_back(lake);
+ }
  std::vector<TerrainBrush> stagedBrushes;
  stagedBrushes.reserve(static_cast<size_t>(brushFloats/4));
  for(jsize i=0;i<brushFloats;i+=4){
@@ -3136,6 +3294,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  if(!nextLayerCanvas.replaceAll(std::move(loadedLayers),size))return JNI_FALSE;
  // Commit: no validation or allocation failures below this point.
  gEntities.swap(staged);gBrushes.swap(stagedBrushes);
+ gLakes.swap(stagedLakes);gSelectedLake=-1;++gLakeRevision;
  gTerrainPaint.swap(stagedPaint);gTerrainRevision++;
  gRoads=std::move(nextRoads);gSelectedRoad=0;gActiveRoad=0;gRoadPending=false;
  for(auto& gpu:gPaintTileGpu)if(gpu.second.texture)glDeleteTextures(1,&gpu.second.texture);

@@ -51,7 +51,7 @@ public final class ProjectArchive {
         JSONObject json=new JSONObject(scene);
         int version=json.optInt("version",-1);
         JSONObject guide=json.optJSONObject("mapReference");
-        check(version>=1&&version<=6,"Неподдерживаемая версия сцены");
+        check(version>=1&&version<=7,"Неподдерживаемая версия сцены");
         if(version<3){
             check(!json.has("mapReference"),"Подложка требует сцену версии 3+");
             return null;
@@ -158,12 +158,38 @@ public final class ProjectArchive {
     private static void check(boolean ok,String reason) throws IOException{
         if(!ok)throw new IOException(reason);
     }
+    // Detect invalid or unversioned water bodies before writing/opening an
+    // archive. The actual Android editor performs the same preflight again.
+    private static void validateLakes(JSONObject json,int version) throws Exception{
+        JSONArray water=json.optJSONArray("lakes");
+        check((version==7&&water!=null&&water.length()>0)||
+              (version<7&&!json.has("lakes")),
+              "Повреждённые данные озера или несовместимая версия сцены");
+        if(water==null)return;
+        check(water.length()<=8,"Слишком много водоёмов");
+        int worldSize=json.optInt("worldSize",-1);
+        check(worldSize>=1024&&worldSize<=16384,
+              "Некорректные размеры мира для озёр");
+        for(int i=0;i<water.length();++i){
+            JSONArray values=water.getJSONArray(i);
+            check(values.length()==4,"Неверная запись озера");
+            double x=values.getDouble(0),z=values.getDouble(1);
+            double radius=values.getDouble(2),level=values.getDouble(3);
+            check(Double.isFinite(x)&&Double.isFinite(z)&&
+                  Double.isFinite(radius)&&Double.isFinite(level)&&
+                  radius>=8&&radius<=160&&level>=-24&&level<=160&&
+                  Math.abs(x)+radius<=worldSize/2.0&&
+                  Math.abs(z)+radius<=worldSize/2.0,
+                  "Озеро выходит за пределы карты или имеет неверную высоту");
+        }
+    }
     private static Set<String> referencedModels(String scene) throws Exception {
         check(scene.getBytes(StandardCharsets.UTF_8).length<=MAX_SCENE_BYTES,"Сцена превышает безопасный лимит");
         JSONObject json=new JSONObject(scene);
         int version=json.optInt("version",-1);
-        check(version>=1&&version<=6,"Неподдерживаемая версия сцены");
+        check(version>=1&&version<=7,"Неподдерживаемая версия сцены");
         check(version==1||json.optJSONArray("roads")!=null,"Нет дорожной сети");
+        validateLakes(json,version);
         referenceName(scene);
         JSONArray tileData=json.optJSONArray("paintTiles");
         if(version>=4){

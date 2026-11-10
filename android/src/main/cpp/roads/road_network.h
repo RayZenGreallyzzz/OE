@@ -24,6 +24,7 @@ struct Road {
     std::string material; // logical asset reference; no GPU resource ownership
     double widthMetres=6.0;
     std::vector<Point> controlPoints; // editable XZ centerline, metres
+    double tileMetres=4.0; // texture repeat every 4m along/across road; scene v8
 };
 
 struct Vertex {

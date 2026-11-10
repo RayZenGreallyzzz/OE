@@ -60,4 +60,13 @@ bool suggestBridgeDeckHeight(const RoadTopology& roads,
                              const BridgeInstance& bridge,
                              const TerrainHeight& ground,
                              double& suggestedEntityY);
+struct BridgeAlignment {Point center{};double y=0,yaw=0;};
+// A one-click authoring helper: align the selected bridge's position,
+// orientation and deck elevation to two nearby APPROACHING street dead ends.
+// Requires distinct ends, reasonable gap, grade and good post-alignment
+// contacts. Does not resize, edit roads or mutate the source bridge.
+bool suggestBridgeRoadAlignment(const RoadTopology& roads,
+                                const BridgeInstance& bridge,
+                                const TerrainHeight& ground,
+                                BridgeAlignment& suggested);
 }} // namespace oe::roads

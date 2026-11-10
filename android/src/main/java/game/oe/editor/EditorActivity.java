@@ -1044,8 +1044,14 @@ public class EditorActivity extends Activity {
     }
     private void startPlayMode(){
         if(importing||walkActivityPaused||playModeActive||playStartPending)return;
+        // Do not finalize an unfinished road or paint stroke merely to Play:
+        // unsaved authoring work must remain intact until the user finishes it.
+        if(roadMode||roadMoveMode||terrainMode!=0||precisionPaintMode||
+           materialPaintMode||paintTerrainMode||lakeMode||placingKind!=-1){
+            message("Заверши рисование/размещение перед ▶ Play — сцена не изменена");
+            return;
+        }
         if(walkControlsActive||walkStartPending)finishWalkControls();
-        cancelPlace(); // stop active painting, road drawing and placement first
         playStartPending=true;
         setPlayEditorLocked(true);
         final int session=++walkSessionGeneration;

@@ -2562,7 +2562,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
     !roadCoordinates)
     return JNI_FALSE;
  const jsize n=env->GetArrayLength(kinds);
- if(n<0||n>MAX_ENTITIES||env->GetArrayLength(transforms)!=n*8||
+ if(n<0||n>MAX_ENTITIES||env->GetArrayLength(transforms)!=n*12||
     env->GetArrayLength(modelKeys)!=n||env->GetArrayLength(objectPaintKeys)!=n)return JNI_FALSE;
  const jsize paintFloats=env->GetArrayLength(painting);
  if(paintFloats<0||paintFloats%3!=0||
@@ -2572,10 +2572,10 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  if(brushFloats<0||brushFloats%4!=0||
     brushFloats>static_cast<jsize>(MAX_TERRAIN_BRUSHES*4))return JNI_FALSE;
  std::array<jint,MAX_ENTITIES> types{};
- std::array<jfloat,MAX_ENTITIES*8> matrix{};
+ std::array<jfloat,MAX_ENTITIES*12> matrix{};
  if(n){
   env->GetIntArrayRegion(kinds,0,n,types.data());
-  env->GetFloatArrayRegion(transforms,0,n*8,matrix.data());
+  env->GetFloatArrayRegion(transforms,0,n*12,matrix.data());
   if(env->ExceptionCheck())return JNI_FALSE;
  }
  std::array<jfloat,MAX_TERRAIN_BRUSHES*4> brushRaw{};
@@ -2615,12 +2615,20 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  staged.reserve(static_cast<size_t>(n));
  for(jsize i=0;i<n;i++){
   const int type=types[i];
-  const float x=matrix[i*8],z=matrix[i*8+1],yaw=matrix[i*8+2],
-              scl=matrix[i*8+3],y=matrix[i*8+4],
-              sx=matrix[i*8+5],sy=matrix[i*8+6],sz=matrix[i*8+7];
+  const float x=matrix[i*12],z=matrix[i*12+1],yaw=matrix[i*12+2],
+              scl=matrix[i*12+3],y=matrix[i*12+4],
+              sx=matrix[i*12+5],sy=matrix[i*12+6],sz=matrix[i*12+7],
+              qx=matrix[i*12+8],qy=matrix[i*12+9],
+              qz=matrix[i*12+10],qw=matrix[i*12+11];
   if(type<0||type>16||!std::isfinite(x)||!std::isfinite(z)||
     !std::isfinite(yaw)||!std::isfinite(scl)||!std::isfinite(y)||
     !std::isfinite(sx)||!std::isfinite(sy)||!std::isfinite(sz)||
+    !std::isfinite(qx)||!std::isfinite(qy)||
+    !std::isfinite(qz)||!std::isfinite(qw)||
+    std::abs(qx)>1.01f||std::abs(qy)>1.01f||
+    std::abs(qz)>1.01f||std::abs(qw)>1.01f||
+    qx*qx+qy*qy+qz*qz+qw*qw<.49f||
+    qx*qx+qy*qy+qz*qz+qw*qw>1.51f||
     std::abs(x)>half||std::abs(z)>half||std::abs(yaw)>36000||
     scl<.2f||scl>8.f||y<-24.f||y>160.f||
     sx<.10f||sx>8.f||sy<.10f||sy>8.f||sz<.10f||sz>8.f)return JNI_FALSE;
@@ -2644,7 +2652,10 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
   env->ReleaseStringUTFChars(paintKey,paintRaw);env->DeleteLocalRef(paintKey);
   if(!paintName.empty()&&(!validPaintKey(paintName)||
      gPaintTextures.find(paintName)==gPaintTextures.end()))return JNI_FALSE;
-  staged.push_back({static_cast<int>(i)+1,type,x,z,yaw,scl,key,y,sx,sy,sz,paintName});
+  Entity restored{static_cast<int>(i)+1,type,x,z,yaw,scl,key,y,sx,sy,sz,paintName};
+  const auto q=oe::gizmo::normalized({qx,qy,qz,qw});
+  restored.qx=q.x;restored.qy=q.y;restored.qz=q.z;restored.qw=q.w;
+  staged.push_back(std::move(restored));
  }
   // Validate staged road data before changing any scene or terrain.
  const jsize rn=env->GetArrayLength(roadIds);

@@ -47,6 +47,15 @@ jobs:
             tests/device_quality_profiles_smoke.cpp -o /tmp/oe-quality-test
           /tmp/oe-quality-test
 
+  construction-gizmo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify three-axis world-space quaternion rotations and full 360-degree turns
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/editor_gizmo_rotation_smoke.cpp -o /tmp/oe-editor-gizmo
+          /tmp/oe-editor-gizmo
+
   road-model:
     runs-on: ubuntu-latest
     steps:

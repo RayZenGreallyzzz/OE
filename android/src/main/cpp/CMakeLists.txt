@@ -20,6 +20,7 @@ target_include_directories(oe_terrain_paint PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/
 add_library(oe_native SHARED
     native_engine.cpp
     medieval/structures.cpp
+    water/lake_surface.cpp
     vendor/meshoptimizer/vertexcodec.cpp
     vendor/meshoptimizer/indexcodec.cpp
     vendor/meshoptimizer/vertexfilter.cpp

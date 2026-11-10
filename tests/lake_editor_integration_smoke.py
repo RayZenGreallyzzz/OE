@@ -23,10 +23,10 @@ for name,patterns in checks.items():
 for p in ['"Вода".equals(category)','nativeLakePlaceAtScreen(px,py,lakeRadius,lakeFillDepth)',
           'nativeLakeNames()','nativeLakeAdjust(level,radius)','nativeLakeDelete()',
           'json.put("version",7)','else json.remove("lakes")',
-          'sceneVersion>7','savedLakes=document.optJSONArray("lakes")',
+          'sceneVersion>8','savedLakes=document.optJSONArray("lakes")',
           'materialCoords,materialKeys,materialWeights,lakeData)']:
  assert p in editor,p
-for p in ['version>=1&&version<=7','validateLakes(json,version)',
+for p in ['version>=1&&version<=8','validateLakes(json,version)',
           'radius>=8&&radius<=160','level>=-24&&level<=160']:
  assert p in archive,p
 assert "water/lake_surface.cpp" in cmake

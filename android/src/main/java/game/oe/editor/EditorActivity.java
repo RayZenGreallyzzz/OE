@@ -347,7 +347,7 @@ public class EditorActivity extends Activity {
         top.setPadding(dp(5),dp(2),dp(5),dp(2));
         top.setBackgroundColor(Color.argb(220,14,21,32));
         TextView title=new TextView(this);
-        title.setText("OE TOUCH WALK R5.7 TEST");
+        title.setText("OE BANK SEAMS R5.8a TEST");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
         title.setTextSize(12);
@@ -547,7 +547,7 @@ public class EditorActivity extends Activity {
             addPaletteOption("🌾 Настил через болото · 9 м",()->enterPlaceMode(28,null));
             addPaletteOption("🧲 Подогнать выбранный мост к дорогам",this::alignSelectedBridge);
             addPaletteOption("👣 Проверить проходы по мостам",this::showBridgeTraversalStatus);
-            addPaletteOption("🧍 Проверить реальную ходьбу · R5.7.1",this::startWalkCollisionPreview);
+            addPaletteOption("🧍 Проверить реальную ходьбу · R5.8a",this::startWalkCollisionPreview);
             addPaletteOption("🔍 Статус путника",this::showWalkPreviewState);
             addPaletteOption("ℹ Регулировка высоты",()->new AlertDialog.Builder(this)
                 .setTitle("Мосты и переправы OE")
@@ -605,7 +605,7 @@ public class EditorActivity extends Activity {
             addPaletteOption("🔗 Соединить старые дороги",this::bakeExistingRoadTopology);
             addPaletteOption("✣ Узлы дорожной сети",this::showJunctionStatus);
             addPaletteOption("👣 Проходы через мосты · R5.4",this::showBridgeTraversalStatus);
-            addPaletteOption("🧍 Физика R5.7.1: путник на дороге",this::startWalkCollisionPreview);
+            addPaletteOption("🧍 Физика R5.8a: путник на дороге",this::startWalkCollisionPreview);
             addPaletteOption("⬆ Путник: север −Z",()->moveWalkPreview(0f,-1f,false));
             addPaletteOption("⬇ Путник: юг +Z",()->moveWalkPreview(0f,1f,false));
             addPaletteOption("⬅ Путник: запад −X",()->moveWalkPreview(-1f,0f,false));
@@ -1066,7 +1066,7 @@ public class EditorActivity extends Activity {
         String ground=st[4]==3.?"мост":st[4]==2.?"дорога":
                        st[4]==1.?"земля":"в воздухе";
         return String.format(java.util.Locale.ROOT,
-            "Физика R5.7.1 · X %.1f / Y %.1f / Z %.1f · %s · %s · %d тиков",
+            "Физика R5.8a · X %.1f / Y %.1f / Z %.1f · %s · %s · %d тиков",
             st[0],st[1],st[2],st[3]>.5?"стоит":"падает/прыгает",
             ground,(int)st[6]);
     }
@@ -1080,7 +1080,7 @@ public class EditorActivity extends Activity {
             ui(()->{
                 if(ok&&state!=null)statusText.setText(walkPreviewDescription(state));
                 else message("Путник не запущен либо достиг края карты: " +
-                    "нажми «Физика R5.7.1: путник на дороге»");
+                    "нажми «Физика R5.8a: путник на дороге»");
             });
             surface.requestRender();
         });
@@ -1110,7 +1110,7 @@ public class EditorActivity extends Activity {
         surface.queueEvent(()->{
             final int[] info=nativeBridgeTraversalStats();
             ui(()->new AlertDialog.Builder(this)
-                .setTitle("Проходимость дорог и мостов · R5.7.1")
+                .setTitle("Проходимость дорог и мостов · R5.8a")
                 .setMessage(info==null||info.length!=9||info[0]<0?
                     "Не удалось собрать сеть проходов. Проверь дорожные " +
                     "контрольные точки, наложенные улицы и допустимые масштабы мостов.":

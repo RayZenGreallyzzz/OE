@@ -7,6 +7,7 @@
 #include "roads/road_junctions.h"
 #include "roads/road_topology.h"
 #include "roads/medieval_surface.h"
+#include "roads/bridge_links.h"
 #include "medieval/structures.h"
 #include "water/lake_surface.h"
 #include "terrainpaint/paint_tiles.h"
@@ -2555,6 +2556,87 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeLakeDelete(
  recordEdit();
  gLakes.erase(gLakes.begin()+gSelectedLake);
  gSelectedLake=-1;++gLakeRevision;return JNI_TRUE;
+}
+// R5.4 is a DERIVED runtime preparation view. No hidden changes to the
+// authored road points or placed bridge transforms during inspection.
+std::vector<oe::roads::BridgeInstance> authoredBridges(){
+ std::vector<oe::roads::BridgeInstance> bridges;
+ bridges.reserve(std::min<std::size_t>(oe::roads::kMaxBridges,gEntities.size()));
+ for(const auto&e:gEntities){
+  oe::roads::BridgeInstance bridge{
+   e.id,e.type,e.x,e.y,e.z,e.yaw,e.size,e.sx,e.sy,e.sz
+  };
+  oe::roads::BridgeDeck deck;
+  if(oe::roads::describeBridge(bridge,deck))bridges.push_back(bridge);
+ }
+ return bridges;
+}
+JNIEXPORT jintArray JNICALL Java_game_oe_editor_EditorActivity_nativeBridgeRoadStats(
+ JNIEnv*env,jclass){
+ oe::roads::RoadTopology graph;
+ oe::roads::BridgeNetwork network;
+ const auto height=[](double x,double z)->double{
+  return terrainHeightAt(static_cast<float>(x),static_cast<float>(z));
+ };
+ const auto bridges=authoredBridges();
+ const bool good=oe::roads::buildRoadTopology(gRoads.all(),graph,0.)&&
+       oe::roads::buildBridgeNetwork(graph,bridges,height,network);
+ int selectedStatus=-1;
+ if(const Entity*entity=selected()){
+  oe::roads::BridgeInstance sel{entity->id,entity->type,entity->x,
+      entity->y,entity->z,entity->yaw,entity->size,
+      entity->sx,entity->sy,entity->sz};
+  oe::roads::BridgeDeck description;
+  if(oe::roads::describeBridge(sel,description)){
+   selectedStatus=0;
+   for(const auto&link:network.links)if(link.bridgeId==entity->id){
+    selectedStatus=link.footOnly?2:1;break;
+   }
+   if(entity->type==oe::medieval::kSteppingStoneFord)selectedStatus=3;
+  }
+ }
+ const jint values[7]={
+  good?1:0,
+  good?static_cast<jint>(network.decks.size()):-1,
+  good?static_cast<jint>(network.links.size()):-1,
+  good?static_cast<jint>(network.unconnectedBridges):-1,
+  good?static_cast<jint>(network.roadCollisionTriangles):-1,
+  good?static_cast<jint>(network.collision.size()):-1,
+  good?selectedStatus:-1
+ };
+ jintArray array=env->NewIntArray(7);
+ if(array)env->SetIntArrayRegion(array,0,7,values);
+ return array;
+}
+// Automatic *proposal* turns into one undoable transform only after the
+// two shore roads pass heading/width/span/height checks. No mutation on fail.
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeBridgeAlignSelected(
+ JNIEnv*,jclass){
+ Entity*entity=selected();
+ if(!entity)return JNI_FALSE;
+ const oe::roads::BridgeInstance original{
+   entity->id,entity->type,entity->x,entity->y,entity->z,
+   entity->yaw,entity->size,entity->sx,entity->sy,entity->sz
+ };
+ oe::roads::RoadTopology graph;
+ if(!oe::roads::buildRoadTopology(gRoads.all(),graph,0.))return JNI_FALSE;
+ const auto height=[](double x,double z)->double{
+  return terrainHeightAt(static_cast<float>(x),static_cast<float>(z));
+ };
+ oe::roads::BridgeInstance fitted;
+ if(!oe::roads::proposeBridgeRoadFit(graph,original,height,fitted)||
+    std::abs(fitted.x)>worldHalf()-1.f||
+    std::abs(fitted.z)>worldHalf()-1.f)return JNI_FALSE;
+ if(std::abs(fitted.x-original.x)<1.e-5&&
+    std::abs(fitted.z-original.z)<1.e-5&&
+    std::abs(fitted.y-original.y)<1.e-5&&
+    std::abs(fitted.yawDegrees-original.yawDegrees)<1.e-5)return JNI_TRUE;
+ recordEdit();
+ entity->x=static_cast<float>(fitted.x);
+ entity->z=static_cast<float>(fitted.z);
+ entity->y=static_cast<float>(fitted.y);
+ entity->yaw=static_cast<float>(fitted.yawDegrees);
+ return JNI_TRUE;
 }
 JNIEXPORT jintArray JNICALL Java_game_oe_editor_EditorActivity_nativeRoadTopologyStats(
  JNIEnv*env,jclass){

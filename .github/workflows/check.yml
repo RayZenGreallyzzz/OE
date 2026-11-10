@@ -83,6 +83,8 @@ jobs:
             android/src/main/cpp/medieval/structures.cpp \
             -o /tmp/oe-bridge-links-test
           /tmp/oe-bridge-links-test
+      - name: Check bridge edit menu/JNI/collision integration
+        run: python3 tests/bridge_links_editor_integration_smoke.py
   water-lakes:
     runs-on: ubuntu-latest
     steps:

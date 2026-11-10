@@ -2755,7 +2755,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativePlayStart(
  // A Play request must not end or commit a half-painted or half-authored
  // scene. Reject until the user finishes it explicitly in the editor.
  if(gRoadPending||gPrecisionPaintActive||gMaterialStrokeActive||
-    gGizmoActive||gPlaySession&&gPlaySession->active())return JNI_FALSE;
+    gGizmoActive||(gPlaySession&&gPlaySession->active()))return JNI_FALSE;
  oe::roads::TraversalGraph traversal;
  if(!oeCurrentTraversalGraph(traversal))return JNI_FALSE;
  std::vector<oe::runtime::SceneItem> items;

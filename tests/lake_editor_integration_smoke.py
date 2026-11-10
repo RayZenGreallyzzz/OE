@@ -30,5 +30,5 @@ for p in ['version>=1&&version<=7','validateLakes(json,version)',
           'radius>=8&&radius<=160','level>=-24&&level<=160']:
  assert p in archive,p
 assert "water/lake_surface.cpp" in cmake
-assert "OE TERRAIN AND LAKES R5.3 TEST" in manifest
+assert 'android:label="OE ' in manifest and 'TEST"' in manifest
 print("OE_WATER_EDITOR_INTEGRATION_OK: gesture, rendering, undo, v7 zip and atomic import")

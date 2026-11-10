@@ -2879,7 +2879,7 @@ JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSceneSnapshot
   }
   out<<"]}";
  }
- out<<"],\\"lakes\\":[";
+ out<<"],\"lakes\":[";
  for(std::size_t i=0;i<gLakes.size();++i){
   if(i)out<<",";
   const auto&lake=gLakes[i];

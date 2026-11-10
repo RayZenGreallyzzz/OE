@@ -816,6 +816,68 @@ public class EditorActivity extends Activity {
                 message("Шаг перемещения: "+choices[index]+" · без привязки к сетке");
             }).show();
     }
+    private void toggleRotationSnap(){
+        snapRotation15=!snapRotation15;
+        final boolean enabled=snapRotation15;
+        surface.queueEvent(()->{
+            nativeSetRotationSnap(enabled);
+            surface.requestRender();
+        });
+        statusText.setText(enabled?
+            "XYZ 360° · угловая привязка каждые 15° ВКЛ":
+            "XYZ 360° · свободное вращение, без привязки");
+        message(enabled?"Вращение с шагом 15°":"Свободное вращение 360°");
+    }
+    private void editSelectedRotation(){
+        if(importing){message("Заверши импорт перед настройкой поворота");return;}
+        surface.queueEvent(()->{
+            final double[] xyz=nativeSelectedRotationEuler();
+            if(xyz==null){message("Сначала выбери дом или 3D-модель");return;}
+            ui(()->{
+                LinearLayout form=new LinearLayout(this);
+                form.setOrientation(LinearLayout.VERTICAL);
+                form.setPadding(dp(22),dp(8),dp(22),dp(4));
+                final EditText[] fields=new EditText[3];
+                final String[] names={"X — наклон", "Y — поворот вокруг вертикали",
+                    "Z — боковой крен"};
+                final int mode=InputType.TYPE_CLASS_NUMBER|
+                    InputType.TYPE_NUMBER_FLAG_DECIMAL|InputType.TYPE_NUMBER_FLAG_SIGNED;
+                for(int i=0;i<3;i++){
+                    EditText field=new EditText(this);
+                    field.setInputType(mode);field.setSingleLine(true);
+                    field.setText(String.format(Locale.US,"%.2f",xyz[i]));
+                    field.setHint(names[i]+" (градусы)");
+                    field.setSelectAllOnFocus(true);
+                    form.addView(field);fields[i]=field;
+                }
+                new AlertDialog.Builder(this)
+                    .setTitle("Профессиональный поворот X / Y / Z")
+                    .setMessage("Углы в градусах: ±90° ставит лежащий дом вертикально. "
+                        +"360° — полный оборот. Точный поворот сохраняется в проекте.")
+                    .setView(form)
+                    .setPositiveButton("Применить",(dialog,which)->{
+                        try{
+                            double x=Double.parseDouble(fields[0].getText().toString()
+                                .trim().replace(',','.'));
+                            double y=Double.parseDouble(fields[1].getText().toString()
+                                .trim().replace(',','.'));
+                            double z=Double.parseDouble(fields[2].getText().toString()
+                                .trim().replace(',','.'));
+                            if(!Double.isFinite(x)||!Double.isFinite(y)||
+                               !Double.isFinite(z)||Math.abs(x)>36000||
+                               Math.abs(y)>36000||Math.abs(z)>36000)
+                                throw new NumberFormatException();
+                            edit(()->{
+                                if(!nativeSetSelectedRotationEuler(x,y,z))
+                                    message("Не удалось выставить углы XYZ");
+                            });
+                        }catch(NumberFormatException ex){
+                            message("Введи числовые углы X, Y, Z в градусах");
+                        }
+                    }).setNegativeButton("Отмена",null).show();
+            });
+        });
+    }
     private void editSelectedCoordinates(){
         if(importing){message("Заверши импорт перед редактированием");return;}
         surface.queueEvent(()->{

@@ -172,9 +172,10 @@ static bool gRoadPending=false;
 static oe::roads::Point gRoadFirstPoint{};
 static double gRoadWidth=6.0;
 static std::string gRoadMaterial="builtin:cobblestone";
+static double gRoadTileMetres=4.0; // 4-metre repeating PNG/JPG texture, R5.5
 static int gRoadRevision=1,gRoadGpuRevision=-1,gRoadGpuTerrainRevision=-1;
 static Mesh gRoadGpu;
-struct RoadDrawRange {GLint first=0;GLsizei count=0;std::uint64_t id=0;};
+struct RoadDrawRange {GLint first=0;GLsizei count=0;std::uint64_t id=0,materialRoadId=0;};
 static std::vector<RoadDrawRange> gRoadRanges;
 static constexpr size_t MAX_ROAD_GPU_VERTICES=120000;
 // Lake data is editor-owned, saved with the scene, and rendered with a
@@ -1330,7 +1331,7 @@ Color roadPreviewColor(const std::string& material){
  if(material=="builtin:dirt")return {.50f,.33f,.19f};
  if(material=="builtin:sand")return {.77f,.68f,.43f};
  if(material=="builtin:grass")return {.28f,.47f,.25f};
- return {.71f,.67f,.59f}; // Placeholder until image material library is connected.
+ return {.71f,.67f,.59f}; // Built-in untextured material; custom PNG/JPG uses white tint.
 }
 bool rebuildRoadGpu(){
  if(gRoadGpuRevision==gRoadRevision&&gRoadGpuTerrainRevision==gTerrainRevision)return true;
@@ -1345,7 +1346,11 @@ bool rebuildRoadGpu(){
      mesh.triangles.size()>MAX_ROAD_GPU_VERTICES-vertices.size()/11)return false;
   const GLint first=static_cast<GLint>(vertices.size()/11);
   const auto* source=gRoads.find(materialRoadId);
-  const Color color=source?roadPreviewColor(source->material):Color{.67f,.62f,.52f};
+  const Color color=source?(validPaintKey(source->material)?
+     Color{1.f,1.f,1.f}:roadPreviewColor(source->material)):
+     Color{.67f,.62f,.52f};
+  const float tile=source?static_cast<float>(source->tileMetres):4.f;
+  const float uvScale=2.f/tile; // original road mesh UV: 1 repeat per 2m
   for(const auto& point:mesh.triangles){
    const float x=point.x,z=point.z;
    const float dx=terrainHeightAt(x+0.5f,z)-terrainHeightAt(x-0.5f,z);
@@ -1357,9 +1362,14 @@ bool rebuildRoadGpu(){
                                std::sin(z*.59f-x*.21f);
    vertices.insert(vertices.end(),{x,point.y,z,
       surfaceNormal.x,surfaceNormal.y,surfaceNormal.z,
-      color.r*wear,color.g*wear,color.b*wear,point.u,point.v});
+      color.r*wear,color.g*wear,color.b*wear,
+      // Along-road stretch follows the winding centreline. Junction fans
+      // use world-XZ planar mosaic projection to avoid one large stretched
+      // stone across an irregular intersection.
+      roadId==0?x/tile:point.u*uvScale,
+      roadId==0?z/tile:point.v*uvScale});
   }
-  draws.push_back({first,static_cast<GLsizei>(mesh.triangles.size()),roadId});
+  draws.push_back({first,static_cast<GLsizei>(mesh.triangles.size()),roadId,materialRoadId});
   return true;
  };
  oe::roads::RoadTopology graph;
@@ -1427,12 +1437,20 @@ void drawRoads(const Mat4& vp){
  glUniform1f(gShader.locOverlay,0.f);
  glUniform1f(gShader.locPaintOverride,0.f);
  glBindVertexArray(gRoadGpu.vao);
+ glUniform1f(gShader.locMaterialLayer,0.f);
  for(const auto& range:gRoadRanges){
+  const auto* road=gRoads.find(range.materialRoadId);
+  const TextureResource* material=road&&validPaintKey(road->material)?
+                                paintTexture(road->material):nullptr;
+  // Missing texture is visibly flagged by the untextured road preview,
+  // never a dangling sampler or undefined GPU state.
+  bindPaint(material);
   glUniform1f(gShader.locLight,range.id==gSelectedRoad?1.f:0.f);
   glDrawArrays(GL_TRIANGLES,range.first,range.count);
   ++gDrawCalls;gTriangles+=range.count/3;
  }
  glBindVertexArray(0);
+ bindPaint(nullptr);glBindTexture(GL_TEXTURE_2D,0);
  glUniform1f(gShader.locLight,0.f);
 }
 // R5.3 editor lake water. The terrain-clipped shoreline mesh is generated
@@ -2375,6 +2393,13 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeRoadTap(
   const std::uint64_t id=staging.create(
       "Road "+std::to_string(gRoads.all().size()+1),gRoadMaterial,gRoadWidth,
       {gRoadFirstPoint,point});
+  if(id){
+   const auto* fresh=staging.find(id);
+   if(fresh){
+    auto edited=*fresh;edited.tileMetres=gRoadTileMetres;
+    if(!staging.update(edited))return -1;
+   }
+  }
   if(!id)return -1;
   oe::roads::RoadTopology topology;
   if(!oe::roads::buildRoadTopology(staging.all(),topology)||
@@ -2700,6 +2725,50 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadSetMater
   ++gRoadRevision;
  }
  gRoadMaterial=keys[index];return JNI_TRUE;
+}
+// R5.5: reuse bounded paint texture library (max 8 cached textures).
+// Selected road changes are one Undo entry; in create mode this also sets
+// the active material for all subsequently drawn roads.
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadSetCustomTexture(
+ JNIEnv*env,jclass,jstring value){
+ if(!value)return JNI_FALSE;
+ const char*chars=env->GetStringUTFChars(value,nullptr);
+ if(!chars)return JNI_FALSE;
+ const std::string key(chars);
+ env->ReleaseStringUTFChars(value,chars);
+ const auto* texture=paintTexture(key);
+ if(!validPaintKey(key)||!texture||!texture->id)return JNI_FALSE;
+ if(const auto* selected=gRoads.find(gSelectedRoad)){
+  if(selected->material!=key){
+   auto road=*selected;road.material=key;
+   if(!oe::roads::validRoad(road))return JNI_FALSE;
+   recordEdit();
+   if(!gRoads.update(road))return JNI_FALSE;
+   ++gRoadRevision;
+  }
+ }
+ gRoadMaterial=key;
+ return JNI_TRUE;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadSetTileMetres(
+ JNIEnv*,jclass,jdouble metres){
+ if(!std::isfinite(metres)||metres<.5||metres>32.)return JNI_FALSE;
+ if(const auto* selected=gRoads.find(gSelectedRoad)){
+  if(std::abs(selected->tileMetres-metres)>1.e-6){
+   auto road=*selected;road.tileMetres=metres;
+   if(!oe::roads::validRoad(road))return JNI_FALSE;
+   recordEdit();
+   if(!gRoads.update(road))return JNI_FALSE;
+   ++gRoadRevision;
+  }
+ }
+ gRoadTileMetres=metres;
+ return JNI_TRUE;
+}
+JNIEXPORT jdouble JNICALL Java_game_oe_editor_EditorActivity_nativeRoadSelectedTileMetres(
+ JNIEnv*,jclass){
+ const auto* road=gRoads.find(gSelectedRoad);
+ return road?road->tileMetres:gRoadTileMetres;
 }
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadRemoveLastPoint(
  JNIEnv*,jclass){

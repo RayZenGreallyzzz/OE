@@ -8,6 +8,7 @@
 #include "roads/road_topology.h"
 #include "roads/medieval_surface.h"
 #include "medieval/structures.h"
+#include "water/lake_surface.h"
 #include "terrainpaint/paint_tiles.h"
 #include "terrainpaint/material_layers.h"
 #include "vendor/basisu/transcoder/basisu_transcoder.h"
@@ -175,6 +176,16 @@ static Mesh gRoadGpu;
 struct RoadDrawRange {GLint first=0;GLsizei count=0;std::uint64_t id=0;};
 static std::vector<RoadDrawRange> gRoadRanges;
 static constexpr size_t MAX_ROAD_GPU_VERTICES=120000;
+// Lake data is editor-owned, saved with the scene, and rendered with a
+// single cached translucent GPU mesh. Revisions also invalidate after Undo.
+static std::vector<oe::water::Lake> gLakes;
+static int gSelectedLake=-1,gLakeRevision=1;
+struct LakeGpu {
+ GLuint vao=0,buffer=0;
+ GLsizei count=0;
+ int lakeRevision=-1,terrainRevision=-1;
+};
+static LakeGpu gLakeGpu;
 
 float terrainHeightAt(float x,float z){
  float h=0;
@@ -199,16 +210,19 @@ struct SceneSnapshot {
  std::uint64_t selectedRoad=0;
  oe::terrainpaint::Canvas precisePaint;
  oe::terrainpaint::MaterialCanvas materialPaint;
+ std::vector<oe::water::Lake> lakes;
+ int selectedLake=-1;
 };
 static std::vector<SceneSnapshot> gUndo,gRedo;
 static bool gSuspendHistory=false;
 static constexpr size_t HISTORY_LIMIT=12; // bounded undo when 2x paint canvases are present
 SceneSnapshot captureScene(){return {gEntities,gNextId,gSelected,gWorldSize,gDemoRoads,
-    gTarget,gDistance,gBrushes,gTerrainPaint,gRoads.all(),gSelectedRoad,gPaintTiles,gMaterialCanvas};}
+    gTarget,gDistance,gBrushes,gTerrainPaint,gRoads.all(),gSelectedRoad,gPaintTiles,gMaterialCanvas,gLakes,gSelectedLake};}
 void restoreScene(const SceneSnapshot&s){
  gEntities=s.entities;gNextId=s.nextId;gSelected=s.selected;gWorldSize=s.worldSize;
  gDemoRoads=s.demoRoads;gTarget=s.target;gDistance=s.cameraDistance;
  gBrushes=s.terrain;gTerrainPaint=s.paints;gTerrainRevision++;gSceneInitialized=true;
+ gLakes=s.lakes;gSelectedLake=s.selectedLake;++gLakeRevision;
  gRoads.replaceAll(s.roads);gSelectedRoad=s.selectedRoad;
  gRoadPending=false;gActiveRoad=0;gSelectedRoadPoint=-1;++gRoadRevision;
  gPaintTiles=s.precisePaint;
@@ -497,6 +511,7 @@ void setupGL(){
  gMapGuide.texture=0;gMapGuide.mesh={};gMapGuide.meshRevision=-1;
  gMapStage={};
  gRoadGpu={};gRoadRanges.clear();gRoadGpuRevision=-1;gRoadGpuTerrainRevision=-1;
+ gLakeGpu={}; // Drop stale handles on Android EGL context recreation.
  gPaintTileGpu.clear();gPrecisionPaintActive=false;gPaintCursorVisible=false;
  const char*vert=R"(#version 300 es
  layout(location=0) in vec3 aPos;
@@ -1521,6 +1536,7 @@ void reset(bool demo){
  const bool wasMuted=gSuspendHistory;
  gSuspendHistory=true;
  gEntities.clear();gBrushes.clear();gTerrainPaint.clear();gTerrainRevision++;gNextId=1;gSelected=0;
+ gLakes.clear();gSelectedLake=-1;++gLakeRevision;
  gRoads.clear();gSelectedRoad=0;gActiveRoad=0;gSelectedRoadPoint=-1;gRoadPending=false;++gRoadRevision;
  gPaintTiles.clear();gMaterialCanvas.clear();
  clearMaterialGpu();gMaterialStrokeActive=false;

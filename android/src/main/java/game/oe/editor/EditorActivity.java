@@ -137,6 +137,11 @@ public class EditorActivity extends Activity {
     private static native int nativeRoadIntersectionCount();
     private static native int[] nativeRoadTopologyStats();
     private static native int[] nativeBridgeTraversalStats();
+    private static native boolean nativeWalkPreviewStart();
+    private static native boolean nativeWalkPreviewStep(float axisX,float axisZ,
+            boolean jump,int fixedTicks);
+    private static native void nativeWalkPreviewStop();
+    private static native double[] nativeWalkPreviewState();
     private static native boolean nativeBridgeAutoAlign();
     private static native int[] nativeMedievalSurfaceStats();
     private static native boolean nativeRoadBakeTopology();
@@ -291,7 +296,7 @@ public class EditorActivity extends Activity {
         top.setPadding(dp(5),dp(2),dp(5),dp(2));
         top.setBackgroundColor(Color.argb(220,14,21,32));
         TextView title=new TextView(this);
-        title.setText("OE ROAD TEXTURES R5.5 TEST");
+        title.setText("OE WALK COLLISION R5.6 TEST");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
         title.setTextSize(12);
@@ -469,6 +474,8 @@ public class EditorActivity extends Activity {
             addPaletteOption("🌾 Настил через болото · 9 м",()->enterPlaceMode(28,null));
             addPaletteOption("🧲 Подогнать выбранный мост к дорогам",this::alignSelectedBridge);
             addPaletteOption("👣 Проверить проходы по мостам",this::showBridgeTraversalStatus);
+            addPaletteOption("🧍 Проверить реальную ходьбу · R5.6",this::startWalkCollisionPreview);
+            addPaletteOption("🔍 Статус путника",this::showWalkPreviewState);
             addPaletteOption("ℹ Регулировка высоты",()->new AlertDialog.Builder(this)
                 .setTitle("Мосты и переправы OE")
                 .setMessage("Поставь мост касанием земли. Затем выбери объект и подними " +
@@ -525,6 +532,14 @@ public class EditorActivity extends Activity {
             addPaletteOption("🔗 Соединить старые дороги",this::bakeExistingRoadTopology);
             addPaletteOption("✣ Узлы дорожной сети",this::showJunctionStatus);
             addPaletteOption("👣 Проходы через мосты · R5.4",this::showBridgeTraversalStatus);
+            addPaletteOption("🧍 Физика R5.6: путник на дороге",this::startWalkCollisionPreview);
+            addPaletteOption("⬆ Путник: север −Z",()->moveWalkPreview(0f,-1f,false));
+            addPaletteOption("⬇ Путник: юг +Z",()->moveWalkPreview(0f,1f,false));
+            addPaletteOption("⬅ Путник: запад −X",()->moveWalkPreview(-1f,0f,false));
+            addPaletteOption("➡ Путник: восток +X",()->moveWalkPreview(1f,0f,false));
+            addPaletteOption("🦘 Путник: прыжок",()->moveWalkPreview(0f,0f,true));
+            addPaletteOption("🔍 Статус столкновения",this::showWalkPreviewState);
+            addPaletteOption("✕ Завершить тест физики",this::stopWalkCollisionPreview);
             addPaletteOption("🧲 Подогнать выбранный мост",this::alignSelectedBridge);
             addPaletteOption("🪨 Проверить швы перекрёстков R5.2",this::showMedievalSurfaceStats);
             addPaletteOption("↶ Удалить последнюю точку",this::removeRoadPoint);
@@ -865,6 +880,73 @@ public class EditorActivity extends Activity {
                     message("Повороты сглажены · радиус "+radii[index]+" м");
                 else message("Не получилось сгладить: выбери дорогу или уменьшай число точек");
             })).setNegativeButton("Отмена",null).show();
+    }
+    // The preview character is a temporary runtime collision actor,
+    // never an object, never saved in .oezip or applied to editor transforms.
+    private void startWalkCollisionPreview(){
+        if(importing)return;
+        surface.queueEvent(()->{
+            boolean ok=nativeWalkPreviewStart();
+            double[] state=ok?nativeWalkPreviewState():null;
+            ui(()->{
+                if(!ok||state==null){
+                    message("Не удалось поставить путника: проверь дорожные узлы, " +
+                        "высоту земли и уклон. Выдели дорогу для точной точки старта.");
+                    return;
+                }
+                statusText.setText(walkPreviewDescription(state));
+                message("Путник создан у первой точки выбранной дороги. " +
+                    "Теперь используй стрелки в каталоге «Дороги».");
+            });
+            surface.requestRender();
+        });
+    }
+    private static String walkPreviewDescription(double[] st){
+        if(st==null||st.length!=7)return "Путник не запущен";
+        String ground=st[4]==3.?"мост":st[4]==2.?"дорога":
+                       st[4]==1.?"земля":"в воздухе";
+        return String.format(java.util.Locale.ROOT,
+            "Физика R5.6 · X %.1f / Y %.1f / Z %.1f · %s · %s · %d тиков",
+            st[0],st[1],st[2],st[3]>.5?"стоит":"падает/прыгает",
+            ground,(int)st[6]);
+    }
+    private void moveWalkPreview(float dx,float dz,boolean jump){
+        if(importing)return;
+        surface.queueEvent(()->{
+            // Each press advances exactly 60 physics frames (1 second).
+            // Jump is triggered ONCE; idle frames complete the ballistic arc.
+            boolean ok=nativeWalkPreviewStep(dx,dz,jump,60);
+            double[] state=ok?nativeWalkPreviewState():null;
+            ui(()->{
+                if(ok&&state!=null)statusText.setText(walkPreviewDescription(state));
+                else message("Путник не запущен либо достиг края карты: " +
+                    "нажми «Физика R5.6: путник на дороге»");
+            });
+            surface.requestRender();
+        });
+    }
+    private void showWalkPreviewState(){
+        if(importing)return;
+        surface.queueEvent(()->{
+            double[] state=nativeWalkPreviewState();
+            ui(()->new AlertDialog.Builder(this)
+                .setTitle("Реальная опора под ногами · R5.6")
+                .setMessage(walkPreviewDescription(state)+"\n\n"+
+                    "Зелёный — стоит на земле/дороге, золотой — на мосту, " +
+                    "красный — находится в прыжке или падает.\n"+
+                    "Тестовая фигурка НЕ входит в проект. Касания кнопок " +
+                    "двигают её на 1 секунду симуляции при 60 Гц.\n"+
+                    "Пока нет столкновений со стенами, водой и перилами. " +
+                    "В будущем это будет частью Play/Stop.")
+                .setPositiveButton("Понятно",null).show());
+        });
+    }
+    private void stopWalkCollisionPreview(){
+        surface.queueEvent(()->{
+            nativeWalkPreviewStop();
+            ui(()->statusText.setText("Тест физики завершён. Город не изменён."));
+            surface.requestRender();
+        });
     }
     private void showBridgeTraversalStatus(){
         if(importing)return;

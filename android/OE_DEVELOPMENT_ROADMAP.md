@@ -63,9 +63,16 @@ These features are implemented in experimental branches with successful automate
 - New scene version v8 only for road image assets/custom UV sizes; archive now includes the road images, protects legacy scenes v1–v7 including lakes, medieval bridges, terrain materials and PNG plan. Preserve source snapshot `backup/oe-r54-before-road-textures-2026-11-10`.
 - Limits: PNG guide is NOT parsed automatically into a road network. Hard material boundaries at intersections still require visual QA/polish.
 
-### R5.6 — actual character/runtime collision integration (not yet implemented)
-- Integrate road/bridge walk quads as real runtime collision surfaces, add slope checks and a safe player controller.
-- Polish visible street-bank / bridge transitions and verify shore geometry on the actual Android tablet before claiming physically traversable bridges.
+### R5.6 — first actual walking collisions and debug walker (experimental; tablet QA pending)
+- Portable 60Hz collision solver shared by OE Runtime and the editor: terrain floor, R5.4 road and connected bridge deck triangles, 0.65m step checks, maximum slope, gravity, jump and falls. Supports updating real runtime ECS entity transforms via `applyToWorld`; it does **not** yet turn on full Play/Stop.
+- In-editor temporary ghost (NOT a saved scene entity) spawns at selected road's start and moves for one simulated second per north/south/east/west command; jump and grounded surface diagnostics, color green/gold/red. Project edits, Undo/Redo/reset/load stop the preview.
+- Real physics **only for a single feet-point test actor**. No wall/capsule/railing collision, water swimming, real-time touch joystick, NPC pathfinding, or dynamic rigid bodies yet.
+- Preserve previous R5.5 source code at `backup/oe-r55-road-textures-2026-11-10`. Scene v8 and `.oezip` assets remain unchanged. Physical Allwinner A523/4GiB editor test is mandatory before reporting the milestone production ready.
+- Polish visible street-bank / bridge transitions and test collision accuracy on the Android tablet. See `android/WALK_COLLISION_PREVIEW_R56_084.md`.
+
+### R5.7 — road/bridge seam QA and real-time Play/Stop readiness (not yet implemented)
+- Address physical tablet issues at crossings, sharp turns, slopes, and bridge/road contacts.
+- Add gameplay-style continuous touch joystick and camera, then Play/Stop with isolated runtime scene copy, followed by NPC systems and on-tablet standalone game APK exporter.
 
 ### Road quality gate
 - Test actual road creation, point moving, smoothing, snapping, multiple T/X/Y junctions, PNG overlays, layered materials, Undo/Redo, local save and .oezip import/export on the target Android tablet.

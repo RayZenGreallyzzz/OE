@@ -95,7 +95,7 @@ public class EditorActivity extends Activity {
             String[] objectPaintKeys, float[] painting, String[] terrainPaintKeys,
             long[] roadIds, String[] roadNames, String[] roadMaterials,
             double[] roadWidths, double[][] roadPoints,int[] tileCoords,byte[][] tileData,
-            int[] layerCoords,String[] layerKeys,byte[][] layerMasks);
+            int[] layerCoords,String[] layerKeys,byte[][] layerMasks,float[] lakes);
     private static native boolean nativeRegisterPaintTexture(String key, byte[] rgba,int width,int height);
     private static native boolean nativePaintSelected(String key);
     private static native int nativePaintTerrainAtScreen(float x,float y,float radius,String key);
@@ -1091,6 +1091,11 @@ public class EditorActivity extends Activity {
             int kind=objects.getJSONObject(i).getInt("type");
             if(kind>=17&&kind<=28){json.put("version",6);break;}
         }
+        // v7 water is stored as terrain-independent level/radius records;
+        // empty native lake array must not upgrade a v2-v6 legacy project.
+        JSONArray water=json.optJSONArray("lakes");
+        if(water!=null&&water.length()>0)json.put("version",7);
+        else json.remove("lakes");
         String result=json.toString();
         if(result.getBytes(StandardCharsets.UTF_8).length>ProjectArchive.MAX_SCENE_BYTES)
             throw new Exception("Рисунок R4 превысил безопасный размер проекта");
@@ -1954,12 +1959,37 @@ public class EditorActivity extends Activity {
             }
             JSONObject document=new JSONObject(new String(jsonBytes.toByteArray(),StandardCharsets.UTF_8));
             final int sceneVersion=document.optInt("version",-1);
-            if(sceneVersion<1||sceneVersion>6)
-                throw new Exception("Неверная версия сцены (нужна 1–6)");
+            if(sceneVersion<1||sceneVersion>7)
+                throw new Exception("Неверная версия сцены (нужна 1–7)");
             final boolean demoRoads=document.optBoolean("demoRoads",false);
             final int worldSize=document.optInt("worldSize",1024);
             if(worldSize!=1024&&worldSize!=2048&&worldSize!=4096&&worldSize!=8192&&worldSize!=16384)
                 throw new Exception("Неподдерживаемый размер карты");
+
+            JSONArray savedLakes=document.optJSONArray("lakes");
+            if((sceneVersion==7&&(savedLakes==null||savedLakes.length()==0))||
+               (sceneVersion<7&&document.has("lakes"))||
+               (document.has("lakes")&&savedLakes==null))
+                throw new Exception("Неверная версия водоёмов: нужна сцена v7");
+            final int lakeCount=savedLakes==null?0:savedLakes.length();
+            if(lakeCount>8)throw new Exception("Максимум 8 озёр");
+            final float[] lakeData=new float[lakeCount*4];
+            for(int i=0;i<lakeCount;++i){
+                JSONArray lake=savedLakes.getJSONArray(i);
+                if(lake.length()!=4)throw new Exception("Неверная запись озера");
+                for(int j=0;j<4;++j){
+                    double value=lake.getDouble(j);
+                    if(!Double.isFinite(value)||Math.abs(value)>10000.0)
+                        throw new Exception("Некорректные параметры воды");
+                    lakeData[i*4+j]=(float)value;
+                }
+                double x=lake.getDouble(0),z=lake.getDouble(1);
+                double r=lake.getDouble(2),level=lake.getDouble(3);
+                if(r<8||r>160||level< -24||level>160||
+                   Math.abs(x)+r>worldSize/2.0||
+                   Math.abs(z)+r>worldSize/2.0)
+                    throw new Exception("Озеро выходит за границы карты");
+            }
 
             JSONObject mapObject=document.optJSONObject("mapReference");
             if((sceneVersion==3&&mapObject==null)||
@@ -2336,7 +2366,7 @@ public class EditorActivity extends Activity {
                             terrainBrushes,objectPaintKeys,paintBrushes,paintBrushKeys,
                             roadIds,roadNames,roadMaterials,roadWidths,roadPaths,
                             preciseTileCoords,preciseTileBytes,
-                            materialCoords,materialKeys,materialWeights))
+                            materialCoords,materialKeys,materialWeights,lakeData))
                         throw new Exception("Сцена не прошла полную проверку в движке");
                     if(parsedGuide!=null){
                         if(!nativeMapCommit(parsedGuide.centerX,parsedGuide.centerZ,
@@ -2346,7 +2376,7 @@ public class EditorActivity extends Activity {
                     mapGuide=parsedGuide;
                     mapTopViewActive=false;
                     committed=true;
-                    roadMode=false;roadMoveMode=false;precisionPaintMode=false;materialPaintMode=false;
+                    roadMode=false;roadMoveMode=false;precisionPaintMode=false;materialPaintMode=false;lakeMode=false;
                     surface.requestRender();
                     refreshSelected();
                     message("Сцена загружена · "+items.length+" объектов, текстур "+referencedPaint.size()+", GLB "+assets.size()+

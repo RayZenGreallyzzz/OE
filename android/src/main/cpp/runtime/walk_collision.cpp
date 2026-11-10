@@ -155,7 +155,15 @@ bool WalkController::advance(double dx,double dz,bool jump,std::size_t ticks){
    return false;
   const double elevation=target.hit.height-next.feet.y;
   const bool steep=target.slope>kWalkMaxSlope;
-  const bool blocked=(steep&&elevation>=-kWalkStepHeight)||
+  double oldTerrain=0.,newTerrain=0.;
+  if(!validTerrain(terrain_,next.feet.x,next.feet.z,oldTerrain)||
+     !validTerrain(terrain_,desiredX,desiredZ,newTerrain))return false;
+  // Steep ASCENT is a wall. A downhill edge is not: walk over its rim,
+  // lose ground support, then fall to its lower floor under gravity.
+  // Prevent a centre-difference cliff detector from trapping the actor
+  // on the high bank just because nearby terrain drops sharply.
+  const bool uphill=newTerrain>oldTerrain+.0001;
+  const bool blocked=(steep&&uphill)||
       (next.grounded&&elevation>kWalkStepHeight);
   if(!blocked){
    next.feet.x=desiredX;next.feet.z=desiredZ;

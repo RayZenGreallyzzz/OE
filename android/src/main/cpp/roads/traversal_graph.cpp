@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <map>
 #include <set>
@@ -95,7 +96,8 @@ bool collectRoadEnds(const RoadTopology& graph,const TerrainHeight&ground,
 }
 bool closestEnd(const WalkPoint&mouth,const WalkPoint&other,
                 const std::vector<End>&ends,Snap& result,
-                bool checkHeight){
+                bool checkHeight,
+                const std::function<bool(const Snap&)>&accept={}){
  double best=std::numeric_limits<double>::infinity();
  bool found=false;
  for(const End&road:ends){
@@ -114,7 +116,12 @@ bool closestEnd(const WalkPoint&mouth,const WalkPoint&other,
   const double otherDistance=std::hypot(road.xz.x-other.x,road.xz.z-other.z);
   if(otherDistance<=planar+.001)continue;
   if(planar<best-1.e-7||(std::abs(planar-best)<=1.e-7&&road.id<result.node)){
-   best=planar;result={road.id,xyzPoint(road.xz,road.y),planar,road.towardStreet};found=true;
+   const Snap candidate{road.id,xyzPoint(road.xz,road.y),
+                        planar,road.towardStreet};
+   // R5.8a: if the nearest candidate has unsafe physical geometry, try the
+   // next aligned road dead-end instead of incorrectly detaching the bridge.
+   if(accept&&!accept(candidate))continue;
+   best=planar;result=candidate;found=true;
   }
  }
  return found;
@@ -195,6 +202,20 @@ bool buildBankTransition(const RoadTopology&graph,const Snap&bank,
  out=q;needsSurface=true;
  return true;
 }
+bool closestSafeEnd(const RoadTopology&graph,const std::vector<End>&ends,
+                    const WalkPoint&mouth,const WalkPoint&other,
+                    const BridgePose&bridge,double yaw,std::uint64_t id,
+                    const TerrainHeight&ground,Snap&selected,
+                    WalkSurface&surface,bool&needsSurface){
+ const auto safe=[&](const Snap&candidate){
+  WalkSurface potential;bool add=false;
+  return buildBankTransition(graph,candidate,mouth,bridge,yaw,id,ground,
+                             potential,add);
+ };
+ if(!closestEnd(mouth,other,ends,selected,true,safe))return false;
+ return buildBankTransition(graph,selected,mouth,bridge,yaw,id,ground,
+                            surface,needsSurface);
+}
 bool addRoad(const RoadTopology&g,const TerrainHeight&terrain,
              TraversalGraph&draft){
  std::map<std::uint64_t,Point> positions;
@@ -267,12 +288,10 @@ bool buildTraversalGraph(const RoadTopology& graph,
   Snap a{},b{};
   WalkSurface approachA{},approachB{};
   bool addA=false,addB=false;
-  const bool connectedA=closestEnd(walk.a,walk.b,roadEnds,a,true)&&
-      buildBankTransition(graph,a,walk.a,walk,bridge.yaw,bridge.id,ground,
-                          approachA,addA);
-  const bool connectedB=closestEnd(walk.b,walk.a,roadEnds,b,true)&&
-      buildBankTransition(graph,b,walk.b,walk,bridge.yaw,bridge.id,ground,
-                          approachB,addB);
+  const bool connectedA=closestSafeEnd(graph,roadEnds,walk.a,walk.b,walk,
+      bridge.yaw,bridge.id,ground,a,approachA,addA);
+  const bool connectedB=closestSafeEnd(graph,roadEnds,walk.b,walk.a,walk,
+      bridge.yaw,bridge.id,ground,b,approachB,addB);
   const bool distinct=!connectedA||!connectedB||a.node!=b.node;
   if(connectedA&&distinct){
    ++status.endsConnected;

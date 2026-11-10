@@ -368,7 +368,7 @@ public class EditorActivity extends Activity {
         top.setPadding(dp(5),dp(2),dp(5),dp(2));
         top.setBackgroundColor(Color.argb(220,14,21,32));
         TextView title=new TextView(this);
-        title.setText("OE PLAY/STOP R5.8b TEST");
+        title.setText("OE PLAY SOLIDS R5.9a TEST");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
         title.setTextSize(12);
@@ -676,7 +676,7 @@ public class EditorActivity extends Activity {
                     +"Draco пока не поддерживается. KTX2 BasisU ETC1S/UASTC LDR -> ETC2 подключён (тест).")
                 .setPositiveButton("Понятно",null).show());
         }else if("Проект".equals(category)){
-            addPaletteOption("▶ Play — отдельная игровая сцена R5.8b",this::startPlayMode);
+            addPaletteOption("▶ Play — физика стен R5.9a",this::startPlayMode);
             addPaletteOption("🧠 Ядро игры · проверить",this::showRuntimeCoreStatus);
             addPaletteOption("⚡ Графика и качество",this::chooseDeviceProfile);
             addPaletteOption("🖥 Информация о GPU",this::showDeviceCapabilities);

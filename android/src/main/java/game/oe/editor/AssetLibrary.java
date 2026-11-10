@@ -51,8 +51,9 @@ final class AssetLibrary {
     static final class Entry {
         final File pack;
         final String path,name,category;
-        Entry(File p,String path,String category){
-            this.pack=p;this.path=path;this.category=category;
+        final long bytes;
+        Entry(File p,String path,String category,long bytes){
+            this.pack=p;this.path=path;this.category=category;this.bytes=bytes;
             final String file=path.substring(path.lastIndexOf('/')+1);
             this.name=file.substring(0,file.lastIndexOf('.'));
         }
@@ -115,7 +116,7 @@ final class AssetLibrary {
                         throw new Exception("Больше 250 отдельных моделей в библиотеке");
                     if(size<=0||size>GlbReader.MAX_BYTES)
                         throw new Exception("Слишком большая модель: "+n);
-                    result.add(new Entry(archive,n,category(n)));
+                    result.add(new Entry(archive,n,category(n),size));
                 }
             }
         }

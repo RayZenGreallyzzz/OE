@@ -122,6 +122,46 @@ std::uint64_t endpointId(std::uint64_t bridge,int end){
  if(bridge>=(kBridgeNodeBit>>1))return 0;
  return kBridgeNodeBit|(bridge<<1)|static_cast<std::uint64_t>(end);
 }
+// R5.7: real low-poly collision transition between a road's terminal
+// surface and the walking deck. Never silently cross a vertical bank.
+bool rampSafe(const WalkPoint& bank,const WalkPoint& mouth){
+ const double gap=std::hypot(bank.x-mouth.x,bank.z-mouth.z);
+ if(!finite(gap)||gap>kBridgeRoadReach)return false;
+ const double rise=std::abs(bank.y-mouth.y);
+ // Small coincident offsets are handled by the existing <=0.65m step.
+ return gap<=.08?rise<=kBridgeStepTolerance:
+                   rise/gap<=.85;
+}
+double terminalRoadWidth(const RoadTopology&graph,std::uint64_t node){
+ for(const auto&edge:graph.edges){
+  if(edge.from!=node&&edge.to!=node)continue;
+  for(const auto&road:graph.roads)if(road.id==edge.roadId)
+   return road.widthMetres;
+ }
+ return 0.;
+}
+bool appendBankTransition(const RoadTopology&graph,const Snap&bank,
+                          const WalkPoint&mouth,const BridgePose&bridge,
+                          double yaw,std::uint64_t id,
+                          TraversalGraph&draft){
+ const double length=std::hypot(bank.road.x-mouth.x,bank.road.z-mouth.z);
+ if(length<=.08)return true; // coincident bridge-road caps already touch
+ const double available=terminalRoadWidth(graph,bank.node);
+ const double width=std::min(bridge.width,available);
+ if(!finite(width)||width<=.10||!rampSafe(bank.road,mouth))return false;
+ const double half=width*.5,px=-std::sin(yaw)*half,
+                            pz=std::cos(yaw)*half;
+ WalkSurface q;
+ q.ownerId=id;q.bridge=true;q.approach=true;
+ q.a={bank.road.x+px,bank.road.y,bank.road.z+pz};
+ q.b={bank.road.x-px,bank.road.y,bank.road.z-pz};
+ q.c={mouth.x-px,mouth.y,mouth.z-pz};
+ q.d={mouth.x+px,mouth.y,mouth.z+pz};
+ if(!xyz(q.a)||!xyz(q.b)||!xyz(q.c)||!xyz(q.d)||
+    draft.surfaces.size()>=kMaxTraversalSurfaces)return false;
+ draft.surfaces.push_back(q);++draft.approachSurfaces;
+ return true;
+}
 bool addRoad(const RoadTopology&g,const TerrainHeight&terrain,
              TraversalGraph&draft){
  std::map<std::uint64_t,Point> positions;
@@ -165,7 +205,7 @@ bool buildTraversalGraph(const RoadTopology& graph,
     graph.edges.size()>kMaxTopologyEdges)return false;
  TraversalGraph draft;
  draft.edges.reserve(graph.edges.size()+bridges.size()*3);
- draft.surfaces.reserve(graph.edges.size()+bridges.size());
+ draft.surfaces.reserve(graph.edges.size()+bridges.size()*3);
  if(!addRoad(graph,ground,draft))return false;
  std::vector<End> roadEnds;
  if(!collectRoadEnds(graph,ground,roadEnds))return false;
@@ -192,8 +232,10 @@ bool buildTraversalGraph(const RoadTopology& graph,
      draft.surfaces.size()>=kMaxTraversalSurfaces)return false;
   draft.surfaces.push_back(floor);++draft.bridgeSurfaces;
   Snap a{},b{};
-  const bool connectedA=closestEnd(walk.a,walk.b,roadEnds,a,true);
-  const bool connectedB=closestEnd(walk.b,walk.a,roadEnds,b,true);
+  const bool connectedA=closestEnd(walk.a,walk.b,roadEnds,a,true)&&
+                        rampSafe(a.road,walk.a);
+  const bool connectedB=closestEnd(walk.b,walk.a,roadEnds,b,true)&&
+                        rampSafe(b.road,walk.b);
   const bool distinct=!connectedA||!connectedB||a.node!=b.node;
   if(connectedA&&distinct){
    ++status.endsConnected;
@@ -209,7 +251,14 @@ bool buildTraversalGraph(const RoadTopology& graph,
   // adapters must only route across it if both approaches are attached.
   draft.edges.push_back({keyA,keyB,bridge.id,WalkEdgeKind::Bridge,
                          xyzdistance(walk.a,walk.b)});
-  if(status.endsConnected==2)++draft.fullBridges;
+  if(status.endsConnected==2){
+   // Do not install half-bridges: both entrances and the continuous deck
+   // must be present for any physical player to use these quads.
+   if(!appendBankTransition(graph,a,walk.a,walk,bridge.yaw,bridge.id,draft)||
+      !appendBankTransition(graph,b,walk.b,walk,bridge.yaw,bridge.id,draft))
+    return false; // output stays unchanged
+   ++draft.fullBridges;
+  }
   else if(status.endsConnected==1)++draft.oneEndedBridges;
   else ++draft.detachedBridges;
   draft.bridges.push_back(status);

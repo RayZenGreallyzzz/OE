@@ -52,5 +52,5 @@ for pattern in (
     assert pattern in runtime,("Runtime solver",pattern)
 assert "runtime/walk_collision.cpp" in cmake
 assert "android:allowBackup=\"false\"" in (root/"android/src/main/AndroidManifest.xml").read_text()
-assert "OE WALK COLLISION R5.6 TEST" in (root/"android/src/main/AndroidManifest.xml").read_text()
+assert "OE TOUCH WALK R5.7 TEST" in (root/"android/src/main/AndroidManifest.xml").read_text()
 print("OE_WALK_EDITOR_OK: runtime solver, ghost-only scene safety, JNI, steps and QA controls")

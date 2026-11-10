@@ -173,6 +173,24 @@ jobs:
             android/src/main/cpp/roads/road_network.cpp \
             -o /tmp/oe-roads-test
           /tmp/oe-roads-test
+  bridge-bank-transitions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Walk across authored bank-to-deck gaps without false vertical shortcuts
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -pedantic \
+            tests/bridge_bank_transition_smoke.cpp \
+            android/src/main/cpp/runtime/oe_runtime.cpp \
+            android/src/main/cpp/runtime/walk_collision.cpp \
+            android/src/main/cpp/roads/road_network.cpp \
+            android/src/main/cpp/roads/road_topology.cpp \
+            android/src/main/cpp/roads/traversal_graph.cpp \
+            android/src/main/cpp/medieval/structures.cpp \
+            -o /tmp/oe-bank-transitions
+          /tmp/oe-bank-transitions
+      - name: Verify touch joystick, bounded 60 Hz game-style preview and lifecycle
+        run: python3 tests/touch_preview_integration_smoke.py
   runtime-walk-collisions:
     runs-on: ubuntu-latest
     steps:

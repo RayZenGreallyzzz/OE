@@ -70,9 +70,15 @@ These features are implemented in experimental branches with successful automate
 - Preserve previous R5.5 source code at `backup/oe-r55-road-textures-2026-11-10`. Scene v8 and `.oezip` assets remain unchanged. Physical Allwinner A523/4GiB editor test is mandatory before reporting the milestone production ready.
 - Polish visible street-bank / bridge transitions and test collision accuracy on the Android tablet. See `android/WALK_COLLISION_PREVIEW_R56_084.md`.
 
-### R5.7 — road/bridge seam QA and real-time Play/Stop readiness (not yet implemented)
-- Address physical tablet issues at crossings, sharp turns, slopes, and bridge/road contacts.
-- Add gameplay-style continuous touch joystick and camera, then Play/Stop with isolated runtime scene copy, followed by NPC systems and on-tablet standalone game APK exporter.
+### R5.7 — bank-to-bridge collision joins and analog touch preview (experimental; tablet QA pending)
+- Fix the actual **collision** gap between a road dead end and a connected bridge: compact grade-limited bank approach quads, only with real safe two-bank connections; no invisible shortcuts to disconnected/steep bridges. Visual seam geometry not yet polished.
+- Add an Android temporary analog joystick and jump/stop overlays for real continuous walker preview (2 fixed 60Hz physics ticks at <=30 visual frames/s, no idle GPU spin, no replay backlog). Both surfaces and ghost remain editor-only runtime data, not serialized.
+- Preserve v1–v8 scene compatibility, R5.5 textures and R5.3 lakes. Stop test on edit/Undo/Redo/reset/load or Android pause. Source backup `backup/oe-r56-before-touch-walk-2026-11-10`.
+- Complete physical tablet tests at sharp corners, banks, terrain slopes and crossings before claiming final road/bridge quality. See `android/TOUCH_WALK_BRIDGE_RAMPS_R57_085.md`.
+
+### R5.8 — visual medieval bank meshes and Play/Stop isolated scene readiness (not yet implemented)
+- Add rendered stone/dirt/grass transition where road strips meet bridge decks; avoid modern curbs.
+- Implement a real Play/Stop game snapshot with separate player input, runtime camera and gameplay state; never change the open editable scene. NPC logic and offline on-tablet Android game APK export remain later milestones.
 
 ### Road quality gate
 - Test actual road creation, point moving, smoothing, snapping, multiple T/X/Y junctions, PNG overlays, layered materials, Undo/Redo, local save and .oezip import/export on the target Android tablet.

@@ -8,15 +8,15 @@ android {
         applicationId 'game.oe.editor'
         minSdk 26
         targetSdk 34
-        versionCode 33
-        versionName '0.8.3-road-textures-r55-test'
+        versionCode 34
+        versionName '0.8.4-walk-collision-r56-test'
         ndk { abiFilters 'arm64-v8a' }
         externalNativeBuild {
             cmake { cppFlags '-std=c++17 -O2 -Wall -Wextra' }
         }
     }
     buildTypes {
-        debug { debuggable true; applicationIdSuffix '.roadtextures' }
+        debug { debuggable true; applicationIdSuffix '.walkcollision' }
         release { minifyEnabled false }
     }
     compileOptions {

@@ -44,9 +44,15 @@ These features are implemented in experimental branches with successful automate
 - Backup packaged APKs and release archives are not a backup of the user's local `.oezip` cities. Export those separately on the tablet.
 - Bridges still have no game physics/automatic road attachment and do not cut riverbeds. R5.3 remains road collision and nav foundations.
 
-### R5.3 — road navigation and collision-ready data
+### R5.3 — terrain and lake-water editor (experimental; requested before road collision)
+- The terrain raise/lower brush remains the excavation method. Add `Вода` editor category to fill basins with translucent terrain-clipped water and editable water level/radius.
+- Up to 8 lakes with bounded cached geometry; water remains purely visual, **not** a swimmable/physical volume.
+- Scene v7, Undo/Redo, explicit `.oezip` validation and forward compatibility check; older v1–v6 scenes continue to load. GitHub backup R5.2b: `backup/oe-medieval-r52b-2026-11-10`.
+- Current priority shift was user-requested; road collision/nav is retained next, **not silently dropped**.
+
+### R5.4 — road navigation and collision-ready data
 - Build a separate road graph for future vehicles/NPCs, with junction and direction metadata.
-- Provide simplified collision mesh or collision shapes for road and sidewalk surfaces.
+- Provide simplified collision mesh or collision shapes for medieval roads, bridges and natural road shoulders (not modern sidewalks/curbs).
 - Test crossing connectivity, saving, scene loading, and performance. Avoid claiming full traffic AI at this stage.
 
 ### Road quality gate

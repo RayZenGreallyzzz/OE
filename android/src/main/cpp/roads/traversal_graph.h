@@ -23,6 +23,7 @@ struct WalkSurface {
  std::uint64_t ownerId=0;
  bool bridge=false; // a simplified 4-corner WALKABLE deck, not railing collider
  bool approach=false; // tiny grade-checked bank-to-bridge transition
+ std::uint64_t materialRoadId=0; // transient source street for R5.8a visual seam
  WalkPoint a,b,c,d; // quad in physical XYZ metres
 };
 enum class WalkEdgeKind:unsigned char{ Road,Bridge,Approach };

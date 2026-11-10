@@ -8,6 +8,7 @@
 #include "roads/road_junctions.h"
 #include "roads/road_topology.h"
 #include "roads/traversal_graph.h"
+#include "roads/bridge_approach_visual.h"
 #include "roads/medieval_surface.h"
 #include "medieval/structures.h"
 #include "water/lake_surface.h"
@@ -30,6 +31,7 @@
 #include <map>
 #include <tuple>
 #include <cstdint>
+#include <cstring>
 
 namespace {
 constexpr float PI = 3.14159265358979323846f;
@@ -175,6 +177,8 @@ static double gRoadWidth=6.0;
 static std::string gRoadMaterial="builtin:cobblestone";
 static double gRoadTileMetres=4.0; // 4-metre repeating PNG/JPG texture, R5.5
 static int gRoadRevision=1,gRoadGpuRevision=-1,gRoadGpuTerrainRevision=-1;
+// Bridge transforms are editable without changing road/terrain revisions.
+static std::uint64_t gRoadGpuBridgeStamp=0;
 static Mesh gRoadGpu;
 struct RoadDrawRange {GLint first=0;GLsizei count=0;std::uint64_t id=0,materialRoadId=0;};
 static std::vector<RoadDrawRange> gRoadRanges;
@@ -1347,8 +1351,45 @@ Color roadPreviewColor(const std::string& material){
  if(material=="builtin:grass")return {.28f,.47f,.25f};
  return {.71f,.67f,.59f}; // Built-in untextured material; custom PNG/JPG uses white tint.
 }
+static bool oeBridgeModuleType(int type){
+ return type==oe::medieval::kStoneBridge||
+        type==oe::medieval::kTimberBridge||
+        type==oe::medieval::kNarrowFootbridge||
+        type==oe::medieval::kRopeBridge||
+        type==oe::medieval::kSteppingStoneFord||
+        type==oe::medieval::kWideCartBridge||
+        type==oe::medieval::kSwampCauseway;
+}
+static oe::roads::BridgeInstance oeBridgeFromEntity(const Entity&e){
+ oe::roads::BridgeInstance bridge;
+ bridge.id=static_cast<std::uint64_t>(e.id);
+ bridge.type=e.type;
+ bridge.center={e.x,e.z};
+ bridge.y=e.y;bridge.yaw=-static_cast<double>(e.yaw)*RAD;bridge.size=e.size;
+ bridge.sx=e.sx;bridge.sy=e.sy;bridge.sz=e.sz;
+ return bridge;
+}
+
+std::uint64_t bridgeVisualStamp(){
+ std::uint64_t hash=14695981039346656037ULL;
+ const auto mix=[&](std::uint32_t bits){
+  hash^=static_cast<std::uint64_t>(bits);hash*=1099511628211ULL;
+ };
+ for(const auto&e:gEntities){
+  if(!oeBridgeModuleType(e.type))continue;
+  mix(static_cast<std::uint32_t>(e.id));
+  mix(static_cast<std::uint32_t>(e.type));
+  for(float value:{e.x,e.y,e.z,e.yaw,e.size,e.sx,e.sy,e.sz}){
+   std::uint32_t bits=0;std::memcpy(&bits,&value,sizeof(bits));mix(bits);
+  }
+ }
+ return hash;
+}
 bool rebuildRoadGpu(){
- if(gRoadGpuRevision==gRoadRevision&&gRoadGpuTerrainRevision==gTerrainRevision)return true;
+ const std::uint64_t bridgeStamp=bridgeVisualStamp();
+ if(gRoadGpuRevision==gRoadRevision&&
+    gRoadGpuTerrainRevision==gTerrainRevision&&
+    gRoadGpuBridgeStamp==bridgeStamp)return true;
  std::vector<float> vertices;vertices.reserve(16000);
  std::vector<RoadDrawRange> draws;
  const auto height=[](double x,double z)->double{
@@ -1388,8 +1429,8 @@ bool rebuildRoadGpu(){
  };
  oe::roads::RoadTopology graph;
  oe::roads::MedievalSurface stitched;
- const bool hasStitchedSurfaces=
-     oe::roads::buildRoadTopology(gRoads.all(),graph,0.)&&
+ const bool topologyOkay=oe::roads::buildRoadTopology(gRoads.all(),graph,0.);
+ const bool hasStitchedSurfaces=topologyOkay&&
      oe::roads::buildMedievalSurface(graph,height,stitched);
  if(hasStitchedSurfaces){
   // Never draw R5 crossing discs over R5.2 joined geometry: every R5.2 cap
@@ -1417,6 +1458,35 @@ bool rebuildRoadGpu(){
    }
   }
  }
+ // R5.8a: draw ONLY previously validated full-bridge collision approaches.
+ // These six-vertex cobble/dirt/grass strips meet the actual road terminal cap.
+ // Pack equal source materials/tile sizes into shared batches (few GLES draws).
+ // The visual layer is disposable; it never modifies authored roads or .oezip.
+ if(topologyOkay){
+  std::vector<oe::roads::BridgeInstance> bridges;
+  for(const auto&e:gEntities)if(oeBridgeModuleType(e.type))
+   bridges.push_back(oeBridgeFromEntity(e));
+  if(!bridges.empty()){
+   oe::roads::TraversalGraph traversal;
+   if(oe::roads::buildTraversalGraph(graph,bridges,height,traversal)){
+    std::vector<oe::roads::BankVisualPart> visible;
+    if(oe::roads::buildBankVisualSeams(traversal,visible)){
+     using MaterialKey=std::pair<std::string,double>;
+     std::map<MaterialKey,std::pair<std::uint64_t,oe::roads::SurfaceMesh>> batches;
+     for(const auto&part:visible){
+      const auto* source=gRoads.find(part.materialRoadId);
+      if(!source)continue; // an invalid source cannot create fake new asphalt
+      auto&batch=batches[{source->material,source->tileMetres}];
+      if(!batch.first)batch.first=source->id;
+      batch.second.triangles.insert(batch.second.triangles.end(),
+         part.mesh.triangles.begin(),part.mesh.triangles.end());
+     }
+     for(const auto&group:batches)
+      if(!append(group.second.second,0,group.second.first))return false;
+    }
+   }
+  }
+ }
  if(!gRoadGpu.vao){
   glGenVertexArrays(1,&gRoadGpu.vao);
   glGenBuffers(1,&gRoadGpu.buffer);
@@ -1439,6 +1509,7 @@ bool rebuildRoadGpu(){
  gRoadGpu.count=static_cast<GLsizei>(vertices.size()/11);
  gRoadRanges.swap(draws);
  gRoadGpuRevision=gRoadRevision;gRoadGpuTerrainRevision=gTerrainRevision;
+ gRoadGpuBridgeStamp=bridgeStamp;
  return true;
 }
 void drawRoads(const Mat4& vp){
@@ -2608,24 +2679,6 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeLakeDelete(
 // A portable traversal/collision-surface snapshot. No ghost collision
 // objects are written to the scene or JSON: it is derived from authored
 // road control points and existing modular bridge entities on demand.
-static bool oeBridgeModuleType(int type){
- return type==oe::medieval::kStoneBridge||
-        type==oe::medieval::kTimberBridge||
-        type==oe::medieval::kNarrowFootbridge||
-        type==oe::medieval::kRopeBridge||
-        type==oe::medieval::kSteppingStoneFord||
-        type==oe::medieval::kWideCartBridge||
-        type==oe::medieval::kSwampCauseway;
-}
-static oe::roads::BridgeInstance oeBridgeFromEntity(const Entity&e){
- oe::roads::BridgeInstance bridge;
- bridge.id=static_cast<std::uint64_t>(e.id);
- bridge.type=e.type;
- bridge.center={e.x,e.z};
- bridge.y=e.y;bridge.yaw=-static_cast<double>(e.yaw)*RAD;bridge.size=e.size;
- bridge.sx=e.sx;bridge.sy=e.sy;bridge.sz=e.sz;
- return bridge;
-}
 static bool oeCurrentRoadGraph(oe::roads::RoadTopology& graph){
  // Read-only: no automatic snapping/rewriting old saved roads.
  return oe::roads::buildRoadTopology(gRoads.all(),graph,0.);

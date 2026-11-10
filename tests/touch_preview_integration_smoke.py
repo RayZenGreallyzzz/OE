@@ -29,8 +29,8 @@ for needle in [
     "private void stopWalkCollisionPreview()",
 ]:
     assert needle in java,needle
-for needle in ["q.bridge=true;q.approach=true","buildBankTransition(graph,a,walk.a",
-               "buildBankTransition(graph,b,walk.b","if(status.endsConnected==2)"]:
+for needle in ["q.bridge=true;q.approach=true","closestSafeEnd(graph,roadEnds,walk.a,walk.b,walk",
+               "closestSafeEnd(graph,roadEnds,walk.b,walk.a,walk","if(status.endsConnected==2)"]:
     assert needle in road,needle
 for needle in ["nativeWalkPreviewStart(", "nativeWalkPreviewStep(",
                "nativeWalkPreviewStop(", "nativeWalkPreviewState(",
@@ -54,6 +54,6 @@ assert "traversal.approachSurfaces" in native
 assert "validApproach(q)" in road
 assert "version>=1&&version<=8" in archive
 assert 'applicationIdSuffix' in (root/"android/build.gradle").read_text()
-assert 'OE TOUCH WALK R5.7.1 TEST' in manifest
+assert 'OE BANK SEAMS R5.8a TEST' in manifest
 assert 'android:allowBackup="false"' in manifest
 print("OE_TOUCH_WALK_UI_OK: bounded frame scheduling, pointer reset, lifecycle and safe approach ramps")

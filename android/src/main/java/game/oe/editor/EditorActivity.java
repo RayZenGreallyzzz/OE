@@ -9,6 +9,10 @@ import android.content.Intent;
 import android.net.Uri;
 import android.opengl.GLSurfaceView;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.graphics.Canvas;
+import android.graphics.Paint;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -175,6 +179,51 @@ public class EditorActivity extends Activity {
     private TextView statusText;
     private TextView renderStatsText;
     private LinearLayout toolDrawer, paletteItems, inspectorPanel, advancedInspector;
+    private WalkJoystick walkJoystick;
+    private Button walkJumpButton,walkStopButton;
+    private boolean walkControlsActive=false,walkTickPending=false;
+    private boolean walkJumpQueued=false,walkAirborne=false;
+    private float walkAxisX=0f,walkAxisZ=0f;
+    private volatile int walkSessionGeneration=0;
+    private long lastWalkHudAt=0;
+    private final Handler walkHandler=new Handler(Looper.getMainLooper());
+    // At most one pending GL tick. 2 fixed 60Hz steps for each ~33ms frame;
+    // pause/idle never queues hundreds of catch-up steps on a 4GiB tablet.
+    private final Runnable walkTick=new Runnable(){
+        @Override public void run(){
+            if(!walkControlsActive||surface==null||importing)return;
+            final boolean moving=Math.hypot(walkAxisX,walkAxisZ)>.05;
+            final boolean jump=walkJumpQueued;
+            if(!walkTickPending&&(moving||jump||walkAirborne)){
+                final float dx=walkAxisX,dz=walkAxisZ;
+                final int session=walkSessionGeneration;
+                walkJumpQueued=false;walkTickPending=true;
+                surface.queueEvent(()->{
+                    if(session!=walkSessionGeneration)return;
+                    boolean ok=nativeWalkPreviewStep(dx,dz,jump,2);
+                    final double[] state=ok?nativeWalkPreviewState():null;
+                    surface.requestRender();
+                    ui(()->{
+                        if(session!=walkSessionGeneration)return;
+                        walkTickPending=false;
+                        if(!ok||state==null){
+                            finishWalkControls();
+                            message("Путник остановлен: достигнут край карты либо изменена сцена");
+                            return;
+                        }
+                        walkAirborne=state[3]<.5;
+                        long now=SystemClock.uptimeMillis();
+                        if(now-lastWalkHudAt>350){
+                            lastWalkHudAt=now;
+                            statusText.setText(walkPreviewDescription(state));
+                        }
+                    });
+                });
+            }
+            walkHandler.postDelayed(this,moving||jump||walkAirborne?33:100);
+        }
+    };
+
     private boolean drawerOpen=false;
     private volatile int gizmoMode=0;
     private volatile String activePaintKey="";
@@ -222,6 +271,7 @@ public class EditorActivity extends Activity {
         ui(() -> Toast.makeText(this, s, Toast.LENGTH_SHORT).show());
     }
     private void edit(Runnable work) {
+        if(walkControlsActive)finishWalkControls();
         if(importing) {message("Дождись завершения загрузки сцены");return;}
         surface.queueEvent(() -> {
             work.run();
@@ -296,7 +346,7 @@ public class EditorActivity extends Activity {
         top.setPadding(dp(5),dp(2),dp(5),dp(2));
         top.setBackgroundColor(Color.argb(220,14,21,32));
         TextView title=new TextView(this);
-        title.setText("OE WALK COLLISION R5.6 TEST");
+        title.setText("OE TOUCH WALK R5.7 TEST");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
         title.setTextSize(12);
@@ -431,6 +481,28 @@ public class EditorActivity extends Activity {
         infoParams.leftMargin=dp(6);
         infoParams.bottomMargin=dp(12);
         root.addView(info,infoParams);
+        // Temporary analog controls never cover the main editor when
+        // the preview is stopped. Bottom left = movement; right = jump/exit.
+        walkJoystick=new WalkJoystick();
+        FrameLayout.LayoutParams pad=new FrameLayout.LayoutParams(
+            dp(154),dp(154),Gravity.LEFT|Gravity.BOTTOM);
+        pad.leftMargin=dp(14);pad.bottomMargin=dp(82);
+        root.addView(walkJoystick,pad);
+        walkJoystick.setVisibility(View.GONE);
+        walkJumpButton=button("🦘 Прыжок",()->{
+            if(walkControlsActive)walkJumpQueued=true;
+        });
+        FrameLayout.LayoutParams jump=new FrameLayout.LayoutParams(
+            dp(116),dp(54),Gravity.RIGHT|Gravity.BOTTOM);
+        jump.rightMargin=dp(16);jump.bottomMargin=dp(96);
+        root.addView(walkJumpButton,jump);
+        walkJumpButton.setVisibility(View.GONE);
+        walkStopButton=button("✕ Тест",this::stopWalkCollisionPreview);
+        FrameLayout.LayoutParams exit=new FrameLayout.LayoutParams(
+            dp(116),dp(48),Gravity.RIGHT|Gravity.BOTTOM);
+        exit.rightMargin=dp(16);exit.bottomMargin=dp(159);
+        root.addView(walkStopButton,exit);
+        walkStopButton.setVisibility(View.GONE);
         setContentView(root);
     }
     private void toggleDrawer(boolean open){
@@ -883,6 +955,73 @@ public class EditorActivity extends Activity {
     }
     // The preview character is a temporary runtime collision actor,
     // never an object, never saved in .oezip or applied to editor transforms.
+    // Pointer-scoped virtual joystick: losing the finger resets movement.
+    private final class WalkJoystick extends View{
+        private final Paint brush=new Paint(Paint.ANTI_ALIAS_FLAG);
+        private int pointer=-1;
+        WalkJoystick(){super(EditorActivity.this);}
+        @Override protected void onDraw(Canvas canvas){
+            float x=getWidth()*.5f,y=getHeight()*.5f;
+            float outer=Math.min(x,y)*.88f,inner=outer*.42f;
+            brush.setStyle(Paint.Style.FILL);
+            brush.setColor(Color.argb(169,13,29,45));
+            canvas.drawCircle(x,y,outer,brush);
+            brush.setColor(Color.argb(218,226,182,107));
+            canvas.drawCircle(x+walkAxisX*outer*.62f,
+                              y+walkAxisZ*outer*.62f,inner,brush);
+            brush.setStyle(Paint.Style.STROKE);
+            brush.setStrokeWidth(dp(2));
+            brush.setColor(Color.argb(175,242,219,175));
+            canvas.drawCircle(x,y,outer,brush);
+            brush.setStyle(Paint.Style.FILL);
+        }
+        @Override public boolean onTouchEvent(MotionEvent event){
+            if(!walkControlsActive)return false;
+            final int action=event.getActionMasked();
+            if(action==MotionEvent.ACTION_DOWN){
+                pointer=event.getPointerId(event.getActionIndex());
+            }else if(action==MotionEvent.ACTION_POINTER_UP||
+                     action==MotionEvent.ACTION_UP||
+                     action==MotionEvent.ACTION_CANCEL){
+                if(action==MotionEvent.ACTION_CANCEL||
+                   event.getPointerId(event.getActionIndex())==pointer){
+                    pointer=-1;walkAxisX=0f;walkAxisZ=0f;invalidate();
+                }
+                return true;
+            }
+            int index=event.findPointerIndex(pointer);
+            if(index>=0){
+                float x=getWidth()*.5f,y=getHeight()*.5f;
+                float radius=Math.max(1f,Math.min(x,y)*.63f);
+                float dx=(event.getX(index)-x)/radius;
+                float dz=(event.getY(index)-y)/radius;
+                float mag=(float)Math.hypot(dx,dz);
+                if(mag>1f){dx/=mag;dz/=mag;}
+                if(mag<.12f){dx=0f;dz=0f;}
+                walkAxisX=dx;walkAxisZ=dz;
+                invalidate();
+            }
+            return true;
+        }
+    }
+    private void finishWalkControls(){
+        if(!walkControlsActive)return;
+        walkControlsActive=false;
+        ++walkSessionGeneration;
+        walkHandler.removeCallbacks(walkTick);
+        walkAxisX=0f;walkAxisZ=0f;walkJumpQueued=false;
+        walkAirborne=false;walkTickPending=false;
+        if(walkJoystick!=null){
+            walkJoystick.setVisibility(View.GONE);
+            walkJoystick.invalidate();
+        }
+        if(walkJumpButton!=null)walkJumpButton.setVisibility(View.GONE);
+        if(walkStopButton!=null)walkStopButton.setVisibility(View.GONE);
+        if(surface!=null)surface.queueEvent(()->{
+            nativeWalkPreviewStop();
+            surface.requestRender();
+        });
+    }
     private void startWalkCollisionPreview(){
         if(importing)return;
         surface.queueEvent(()->{
@@ -2670,7 +2809,11 @@ public class EditorActivity extends Activity {
             .setNegativeButton("Отмена",null).show();
     }
     @Override protected void onResume() { super.onResume(); if (surface != null) surface.onResume(); }
-    @Override protected void onPause() { if (surface != null) surface.onPause(); super.onPause(); }
+    @Override protected void onPause() {
+        finishWalkControls();
+        if(surface!=null)surface.onPause();
+        super.onPause();
+    }
 
     private final class EditorSurface extends GLSurfaceView {
         private float lastX, lastY, downX, downY, lastPinch, lastMidX, lastMidY;

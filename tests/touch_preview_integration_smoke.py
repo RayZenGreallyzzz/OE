@@ -23,22 +23,38 @@ for needle in [
     "if(session!=walkSessionGeneration)return",
     "private void finishWalkControls()",
     "finishWalkControls();\n        if(surface!=null)surface.onPause()",
-    "if(walkControlsActive)finishWalkControls();",
+    "if(walkControlsActive||walkStartPending)finishWalkControls();",
     "walkJumpQueued=true",
     "statusText.setText(walkPreviewDescription(state))",
     "private void stopWalkCollisionPreview()",
 ]:
     assert needle in java,needle
-for needle in ["q.bridge=true;q.approach=true","rampSafe(a.road,walk.a)",
-               "rampSafe(b.road,walk.b)","appendBankTransition(graph,a",
+for needle in ["q.bridge=true;q.approach=true","buildBankTransition(graph,a,walk.a",
+               "buildBankTransition(graph,b,walk.b","appendBankTransition(graph,a",
                "appendBankTransition(graph,b","if(status.endsConnected==2)"]:
     assert needle in road,needle
 for needle in ["nativeWalkPreviewStart(", "nativeWalkPreviewStep(",
                "nativeWalkPreviewStop(", "nativeWalkPreviewState(",
                "gWalkPreview.clear(); // Stop demo before changing real authored geometry."]:
     assert needle in native,needle
+# The UI and native preview must not resurrect an old session after pause.
+for needle in [
+    "private boolean walkStartPending=false,walkActivityPaused=false",
+    "walkStartPending=true",
+    "if(startSession!=walkSessionGeneration)return",
+    "walkActivityPaused=true;",
+    "walkActivityPaused=false;",
+    "if(!walkControlsActive&&!walkStartPending)return",
+    "finishWalkControls();\\n        importing=true;",
+    "info==null||info.length!=9||info[0]<0",
+    "Проверенных переходов берег–мост:",
+]:
+    assert needle.replace("\\\\n","\\n") in java,needle
+assert "jint stats[9]" in native
+assert "traversal.approachSurfaces" in native
+assert "validApproach(q)" in road
 assert "version>=1&&version<=8" in archive
 assert 'applicationIdSuffix' in (root/"android/build.gradle").read_text()
-assert 'OE TOUCH WALK R5.7 TEST' in manifest
+assert 'OE TOUCH WALK R5.7.1 TEST' in manifest
 assert 'android:allowBackup="false"' in manifest
 print("OE_TOUCH_WALK_UI_OK: bounded frame scheduling, pointer reset, lifecycle and safe approach ramps")

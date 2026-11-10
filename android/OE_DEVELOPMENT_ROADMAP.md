@@ -76,9 +76,14 @@ These features are implemented in experimental branches with successful automate
 - Preserve v1–v8 scene compatibility, R5.5 textures and R5.3 lakes. Stop test on edit/Undo/Redo/reset/load or Android pause. Source backup `backup/oe-r56-before-touch-walk-2026-11-10`.
 - Complete physical tablet tests at sharp corners, banks, terrain slopes and crossings before claiming final road/bridge quality. See `android/TOUCH_WALK_BRIDGE_RAMPS_R57_085.md`.
 
-### R5.8 — visual medieval bank meshes and Play/Stop isolated scene readiness (not yet implemented)
-- Add rendered stone/dirt/grass transition where road strips meet bridge decks; avoid modern curbs.
-- Implement a real Play/Stop game snapshot with separate player input, runtime camera and gameplay state; never change the open editable scene. NPC logic and offline on-tablet Android game APK export remain later milestones.
+### R5.8a — visible medieval bank-to-deck approach skins (experimental; tablet QA pending)
+- Derive two-triangle rendered approach skins from the exact grade-validated R5.7.1 physical collision quads; no fake solid bridge, no extra saved scene fields and no modern asphalt curbs.
+- Reuse source road textures/materials and repeat scale, group equal materials for lower GLES draw counts, and invalidate the cached surface on edited bridge transforms. Sideways/steep nearest road caps cannot hide a farther safe candidate.
+- Portable smoke and Android QA build; verify stone bridge appearance, road texture seams, FPS and compatibility with existing cities on the target A523 tablet. See android/VISIBLE_BANK_APPROACHES_R58A_087.md.
+
+### R5.8b — isolated Play/Stop preview readiness (NOT implemented yet)
+- Only after the real tablet Road & Terrain quality gate, create a real independent runtime scene snapshot, runtime camera/player/input, Play and Stop controls, without overwriting unsaved editor changes.
+- Standalone offline game APK export on the tablet, NPC systems, walls/railings/capsule physics and robust runtime game assets remain later milestones.
 
 ### Road quality gate
 - Test actual road creation, point moving, smoothing, snapping, multiple T/X/Y junctions, PNG overlays, layered materials, Undo/Redo, local save and .oezip import/export on the target Android tablet.
@@ -128,4 +133,4 @@ These features are implemented in experimental branches with successful automate
 - Do not start the next milestone simply because a previous experimental APK compiled. Get real tablet validation and preserve project backups.
 
 ## How to continue future chats
-Reference `android/OE_DEVELOPMENT_ROADMAP.md` from the experimental R5 branch. **Continue with R5.1 connected roads**, then R5.2, R5.3, then Runtime P1–P4 and APK Build B1–B3. This file is the durable technical plan even when chat memory is unavailable.
+Reference this roadmap and the latest draft experimental PR (R5.8a: visible bank-to-bridge approaches). Road/terrain features R5.1–R5.8a are implemented experimentally but require physical A523 QA. Continue with the tablet Road & Terrain quality gate, then true isolated Play/Stop (R5.8b / Runtime P1), P2–P4 and Build B1–B3. Do not confuse CI-built editor debug APKs with offline standalone games exported on the tablet.

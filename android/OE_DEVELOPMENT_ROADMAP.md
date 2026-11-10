@@ -81,9 +81,15 @@ These features are implemented in experimental branches with successful automate
 - Reuse source road textures/materials and repeat scale, group equal materials for lower GLES draw counts, and invalidate the cached surface on edited bridge transforms. Sideways/steep nearest road caps cannot hide a farther safe candidate.
 - Portable smoke and Android QA build; verify stone bridge appearance, road texture seams, FPS and compatibility with existing cities on the target A523 tablet. See android/VISIBLE_BANK_APPROACHES_R58A_087.md.
 
-### R5.8b — isolated Play/Stop preview readiness (NOT implemented yet)
-- Only after the real tablet Road & Terrain quality gate, create a real independent runtime scene snapshot, runtime camera/player/input, Play and Stop controls, without overwriting unsaved editor changes.
-- Standalone offline game APK export on the tablet, NPC systems, walls/railings/capsule physics and robust runtime game assets remain later milestones.
+### R5.8b — isolated Play/Stop preview (experimental code; DEVICE QA PENDING)
+- Adds explicit ▶ Play and ■ Stop to the Android editor with independent Runtime ECS scene snapshot, collision player and separate third-person camera; joystick becomes camera-relative during Play. Authoring/Undo/Save/UI touch edits blocked until Stop. The editor camera, selection, unsaved objects/roads/materials and scene file are not changed by Play.
+- The preview's 60 Hz walk collider uses a by-value snapshot of terrain brush height data and derived road/bridge surfaces. Renderer still reads editor GPU road/terrain/texture caches as frozen scenery; only runtime entities and static object draw list are copied. This is not yet a fully independent game renderer. Standalone gameplay APK and complete player-object collisions are not implemented.
+- On pause, import or Stop: cancel pending starts, clear runtime player/world and restore editor. Scene v1–v8 and .oezip assets unchanged. Strict portable PlaySession and Android integration smoke plus Android arm64 CI required. See android/PLAY_STOP_ISOLATION_R58B_088.md.
+- **Still gated by real Allwinner A523 tablet tests:** launch/stop, paused app, fingers/camera, unsaved edit restoration, bridge crossing, performance, textures and archive roundtrip. No merge before user permission.
+
+### R5.9 — Runtime P2/P3 and asset decoupling (not implemented)
+- After QA, add proper whole-body walls/railings/capsule collision, interactive gameplay entities and independent runtime render asset mapping before separate game shell.
+- Offline standalone game APK export on the tablet, NPC systems and package signing remain later milestones.
 
 ### Road quality gate
 - Test actual road creation, point moving, smoothing, snapping, multiple T/X/Y junctions, PNG overlays, layered materials, Undo/Redo, local save and .oezip import/export on the target Android tablet.
@@ -133,4 +139,4 @@ These features are implemented in experimental branches with successful automate
 - Do not start the next milestone simply because a previous experimental APK compiled. Get real tablet validation and preserve project backups.
 
 ## How to continue future chats
-Reference this roadmap and the latest draft experimental PR (R5.8a: visible bank-to-bridge approaches). Road/terrain features R5.1–R5.8a are implemented experimentally but require physical A523 QA. Continue with the tablet Road & Terrain quality gate, then true isolated Play/Stop (R5.8b / Runtime P1), P2–P4 and Build B1–B3. Do not confuse CI-built editor debug APKs with offline standalone games exported on the tablet.
+Reference this roadmap and the latest draft experimental PR (R5.8b: isolated Runtime Play/Stop preview). R5.1–R5.8b remain experimental and need physical A523 QA. Continue with real tablet Play/Stop and road quality acceptance, then complete Runtime P2–P4 and on-device APK Build B1–B3. Never confuse GitHub CI-built editor debug APKs with independently exported game APKs produced offline on the tablet.

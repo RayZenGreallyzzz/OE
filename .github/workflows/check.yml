@@ -191,6 +191,23 @@ jobs:
           /tmp/oe-bank-transitions
       - name: Verify touch joystick, bounded 60 Hz game-style preview and lifecycle
         run: python3 tests/touch_preview_integration_smoke.py
+  bridge-bank-visuals:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify visible seam equals safe physical approach and keeps road texture
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -pedantic \
+            tests/bridge_approach_visual_smoke.cpp \
+            android/src/main/cpp/roads/bridge_approach_visual.cpp \
+            android/src/main/cpp/roads/traversal_graph.cpp \
+            android/src/main/cpp/roads/road_topology.cpp \
+            android/src/main/cpp/roads/road_network.cpp \
+            android/src/main/cpp/medieval/structures.cpp \
+            -o /tmp/oe-bank-visuals
+          /tmp/oe-bank-visuals
+      - name: Ensure JNI road renderer invalidates for bridge transforms
+        run: python3 tests/bridge_visual_editor_integration_smoke.py
   runtime-walk-collisions:
     runs-on: ubuntu-latest
     steps:

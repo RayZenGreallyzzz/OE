@@ -133,6 +133,8 @@ public class EditorActivity extends Activity {
     private static native boolean nativeRoadSmooth(double radiusMetres);
     private static native int nativeRoadIntersectionCount();
     private static native int[] nativeRoadTopologyStats();
+    private static native int[] nativeBridgeRoadStats();
+    private static native boolean nativeBridgeAlignSelected();
     private static native int[] nativeMedievalSurfaceStats();
     private static native boolean nativeRoadBakeTopology();
     private static native int[] nativePaintTileCoords();
@@ -286,7 +288,7 @@ public class EditorActivity extends Activity {
         top.setPadding(dp(5),dp(2),dp(5),dp(2));
         top.setBackgroundColor(Color.argb(220,14,21,32));
         TextView title=new TextView(this);
-        title.setText("OE MEDIEVAL MODULES R5.2b TEST");
+        title.setText("OE BRIDGE-ROAD LINKS R5.4 TEST");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
         title.setTextSize(12);
@@ -462,6 +464,8 @@ public class EditorActivity extends Activity {
             addPaletteOption("🪨 Каменный брод · 8 м",()->enterPlaceMode(22,null));
             addPaletteOption("🐴 Широкий мост для телег · 10 м",()->enterPlaceMode(27,null));
             addPaletteOption("🌾 Настил через болото · 9 м",()->enterPlaceMode(28,null));
+            addPaletteOption("🔗 Подогнать мост к двум дорогам",this::alignSelectedBridge);
+            addPaletteOption("📋 Проверить соединения и поверхности",this::showBridgeRoadStats);
             addPaletteOption("ℹ Регулировка высоты",()->new AlertDialog.Builder(this)
                 .setTitle("Мосты и переправы OE")
                 .setMessage("Поставь мост касанием земли. Затем выбери объект и подними " +
@@ -517,6 +521,8 @@ public class EditorActivity extends Activity {
             addPaletteOption("〰 Сгладить повороты",this::chooseRoadSmoothing);
             addPaletteOption("🔗 Соединить старые дороги",this::bakeExistingRoadTopology);
             addPaletteOption("✣ Узлы дорожной сети",this::showJunctionStatus);
+            addPaletteOption("🔗 Подогнать выделенный мост",this::alignSelectedBridge);
+            addPaletteOption("📋 Мосты и будущая физика",this::showBridgeRoadStats);
             addPaletteOption("🪨 Проверить швы перекрёстков R5.2",this::showMedievalSurfaceStats);
             addPaletteOption("↶ Удалить последнюю точку",this::removeRoadPoint);
             addPaletteOption("↔ Ширина дороги",this::chooseRoadWidth);
@@ -852,6 +858,44 @@ public class EditorActivity extends Activity {
                     message("Повороты сглажены · радиус "+radii[index]+" м");
                 else message("Не получилось сгладить: выбери дорогу или уменьшай число точек");
             })).setNegativeButton("Отмена",null).show();
+    }
+    // Graph is derived on the GL thread from current road/bridge transforms.
+    // The scene format stays v1–v7; no hidden backdoor road edits.
+    private void showBridgeRoadStats(){
+        if(importing){message("Дождись загрузки проекта");return;}
+        surface.queueEvent(()->{
+            final int[] values=nativeBridgeRoadStats();
+            ui(()->new AlertDialog.Builder(this)
+                .setTitle("Дороги ↔ мосты · OE R5.4")
+                .setMessage(values==null||values.length!=7||values[0]!=1?
+                    "Не удалось построить сеть. Проверь наложенные дороги, " +
+                    "неправильные размеры и лимиты геометрии. " +
+                    "Редакторские объекты при ошибке не изменяются.":
+                    "Мостов/переправ на карте: "+values[1]+"\\n" +
+                    "Соединений двух берегов: "+values[2]+"\\n" +
+                    "Без двух безопасных подходов: "+values[3]+"\\n" +
+                    "Треугольников дороги: "+values[4]+"\\n" +
+                    "Всего поверхностей для будущих столкновений: "+values[5]+"\\n\\n" +
+                    (values[6]==1?"Выбранный мост: дорожное соединение готово.\\n\\n":
+                     values[6]==2?"Выбранный мост: пешеходное соединение готово.\\n\\n":
+                     values[6]==3?"Выбран каменный брод: камни раздельные, мостовой связности нет.\\n\\n":
+                     values[6]==0?"Выбранный мост пока НЕ соединён с двумя дорогами.\\n\\n":"") +
+                    "Нужны два конца дорог примерно по краям моста; ширина " +
+                    "дорог должна подходить к настилу. Нажми «Подогнать мост», " +
+                    "чтобы OE попробовал совместить его с берегами.\\n\\n" +
+                    "Это подготовка для физики и навигации, а не работающий " +
+                    "игровой персонаж или движение повозок.")
+                .setPositiveButton("Понятно",null).show());
+        });
+    }
+    private void alignSelectedBridge(){
+        if(importing){message("Дождись загрузки проекта");return;}
+        edit(()->{
+            if(nativeBridgeAlignSelected())
+                message("Мост подогнан к двум концам дорог · ↶ можно отменить");
+            else message("Не удалось: выдели мост рядом с ДВУМЯ концами дорог. " +
+                "Проверь ширину, расстояние, направление и высоту берегов.");
+        });
     }
     private void showJunctionStatus(){
         if(importing)return;

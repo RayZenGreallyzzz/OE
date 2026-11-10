@@ -73,6 +73,24 @@ public class EditorActivity extends Activity {
     private static native double[] nativeSelectedCoordinates();
     private static native boolean nativeSetSelectedCoordinates(double x,double y,double z);
     private static native String nativeSceneSnapshot();
+    private static native void nativeRoadMode(int mode);
+    private static native int nativeRoadBegin(float width,boolean markings,int material);
+    private static native int nativeRoadAppend(float pixelX,float pixelY,float minSpacing);
+    private static native boolean nativeRoadFinish();
+    private static native boolean nativeRoadPickHandle(float pixelX,float pixelY);
+    private static native boolean nativeRoadDragHandle(float pixelX,float pixelY);
+    private static native void nativeRoadEndDrag();
+    private static native boolean nativeRoadSetWidth(float width);
+    private static native boolean nativeRoadSetMarkings(boolean markings);
+    private static native boolean nativeRoadSetMaterial(int material);
+    private static native void nativeRoadMedievalPreset();
+    private static native int nativeRoadTogglePedestrian(int feature);
+    private static native boolean nativeRoadDelete();
+    private static native void nativeRoadSelect(int roadId);
+    private static native int[] nativeRoadIds();
+    private static native String[] nativeRoadLabels();
+    private static native String nativeRoadInfo();
+    private static native String nativeRoadNetworkReport();
     private static native String[] nativeLabels();
     private static native int[] nativeIds();
     private static native void nativeReset(boolean withDemo);
@@ -88,9 +106,13 @@ public class EditorActivity extends Activity {
     private static native String[] nativeLoadedAssetKeys();
     private static native boolean nativeCanRegisterMore(int newUniqueAssets);
     private static native void nativeDiscardUnusedAsset(String key);
+    private static native int nativeTrimUnusedAssets();
     private static native boolean nativeReplaceScene(int size, boolean demoRoads,
             int[] kinds, float[] transforms, String[] modelKeys, float[] terrain,
-            String[] objectPaintKeys, float[] painting, String[] terrainPaintKeys);
+            String[] objectPaintKeys, float[] painting, String[] terrainPaintKeys,
+            int[] roadIds, float[] roadWidths, boolean[] roadMarkings,
+            int[] roadCounts, int[] roadMaterials, float[] roadCoordinates,
+            boolean roadSidewalks, boolean roadCrosswalks);
     private static native boolean nativeRegisterPaintTexture(String key, byte[] rgba,int width,int height);
     private static native boolean nativePaintSelected(String key);
     private static native int nativePaintTerrainAtScreen(float x,float y,float radius,String key);
@@ -100,26 +122,40 @@ public class EditorActivity extends Activity {
     private static native int nativeApplyTerrainBrushAtScreen(float x,float y,float radius,float amount);
     private static native int nativeTerrainBrushCount();
     private static native void nativeSetGizmoMode(int mode);
+    private static native void nativeSetRotationSnap(boolean enabled);
     private static native int nativeGizmoHit(float x,float y);
-    private static native boolean nativeGizmoBegin(int axis);
-    private static native void nativeGizmoDrag(int axis,float dx,float dy);
+    private static native boolean nativeGizmoBegin(int axis,float x,float y);
+    private static native void nativeGizmoDrag(int axis,float dx,float dy,float x,float y);
     private static native void nativeGizmoEnd();
+    private static native void nativeRotateSelectedAxis(int axis,float degrees);
+    private static native void nativeResetSelectedRotation();
+    private static native double[] nativeSelectedRotationEuler();
+    private static native boolean nativeSetSelectedRotationEuler(double x,double y,double z);
     private static native int nativeAddImportedPlaced(String key, float x, float z, float yaw, float size);
-    private static final int PICK_GLB = 702, PICK_PROJECT=703, SAVE_PROJECT=704, PICK_PAINT=705;
-    private static final int MAX_ASSETS = 12;
+    private static final int PICK_GLB = 702, PICK_PROJECT=703, SAVE_PROJECT=704, PICK_PAINT=705,
+            PICK_LIBRARY=AssetLibrary.PICK_LIBRARY;
+    private static final int MAX_ASSETS = 32;
 
     private EditorSurface surface;
+    private Button roadDoneButton;
+    private volatile int roadMode=0; // 0=objects, 1=draw roads, 2=drag road points
+    private volatile float roadWidth=6f;
+    private volatile boolean roadMarkings=false;
+    private volatile int roadMaterial=1; // medieval cobblestone; 0 means legacy asphalt
     private TextView selectionText;
     private TextView statusText;
     private TextView renderStatsText;
     private LinearLayout toolDrawer, paletteItems, inspectorPanel, advancedInspector;
+    private android.widget.ScrollView advancedScroll;
     private boolean drawerOpen=false;
     private volatile int gizmoMode=0;
+    private volatile boolean snapRotation15=false;
     private volatile String activePaintKey="";
     private volatile boolean paintTerrainMode=false;
     private volatile float paintRadius=16f;
     private volatile long statsUpdatedAt=0;
     private volatile boolean importing = false;
+    private volatile String activeLibraryTab="Деревья";
     private volatile int placingKind = -1;
     private volatile String placingGlb = null;
     private volatile int terrainMode=0; // -1 lower, +1 raise
@@ -223,7 +259,7 @@ public class EditorActivity extends Activity {
         top.setPadding(dp(5),dp(2),dp(5),dp(2));
         top.setBackgroundColor(Color.argb(220,14,21,32));
         TextView title=new TextView(this);
-        title.setText("OE 0.6.13  /  BASISU KTX2 TEST");
+        title.setText("OE 0.7.13 / XYZ 360° SAFE TEST");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
         title.setTextSize(12);
@@ -239,6 +275,13 @@ public class EditorActivity extends Activity {
         Button redo=button("↷",this::redoAction);
         top.addView(redo,new LinearLayout.LayoutParams(dp(45),dp(43)));
         root.addView(top,new FrameLayout.LayoutParams(-1,dp(49),Gravity.TOP));
+        roadDoneButton=button("✓ Завершить дорогу",this::finishRoadMode);
+        FrameLayout.LayoutParams doneParams=new FrameLayout.LayoutParams(dp(175),dp(46),
+                Gravity.TOP|Gravity.RIGHT);
+        doneParams.topMargin=dp(52);
+        doneParams.rightMargin=dp(8);
+        root.addView(roadDoneButton,doneParams);
+        roadDoneButton.setVisibility(View.GONE);
 
         // Left drawer opens on demand and is vertically scrollable.
         toolDrawer=new LinearLayout(this);
@@ -248,7 +291,8 @@ public class EditorActivity extends Activity {
         HorizontalScrollView categoryScroll=new HorizontalScrollView(this);
         categoryScroll.setHorizontalScrollBarEnabled(false);
         LinearLayout categoryRow=row();
-        for(String category:new String[]{"Здания","Детали","Декор","Рельеф","Текстуры","Проект"}){
+        for(String category:new String[]{"Дома","Деревья","Крепость","Декорации","Окружение",
+                "Детали","Декор","Рельеф","Дороги","Текстуры","Проект"}){
             Button tab=button(category,()->showPalette(category));
             LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(dp(98),dp(44));
             p.setMargins(dp(2),0,dp(2),0);categoryRow.addView(tab,p);
@@ -283,13 +327,13 @@ public class EditorActivity extends Activity {
         inspectorPanel.addView(selectionText);
         LinearLayout modes=row();
         addControl(modes,"↔ Двигать",()->changeGizmoMode(0));
-        addControl(modes,"⟳ Повернуть",()->changeGizmoMode(1));
+        addControl(modes,"⟳ XYZ 360°",()->changeGizmoMode(1));
         addControl(modes,"⤢ Масштаб",()->changeGizmoMode(2));
         inspectorPanel.addView(modes);
         LinearLayout quick=row();
         addControl(quick,"⚙ Точно",()->{
-            boolean open=advancedInspector.getVisibility()!=View.VISIBLE;
-            advancedInspector.setVisibility(open?View.VISIBLE:View.GONE);
+            boolean open=advancedScroll.getVisibility()!=View.VISIBLE;
+            advancedScroll.setVisibility(open?View.VISIBLE:View.GONE);
         });
         addControl(quick,"К земле",()->edit(EditorActivity::nativeSnapSelectedToGround));
         addControl(quick,"⧉ Копия",this::duplicateAction);
@@ -298,7 +342,10 @@ public class EditorActivity extends Activity {
 
         advancedInspector=new LinearLayout(this);
         advancedInspector.setOrientation(LinearLayout.VERTICAL);
-        advancedInspector.setVisibility(View.GONE);
+        advancedScroll=new android.widget.ScrollView(this);
+        advancedScroll.setFillViewport(false);
+        advancedScroll.setVerticalScrollBarEnabled(true);
+        advancedScroll.setVisibility(View.GONE);
         LinearLayout moveRow=row();
         addControl(moveRow,"X −",()->edit(()->nativeNudge(-moveStep,0)));
         addControl(moveRow,"X +",()->edit(()->nativeNudge(moveStep,0)));
@@ -311,6 +358,23 @@ public class EditorActivity extends Activity {
         addControl(heightRow,"↺",()->edit(()->nativeRotate(-turnStep)));
         addControl(heightRow,"↻",()->edit(()->nativeRotate(turnStep)));
         advancedInspector.addView(heightRow);
+        LinearLayout rotateRowX=row();
+        addControl(rotateRowX,"🔴 X −90°",()->edit(()->nativeRotateSelectedAxis(0,-90)));
+        addControl(rotateRowX,"🔴 X +90°",()->edit(()->nativeRotateSelectedAxis(0,90)));
+        advancedInspector.addView(rotateRowX);
+        LinearLayout rotateRowZ=row();
+        addControl(rotateRowZ,"🔵 Z −90°",()->edit(()->nativeRotateSelectedAxis(2,-90)));
+        addControl(rotateRowZ,"🔵 Z +90°",()->edit(()->nativeRotateSelectedAxis(2,90)));
+        advancedInspector.addView(rotateRowZ);
+        LinearLayout rotateTools=row();
+        addControl(rotateTools,"15°: вкл/выкл",this::toggleRotationSnap);
+        addControl(rotateTools,"XYZ точно",this::editSelectedRotation);
+        addControl(rotateTools,"⟲ Сброс",()->edit(EditorActivity::nativeResetSelectedRotation));
+        advancedInspector.addView(rotateTools);
+        LinearLayout uprightRow=row();
+        addControl(uprightRow,"↥ Поставить на землю",()->
+            edit(EditorActivity::nativeSnapSelectedToGround));
+        advancedInspector.addView(uprightRow);
         LinearLayout scaleRow=row();
         addControl(scaleRow,"− Размер",()->edit(()->nativeScale(1f/scaleStep)));
         addControl(scaleRow,"+ Размер",()->edit(()->nativeScale(scaleStep)));
@@ -331,7 +395,10 @@ public class EditorActivity extends Activity {
             addControl(axisRow,name+" + масштаб",()->edit(()->nativeScaleSelectedAxis(targetAxis,scaleStep)));
             advancedInspector.addView(axisRow);
         }
-        inspectorPanel.addView(advancedInspector);
+        advancedScroll.addView(advancedInspector);
+        // Keep ring controls and precise XYZ rotation accessible even when
+        // the screen is short, in landscape or under Android display scaling.
+        inspectorPanel.addView(advancedScroll,new LinearLayout.LayoutParams(-1,dp(220)));
         FrameLayout.LayoutParams ip=new FrameLayout.LayoutParams(dp(360),-2,Gravity.BOTTOM|Gravity.RIGHT);
         ip.setMargins(0,0,dp(8),dp(12));
         root.addView(inspectorPanel,ip);
@@ -368,7 +435,7 @@ public class EditorActivity extends Activity {
         Button b=button(label,()->{
             action.run();
             // Start placing directly on the exposed 3D world.
-            if(placingKind>=0||terrainMode!=0||paintTerrainMode)toggleDrawer(false);
+            if(placingKind>=0||terrainMode!=0||paintTerrainMode||roadMode!=0)toggleDrawer(false);
         });
         LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,dp(43));
         p.setMargins(dp(4),dp(2),dp(4),dp(2));
@@ -376,10 +443,26 @@ public class EditorActivity extends Activity {
     }
     private void showPalette(String category){
         paletteItems.removeAllViews();
-        if("Здания".equals(category)){
+        if("Дома".equals(category)||"Здания".equals(category)){
             addPaletteOption("+ Таверна",()->enterPlaceMode(0,null));
             addPaletteOption("+ Кузница",()->enterPlaceMode(1,null));
             addPaletteOption("+ Аукционный дом",()->enterPlaceMode(2,null));
+            addLibraryButtons(AssetLibrary.HOUSES);
+        }else if("Деревья".equals(category)){
+            addPaletteOption("🌳 Дерево OE",()->enterPlaceMode(5,null));
+            addPaletteOption("🌿 Куст OE",()->enterPlaceMode(8,null));
+            addLibraryButtons(AssetLibrary.TREES);
+        }else if("Крепость".equals(category)){
+            addPaletteOption("▥ Каменная стена OE",()->enterPlaceMode(10,null));
+            addPaletteOption("▥ Колонна OE",()->enterPlaceMode(15,null));
+            addLibraryButtons(AssetLibrary.FORTRESS);
+        }else if("Декорации".equals(category)){
+            addPaletteOption("🔥 Фонарь OE",()->enterPlaceMode(3,null));
+            addPaletteOption("🪨 Камни OE",()->enterPlaceMode(7,null));
+            addPaletteOption("🧺 Лавка OE",()->enterPlaceMode(9,null));
+            addLibraryButtons(AssetLibrary.DECOR);
+        }else if("Окружение".equals(category)){
+            addLibraryButtons(AssetLibrary.ENVIRONMENT);
         }else if("Детали".equals(category)){
             addPaletteOption("▧ Стена",()->enterPlaceMode(10,null));
             addPaletteOption("▤ Пол",()->enterPlaceMode(11,null));
@@ -401,6 +484,21 @@ public class EditorActivity extends Activity {
             addPaletteOption("⛰ Опустить землю",()->enterTerrainMode(-1));
             addPaletteOption("📐 Радиус и сила кисти",this::chooseTerrainBrush);
             addPaletteOption("✕ Завершить изменение",this::cancelPlace);
+        }else if("Дороги".equals(category)){
+            addPaletteOption("🏰 Средневековый пресет улиц",this::applyMedievalRoadPreset);
+            addPaletteOption("🪨 Покрытие дороги · брусчатка/грунт/гравий",this::chooseRoadMaterial);
+            addPaletteOption("🛣 Новая дорога · рисовать пальцем",this::startRoadDrawing);
+            addPaletteOption("✏ Редактировать узлы дорог",this::startRoadEditing);
+            addPaletteOption("📏 Ширина дороги",this::chooseRoadWidth);
+            addPaletteOption("〰 Разметка · включить/выключить",this::toggleRoadMarkings);
+            addPaletteOption("📋 Список дорог и выбор",this::showRoadList);
+            addPaletteOption("🔗 Соединения и перекрёстки",this::showRoadConnections);
+            addPaletteOption("🚶 Тротуары и бордюры · включить/выключить",
+                ()->toggleRoadPedestrian(0));
+            addPaletteOption("🚸 Пешеходные переходы · включить/выключить",
+                ()->toggleRoadPedestrian(1));
+            addPaletteOption("🗑 Удалить выбранную дорогу",this::deleteRoad);
+            addPaletteOption("✓ Завершить / выйти",this::finishRoadMode);
         }else if("Текстуры".equals(category)){
             addPaletteOption("🖼 Загрузить свой PNG / JPG",this::pickPaintTexture);
             addPaletteOption("🎨 Мои текстуры",this::choosePaintTexture);
@@ -433,14 +531,180 @@ public class EditorActivity extends Activity {
             addPaletteOption("↷ Повтор",this::redoAction);
         }
     }
+    private void applyMedievalRoadPreset(){
+        if(importing){message("Дождись загрузки сцены");return;}
+        // Changes only future road defaults and scene-wide modern pavement UI.
+        // Existing road geometry and per-road materials remain untouched.
+        roadWidth=4f;
+        roadMaterial=1; // cobblestone
+        roadMarkings=false;
+        surface.queueEvent(()->{
+            nativeRoadMedievalPreset();
+            surface.requestRender();
+        });
+        message("🏰 Средневековые улицы: брусчатка 4 м, без современной разметки, тротуаров и зебр. Старые дороги не изменены.");
+    }
+    private void chooseRoadMaterial(){
+        if(importing){message("Дождись загрузки сцены");return;}
+        final String[] names={
+            "🛣 Асфальт · современная дорога",
+            "🪨 Брусчатка · жилые улочки и рынок",
+            "🐎 Грунт · повозки и деревенские тропы",
+            "⛰ Гравий · тракт и окраины",
+            "🌙 Тёмные древние плиты · фэнтези квартал"
+        };
+        new AlertDialog.Builder(this).setTitle("Покрытие улицы")
+            .setSingleChoiceItems(names,roadMaterial,(dialog,index)->{
+                roadMaterial=index;
+                if(index!=0)roadMarkings=false;
+                final int chosen=index;
+                surface.queueEvent(()->{
+                    nativeRoadSetMaterial(chosen);
+                    surface.requestRender();
+                });
+                message("Покрытие новых и выбранной дороги: "+names[index]);
+                dialog.dismiss();
+            }).setNegativeButton("Отмена",null).show();
+    }
+    private void startRoadDrawing(){
+        if(importing){message("Заверши загрузку сцены");return;}
+        if(roadMode==1)finishRoadMode();
+        placingKind=-1;placingGlb=null;terrainMode=0;paintTerrainMode=false;
+        roadMode=1;
+        roadDoneButton.setVisibility(View.VISIBLE);
+        roadDoneButton.setText("✓ Завершить дорогу");
+        statusText.setText("ДОРОГА: веди пальцем. Концы соединятся с соседней дорогой до 3 м. Готово — ✓.");
+        surface.queueEvent(()->{
+            int roadId=nativeRoadBegin(roadWidth,roadMarkings,roadMaterial);
+            if(roadId==0){
+                ui(()->{
+                    roadMode=0;roadDoneButton.setVisibility(View.GONE);
+                    message("Достигнут лимит 24 дорог");
+                });
+            }
+            surface.requestRender();
+        });
+    }
+    private void startRoadEditing(){
+        if(importing){message("Заверши загрузку сцены");return;}
+        if(roadMode==1)finishRoadMode();
+        placingKind=-1;placingGlb=null;terrainMode=0;paintTerrainMode=false;
+        roadMode=2;
+        roadDoneButton.setVisibility(View.VISIBLE);
+        roadDoneButton.setText("✓ Закрыть дороги");
+        statusText.setText("ДОРОГИ: тяни оранжевые узлы пальцем. Выбирай дороги через список.");
+        surface.queueEvent(()->{nativeRoadMode(2);surface.requestRender();});
+    }
+    private void finishRoadMode(){
+        final int previous=roadMode;
+        if(previous==0)return;
+        roadMode=0;roadDoneButton.setVisibility(View.GONE);
+        roadDoneButton.setText("✓ Завершить дорогу");
+        surface.queueEvent(()->{
+            if(previous==1&&!nativeRoadFinish())
+                message("Для дороги нужны хотя бы две разные точки; заготовка удалена");
+            nativeRoadMode(0);nativeRoadEndDrag();
+            surface.requestRender();
+        });
+        statusText.setText("Режим объектов · каталог → Дороги для редактирования");
+    }
+    private void chooseRoadWidth(){
+        final String[] labels={"2 м · тропинка","4 м · узкая улица","6 м · обычная дорога",
+                "8 м · широкая дорога","12 м · проспект","18 м · большая трасса"};
+        final float[] widths={2,4,6,8,12,18};
+        new AlertDialog.Builder(this).setTitle("Ширина дороги")
+            .setSingleChoiceItems(labels,-1,(dialog,index)->{
+                roadWidth=widths[index];
+                final float w=roadWidth;
+                surface.queueEvent(()->{
+                    nativeRoadSetWidth(w);
+                    surface.requestRender();
+                });
+                message("Ширина новых дорог: "+(int)roadWidth+" м");
+                dialog.dismiss();
+            }).setNegativeButton("Отмена",null).show();
+    }
+    private void toggleRoadMarkings(){
+        if(importing){message("Дождись загрузки сцены");return;}
+        final boolean enabled=!roadMarkings;
+        surface.queueEvent(()->{
+            final boolean updated=nativeRoadSetMarkings(enabled);
+            surface.requestRender();
+            ui(()->{
+                if(updated){
+                    roadMarkings=enabled;
+                    message(enabled?"Разметка включена":"Разметка выключена");
+                }else{
+                    // Modern paint stripes are intentionally absent on medieval surfaces.
+                    message("Современная разметка доступна только на асфальтовой дороге. Выбери её в списке.");
+                }
+            });
+        });
+    }
+    private void toggleRoadPedestrian(int feature){
+        if(importing||surface==null){message("Дождись загрузки сцены");return;}
+        surface.queueEvent(()->{
+            final int enabled=nativeRoadTogglePedestrian(feature);
+            surface.requestRender();
+            if(enabled>=0)
+                message((feature==0?"Тротуары и бордюры":"Пешеходные переходы")+
+                        (enabled==1?" включены":" выключены")+" · сохранится с проектом");
+        });
+    }
+    private void showRoadConnections(){
+        if(importing||surface==null)return;
+        surface.queueEvent(()->{
+            final String report=nativeRoadNetworkReport();
+            ui(()->new AlertDialog.Builder(this)
+                .setTitle("OE · Автоматические перекрёстки")
+                .setMessage(report+"\n\nПересекающиеся дороги соединяются автоматически. "+
+                    "При завершении дороги её концы притягиваются к существующей "+
+                    "трассе на расстоянии до 3 метров.")
+                .setPositiveButton("Готово",null).show());
+        });
+    }
+    private void showRoadList(){
+        if(importing)return;
+        surface.queueEvent(()->{
+            final String[] labels=nativeRoadLabels();
+            final int[] ids=nativeRoadIds();
+            ui(()->{
+                if(labels==null||ids==null||ids.length!=labels.length||ids.length==0){
+                    message("Дорог пока нет. Начни с «Новая дорога»");
+                    return;
+                }
+                new AlertDialog.Builder(this).setTitle("Дороги сцены")
+                    .setItems(labels,(d,i)->{
+                        startRoadEditing();
+                        surface.queueEvent(()->{
+                            nativeRoadSelect(ids[i]);
+                            final String info=nativeRoadInfo();
+                            surface.requestRender();
+                            message(info.replace("\n"," · "));
+                        });
+                    }).setNegativeButton("Закрыть",null).show();
+            });
+        });
+    }
+    private void deleteRoad(){
+        if(importing){message("Дождись загрузки сцены");return;}
+        new AlertDialog.Builder(this).setTitle("Удалить выбранную дорогу?")
+            .setMessage("Удаляется только выбранная дорога. Действие можно отменить.")
+            .setPositiveButton("Удалить",(d,which)->edit(()->{
+                if(nativeRoadDelete())message("Дорога удалена");
+                else message("Сначала выбери дорогу через список");
+            }))
+            .setNegativeButton("Отмена",null).show();
+    }
     private void changeGizmoMode(int mode){
         gizmoMode=mode;
         surface.queueEvent(()->{nativeSetGizmoMode(mode);surface.requestRender();});
         statusText.setText(mode==0?"3D-оси: тяни X (красная), Y (зелёная), Z (синяя)":
-            mode==1?"3D-ось Y: тяни зелёный маркер для поворота вокруг вертикали":
+            mode==1?"Вращение XYZ 360°: тяни красное (X), зелёное (Y), синее (Z) кольцо. В «Точно» есть шаг 15° и ±90°.":
                      "3D-оси: тяни цветной маркер для изменения масштаба по выбранной оси");
     }
     private void enterPlaceMode(int kind, String asset) {
+        if(roadMode!=0)finishRoadMode();
         if(importing) { message("Сначала дождись завершения импорта"); return; }
         terrainMode=0;paintTerrainMode=false;
         placingKind = kind;
@@ -449,6 +713,7 @@ public class EditorActivity extends Activity {
         message("Коснись места на карте для размещения");
     }
     private void cancelPlace() {
+        if(roadMode!=0)finishRoadMode();
         paintTerrainMode=false;
         terrainMode=0;
         placingKind = -1;
@@ -457,6 +722,7 @@ public class EditorActivity extends Activity {
         message("Размещение отменено");
     }
     private void enterTerrainMode(int direction){
+        if(roadMode!=0)finishRoadMode();
         if(importing){message("Дождись завершения операции");return;}
         placingKind=-1;placingGlb=null;paintTerrainMode=false;
         terrainMode=direction;
@@ -556,6 +822,68 @@ public class EditorActivity extends Activity {
                 scaleStep=index<=3?1.05f:1.10f;
                 message("Шаг перемещения: "+choices[index]+" · без привязки к сетке");
             }).show();
+    }
+    private void toggleRotationSnap(){
+        snapRotation15=!snapRotation15;
+        final boolean enabled=snapRotation15;
+        surface.queueEvent(()->{
+            nativeSetRotationSnap(enabled);
+            surface.requestRender();
+        });
+        statusText.setText(enabled?
+            "XYZ 360° · угловая привязка каждые 15° ВКЛ":
+            "XYZ 360° · свободное вращение, без привязки");
+        message(enabled?"Вращение с шагом 15°":"Свободное вращение 360°");
+    }
+    private void editSelectedRotation(){
+        if(importing){message("Заверши импорт перед настройкой поворота");return;}
+        surface.queueEvent(()->{
+            final double[] xyz=nativeSelectedRotationEuler();
+            if(xyz==null){message("Сначала выбери дом или 3D-модель");return;}
+            ui(()->{
+                LinearLayout form=new LinearLayout(this);
+                form.setOrientation(LinearLayout.VERTICAL);
+                form.setPadding(dp(22),dp(8),dp(22),dp(4));
+                final EditText[] fields=new EditText[3];
+                final String[] names={"X — наклон", "Y — поворот вокруг вертикали",
+                    "Z — боковой крен"};
+                final int mode=InputType.TYPE_CLASS_NUMBER|
+                    InputType.TYPE_NUMBER_FLAG_DECIMAL|InputType.TYPE_NUMBER_FLAG_SIGNED;
+                for(int i=0;i<3;i++){
+                    EditText field=new EditText(this);
+                    field.setInputType(mode);field.setSingleLine(true);
+                    field.setText(String.format(Locale.US,"%.2f",xyz[i]));
+                    field.setHint(names[i]+" (градусы)");
+                    field.setSelectAllOnFocus(true);
+                    form.addView(field);fields[i]=field;
+                }
+                new AlertDialog.Builder(this)
+                    .setTitle("Профессиональный поворот X / Y / Z")
+                    .setMessage("Углы в градусах: ±90° ставит лежащий дом вертикально. "
+                        +"360° — полный оборот. Точный поворот сохраняется в проекте.")
+                    .setView(form)
+                    .setPositiveButton("Применить",(dialog,which)->{
+                        try{
+                            double x=Double.parseDouble(fields[0].getText().toString()
+                                .trim().replace(',','.'));
+                            double y=Double.parseDouble(fields[1].getText().toString()
+                                .trim().replace(',','.'));
+                            double z=Double.parseDouble(fields[2].getText().toString()
+                                .trim().replace(',','.'));
+                            if(!Double.isFinite(x)||!Double.isFinite(y)||
+                               !Double.isFinite(z)||Math.abs(x)>36000||
+                               Math.abs(y)>36000||Math.abs(z)>36000)
+                                throw new NumberFormatException();
+                            edit(()->{
+                                if(!nativeSetSelectedRotationEuler(x,y,z))
+                                    message("Не удалось выставить углы XYZ");
+                            });
+                        }catch(NumberFormatException ex){
+                            message("Введи числовые углы X, Y, Z в градусах");
+                        }
+                    }).setNegativeButton("Отмена",null).show();
+            });
+        });
     }
     private void editSelectedCoordinates(){
         if(importing){message("Заверши импорт перед редактированием");return;}
@@ -906,7 +1234,9 @@ public class EditorActivity extends Activity {
         if(importing){message("Дождись завершения операции");return;}
         Intent intent=new Intent(Intent.ACTION_CREATE_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("application/zip");
+        // Some Android document providers label ZIPs as octet-stream;
+        // validate the actual archive content after selection.
+        intent.setType("*/*");
         intent.putExtra(Intent.EXTRA_TITLE,"ORVETHRA-World.oezip");
         try{startActivityForResult(intent,SAVE_PROJECT);}
         catch(Exception e){message("Нельзя открыть файловый менеджер: "+e.getMessage());}
@@ -965,6 +1295,145 @@ public class EditorActivity extends Activity {
         if(stagingRoot!=null)new Thread(() -> ProjectArchive.removeTree(stagingRoot),
                 "oe-project-cleanup").start();
     }
+    private void addLibraryButtons(String category){
+        addPaletteOption("📚 Встроенные модели + свои ZIP",()->
+            showLibraryObjects(category));
+        addPaletteOption("📦 Добавить набор моделей ZIP",()->
+            pickLibrary(category));
+    }
+    private void pickLibrary(String category){
+        if(importing){message("Импорт ещё выполняется");return;}
+        activeLibraryTab=category;
+        Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/zip");
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        try{startActivityForResult(intent,PICK_LIBRARY);}
+        catch(Exception e){message("Файловый менеджер недоступен: "+e.getMessage());}
+    }
+    private void installLibrary(Uri uri){
+        if(importing)return;
+        importing=true;
+        message("📦 Добавляю библиотеку; сами модели пока не загружаю в GPU");
+        new Thread(()->{
+            try(InputStream input=getContentResolver().openInputStream(uri)){
+                if(input==null)throw new Exception("ZIP не найден");
+                final int count=AssetLibrary.install(input,getFilesDir());
+                importing=false;
+                message("✅ Библиотека добавлена: "+count+
+                        " отдельных моделей. Выбери раздел каталога.");
+                ui(()->showPalette(activeLibraryTab));
+            }catch(Exception e){
+                importing=false;
+                message("Не удалось добавить ZIP: "+e.getMessage());
+            }
+        },"oe-library-install").start();
+    }
+    private void showLibraryObjects(String category){
+        if(importing){message("Дождись завершения загрузки");return;}
+        activeLibraryTab=category;
+        new Thread(()->{
+            try{
+                // Seed all 105 verified Kenney objects from APK once.
+                // Runs in the library worker, never on the UI or GLES thread.
+                AssetLibrary.ensureBundled(getAssets(),getFilesDir());
+                AssetLibrary.ensureMedievalAddon(getAssets(),getFilesDir());
+                final java.util.List<AssetLibrary.Entry> items=
+                        AssetLibrary.list(getFilesDir(),category);
+                ui(()->{
+                    if(items.isEmpty()){
+                        message("В этой категории пока нет моделей. Попробуй другую или добавь отдельный ZIP.");
+                        return;
+                    }
+                    String[] labels=new String[items.size()];
+                    for(int i=0;i<items.size();++i)
+                        labels[i]=items.get(i).label();
+                    new AlertDialog.Builder(this)
+                       .setTitle(category+" · "+items.size()+" отдельных объектов")
+                       .setItems(labels,(dialog,index)->selectLibraryObject(items.get(index)))
+                       .setNegativeButton("Назад",null).show();
+                });
+            }catch(Exception e){message("Каталог: "+e.getMessage());}
+        },"oe-library-list").start();
+    }
+    private void selectLibraryObject(AssetLibrary.Entry entry){
+        if(importing){message("Подожди: предыдущая модель загружается");return;}
+        // The original 53 MiB stylized-building GLB is a single multi-house
+        // scene, not a standalone house. Parsing/decoding the whole file plus
+        // uploading its textures can exhaust a 4 GiB tablet, causing a freeze.
+        // Keep the full byte-identical GLB safely in the APK for later offline
+        // splitting, but do not start a doomed import on the GLES tablet.
+        if(entry.path.toLowerCase(Locale.ROOT).endsWith(".glb")&&
+           entry.bytes>24L*1024*1024){
+            new AlertDialog.Builder(this)
+                .setTitle("Тяжёлая объединённая модель")
+                .setMessage("«"+entry.label()+"» — "+(entry.bytes/(1024*1024))+
+                    " МиБ. Это целая сцена домов одним GLB, а не отдельный дом. "+
+                    "Загрузка целиком может зависнуть на планшете. "+
+                    "Используй отдельные дома из раздела «Дома». "+
+                    "Исходная модель и все текстуры сохранены внутри APK без изменений.")
+                .setPositiveButton("Понятно",null).show();
+            return;
+        }
+        importing=true;
+        message("Загружаю отдельно: "+entry.label());
+        new Thread(()->{
+            try{
+                final byte[] bytes=AssetLibrary.load(entry);
+                final String key=GlbReader.key(bytes);
+                final File target=new File(modelDir(),key);
+                // A selected model becomes part of the normal content-addressed
+                // OE model store; project .oezip includes it unchanged.
+                if(!target.exists()){
+                    final File part=new File(modelDir(),key+".part");
+                    try{
+                        Files.write(part.toPath(),bytes);
+                        Files.move(part.toPath(),target.toPath(),
+                            StandardCopyOption.REPLACE_EXISTING);
+                    }finally{Files.deleteIfExists(part.toPath());}
+                }
+                surface.queueEvent(()->{
+                    if(Arrays.asList(nativeLoadedAssetKeys()).contains(key)){
+                        importing=false;
+                        ui(()->enterPlaceMode(6,key));
+                        message("Выбрана: "+entry.label());
+                        return;
+                    }
+                    // A small GPU cache is separate from the ZIP catalog. Only
+                    // models not used by the scene or undo/redo may be evicted.
+                    nativeTrimUnusedAssets();
+                    if(!nativeCanRegisterMore(1)){
+                        importing=false;
+                        message("Достигнут лимит "+MAX_ASSETS+
+                                " уникальных моделей в сцене. Копии уже размещённых объектов не расходуют слот.");
+                        return;
+                    }
+                    new Thread(()->{
+                        try{
+                            final GlbReader.Result mesh=GlbReader.decode(bytes,textureLimit);
+                            surface.queueEvent(()->{
+                                final boolean ok=nativeRegisterAsset(key,mesh.vertices,
+                                        mesh.boundCenterY,mesh.boundRadius,mesh.draws,
+                                        mesh.imageData,mesh.imageInfo,mesh.previewOmitsRig);
+                                importing=false;
+                                if(ok){
+                                    ui(()->enterPlaceMode(6,key));
+                                    surface.requestRender();
+                                    message("✅ "+entry.label()+" готов. Коснись земли.");
+                                }else message("GPU отклонил модель: лимит памяти или геометрии.");
+                            });
+                        }catch(Exception e){
+                            importing=false;
+                            message("Не загрузить "+entry.label()+": "+e.getMessage());
+                        }
+                    },"oe-library-decode").start();
+                });
+            }catch(Exception e){
+                importing=false;
+                message("Ошибка чтения модели: "+e.getMessage());
+            }
+        },"oe-library-load").start();
+    }
     private void pickGlb() {
         if(importing) { message("Импорт или загрузка уже выполняется"); return; }
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -975,6 +1444,11 @@ public class EditorActivity extends Activity {
     }
     @Override protected void onActivityResult(int requestCode,int resultCode,Intent intent) {
         super.onActivityResult(requestCode,resultCode,intent);
+        if(requestCode==PICK_LIBRARY){
+            if(resultCode==RESULT_OK&&intent!=null&&intent.getData()!=null)
+                installLibrary(intent.getData());
+            return;
+        }
         if(requestCode==PICK_PAINT){
             if(resultCode==RESULT_OK&&intent!=null&&intent.getData()!=null)
                 importPaintTexture(intent.getData());
@@ -1067,7 +1541,7 @@ public class EditorActivity extends Activity {
     }
     private static final class SavedEntity {
         int type;
-        float x,z,yaw,size,y,sx=1f,sy=1f,sz=1f;
+        float x,z,yaw,size,y,sx=1f,sy=1f,sz=1f,qx=0f,qy=0f,qz=0f,qw=1f;
         String asset,paint="";
     }
     private static boolean validAsset(String name) {
@@ -1075,6 +1549,7 @@ public class EditorActivity extends Activity {
     }
     private void loadScene() {
         if(importing){message("Импорт или загрузка уже выполняется");return;}
+        if(roadMode!=0)finishRoadMode();
         importing=true;
         // Take a consistent snapshot of the registered GPU assets. The reader
         // thread can skip expensive decode work for those immutable GLBs.
@@ -1102,15 +1577,69 @@ public class EditorActivity extends Activity {
             JSONObject document=new JSONObject(new String(jsonBytes.toByteArray(),StandardCharsets.UTF_8));
             if(document.optInt("version",-1)!=1)throw new Exception("Неверная версия сцены");
             final boolean demoRoads=document.optBoolean("demoRoads",false);
+            // Strict validation; old OE v1 scenes omit these settings and default to on.
+            if((document.has("roadSidewalks")&&
+                !(document.get("roadSidewalks") instanceof Boolean))||
+               (document.has("roadCrosswalks")&&
+                !(document.get("roadCrosswalks") instanceof Boolean)))
+                throw new Exception("Неверные параметры тротуаров или переходов");
+            final boolean roadSidewalks=document.optBoolean("roadSidewalks",true);
+            final boolean roadCrosswalks=document.optBoolean("roadCrosswalks",true);
             final int worldSize=document.optInt("worldSize",1024);
             if(worldSize!=1024&&worldSize!=2048&&worldSize!=4096&&worldSize!=8192&&worldSize!=16384)
                 throw new Exception("Неподдерживаемый размер карты");
             JSONArray arr=document.getJSONArray("items");
             if(arr.length()>300)throw new Exception("Слишком много объектов");
+            // Backward-compatible version-1 scenes can omit the roads field.
+            JSONArray roadsJson=document.optJSONArray("roads");
+            if(document.has("roads")&&roadsJson==null)
+                throw new Exception("Неверный формат дорог");
+            final int roadTotal=roadsJson==null?0:roadsJson.length();
+            if(roadTotal>24)throw new Exception("Слишком много дорог (макс. 24)");
+            int[] roadIds=new int[roadTotal],roadCounts=new int[roadTotal],
+                  roadMaterials=new int[roadTotal];
+            float[] roadWidths=new float[roadTotal];
+            boolean[] roadMarkings=new boolean[roadTotal];
+            float[] roadsRaw=new float[24*48*2];
+            int roadRawCount=0;
+            HashSet<Integer> seenRoads=new HashSet<>();
+            for(int ri=0;ri<roadTotal;ri++){
+                JSONArray road=roadsJson.getJSONArray(ri);
+                if(road.length()!=4&&road.length()!=5)
+                    throw new Exception("Неверная структура дороги "+ri);
+                final int material=road.length()==5?road.getInt(4):0;
+                if(material<0||material>4)
+                    throw new Exception("Неизвестное покрытие дороги "+ri);
+                roadMaterials[ri]=material;
+                final int id=road.getInt(0),flag=road.getInt(2);
+                final double width=road.getDouble(1);
+                JSONArray points=road.getJSONArray(3);
+                if(id<=0||id==Integer.MAX_VALUE||!seenRoads.add(id)||
+                   !Double.isFinite(width)||width<2||width>18||
+                   (flag!=0&&flag!=1)||points.length()<2||points.length()>48)
+                    throw new Exception("Неверные параметры дороги "+ri);
+                roadIds[ri]=id;roadWidths[ri]=(float)width;
+                roadMarkings[ri]=(flag==1);roadCounts[ri]=points.length();
+                double prevX=0,prevZ=0;
+                for(int j=0;j<points.length();j++){
+                    JSONArray point=points.getJSONArray(j);
+                    if(point.length()!=2)throw new Exception("Неверный узел дороги");
+                    double x=point.getDouble(0),z=point.getDouble(1);
+                    if(!Double.isFinite(x)||!Double.isFinite(z)||
+                       Math.abs(x)>worldSize/2.0||Math.abs(z)>worldSize/2.0)
+                        throw new Exception("Точка дороги за границей карты");
+                    if(j>0&&(x-prevX)*(x-prevX)+(z-prevZ)*(z-prevZ)<.25*.25)
+                        throw new Exception("Слишком близкие узлы дороги");
+                    roadsRaw[roadRawCount++]=(float)x;
+                    roadsRaw[roadRawCount++]=(float)z;
+                    prevX=x;prevZ=z;
+                }
+            }
+            final float[] roadCoordinates=Arrays.copyOf(roadsRaw,roadRawCount);
             SavedEntity[] items=new SavedEntity[arr.length()];
             HashSet<String> assets=new HashSet<>();
             int[] kinds=new int[arr.length()];
-            float[] transforms=new float[arr.length()*8];
+            float[] transforms=new float[arr.length()*12];
             JSONArray brushJson=document.optJSONArray("terrain");
             int brushCount=brushJson==null?0:brushJson.length();
             if(brushCount>64)throw new Exception("Слишком много изменений рельефа");
@@ -1171,6 +1700,16 @@ public class EditorActivity extends Activity {
                     throw new Exception("Неверный масштаб детали "+i);
                 e.x=(float)x;e.z=(float)z;e.yaw=(float)yaw;e.size=(float)size;e.y=(float)y;
                 e.sx=(float)sx;e.sy=(float)sy;e.sz=(float)sz;
+                double qx=object.optDouble("qx",0.0),qy=object.optDouble("qy",0.0),
+                       qz=object.optDouble("qz",0.0),qw=object.optDouble("qw",1.0);
+                double qlen=qx*qx+qy*qy+qz*qz+qw*qw;
+                if(!Double.isFinite(qlen)||qlen<.49||qlen>1.51||
+                   Math.abs(qx)>1.01||Math.abs(qy)>1.01||
+                   Math.abs(qz)>1.01||Math.abs(qw)>1.01)
+                    throw new Exception("Некорректный поворот модели "+i);
+                double inv=1.0/Math.sqrt(qlen);
+                e.qx=(float)(qx*inv);e.qy=(float)(qy*inv);
+                e.qz=(float)(qz*inv);e.qw=(float)(qw*inv);
                 e.paint=object.optString("paint","");
                 if(!e.paint.isEmpty()){
                     if(!validTexture(e.paint))throw new Exception("Неверная текстура объекта "+i);
@@ -1184,14 +1723,18 @@ public class EditorActivity extends Activity {
                 }
                 items[i]=e;
                 kinds[i]=e.type;
-                transforms[i*8]=e.x;
-                transforms[i*8+1]=e.z;
-                transforms[i*8+2]=e.yaw;
-                transforms[i*8+3]=e.size;
-                transforms[i*8+4]=e.y;
-                transforms[i*8+5]=e.sx;
-                transforms[i*8+6]=e.sy;
-                transforms[i*8+7]=e.sz;
+                transforms[i*12]=e.x;
+                transforms[i*12+1]=e.z;
+                transforms[i*12+2]=e.yaw;
+                transforms[i*12+3]=e.size;
+                transforms[i*12+4]=e.y;
+                transforms[i*12+5]=e.sx;
+                transforms[i*12+6]=e.sy;
+                transforms[i*12+7]=e.sz;
+                transforms[i*12+8]=e.qx;
+                transforms[i*12+9]=e.qy;
+                transforms[i*12+10]=e.qz;
+                transforms[i*12+11]=e.qw;
                 modelKeys[i]=e.asset;
             }
             if(assets.size()>MAX_ASSETS)throw new Exception("Слишком много разных GLB-моделей");
@@ -1304,9 +1847,15 @@ public class EditorActivity extends Activity {
                         uploaded.add(entry.getKey());
                     }
                     if(!nativeReplaceScene(worldSize,demoRoads,kinds,transforms,modelKeys,
-                            terrainBrushes,objectPaintKeys,paintBrushes,paintBrushKeys))
+                            terrainBrushes,objectPaintKeys,paintBrushes,paintBrushKeys,
+                            roadIds,roadWidths,roadMarkings,roadCounts,roadMaterials,roadCoordinates,
+                            roadSidewalks,roadCrosswalks))
                         throw new Exception("Сцена не прошла полную проверку в движке");
                     committed=true;
+                    ui(()->{
+                        roadMode=0;
+                        roadDoneButton.setVisibility(View.GONE);
+                    });
                     surface.requestRender();
                     refreshSelected();
                     message("Сцена загружена · "+items.length+" объектов, текстур "+referencedPaint.size()+", GLB "+assets.size()+
@@ -1424,8 +1973,71 @@ public class EditorActivity extends Activity {
         private float pinch(MotionEvent e) {
             return (float)Math.hypot(e.getX(0)-e.getX(1),e.getY(0)-e.getY(1));
         }
+        private boolean handleRoadTouch(MotionEvent e){
+            final int action=e.getActionMasked();
+            if(action==MotionEvent.ACTION_DOWN){
+                multiTouch=false;
+                lastX=downX=e.getX();lastY=downY=e.getY();
+                final float px=surfaceX(lastX),py=surfaceY(lastY);
+                if(roadMode==1)queueEvent(()->{
+                    nativeRoadAppend(px,py,.5f);interactiveRender();
+                });
+                else queueEvent(()->{
+                    nativeRoadPickHandle(px,py);interactiveRender();
+                });
+                return true;
+            }
+            if(action==MotionEvent.ACTION_POINTER_DOWN){
+                multiTouch=true;
+                queueEvent(EditorActivity::nativeRoadEndDrag);
+                if(e.getPointerCount()>=2){
+                    lastPinch=pinch(e);
+                    lastMidX=(e.getX(0)+e.getX(1))*.5f;
+                    lastMidY=(e.getY(0)+e.getY(1))*.5f;
+                }
+                return true;
+            }
+            if(action==MotionEvent.ACTION_MOVE){
+                if(e.getPointerCount()>=2){
+                    final float pinchValue=pinch(e);
+                    final float midX=(e.getX(0)+e.getX(1))*.5f;
+                    final float midY=(e.getY(0)+e.getY(1))*.5f;
+                    final float zoom=lastPinch>1.f&&pinchValue>1.f?
+                        Math.max(.7f,Math.min(1.3f,lastPinch/pinchValue)):1.f;
+                    final float dx=midX-lastMidX,dy=midY-lastMidY;
+                    queueEvent(()->{
+                        nativePan(dx,dy);nativeOrbit(0,0,zoom);interactiveRender();
+                    });
+                    lastPinch=pinchValue;lastMidX=midX;lastMidY=midY;
+                }else if(!multiTouch){
+                    final float px=surfaceX(e.getX()),py=surfaceY(e.getY());
+                    if(roadMode==1)queueEvent(()->{
+                        nativeRoadAppend(px,py,2.0f);interactiveRender();
+                    });
+                    else queueEvent(()->{
+                        nativeRoadDragHandle(px,py);interactiveRender();
+                    });
+                }
+                lastX=e.getX();lastY=e.getY();
+                return true;
+            }
+            if(action==MotionEvent.ACTION_POINTER_UP){
+                multiTouch=true;lastPinch=0.f;return true;
+            }
+            if(action==MotionEvent.ACTION_UP||action==MotionEvent.ACTION_CANCEL){
+                if(action==MotionEvent.ACTION_UP&&!multiTouch&&roadMode==1){
+                    final float px=surfaceX(e.getX()),py=surfaceY(e.getY());
+                    queueEvent(()->{
+                        nativeRoadAppend(px,py,.5f);requestRender();
+                    });
+                }else queueEvent(()->{nativeRoadEndDrag();requestRender();});
+                multiTouch=false;return true;
+            }
+            return true;
+        }
         @Override public boolean onTouchEvent(MotionEvent e) {
             if(importing)return true; // Prevent input changes during scene replacement.
+            if(roadMode!=0)return handleRoadTouch(e);
             int action=e.getActionMasked();
             if(action==MotionEvent.ACTION_DOWN) {
                 downX=lastX=e.getX();downY=lastY=e.getY();multiTouch=false;lastPinch=0;
@@ -1471,8 +2083,10 @@ public class EditorActivity extends Activity {
                             final int axis=touchedGizmoAxis;
                             if(axis>=0&&placingKind==-1&&terrainMode==0&&!paintTerrainMode){
                                 if(!gizmoEditStarted&&movedEnough)
-                                    gizmoEditStarted=nativeGizmoBegin(axis);
-                                if(gizmoEditStarted)nativeGizmoDrag(axis,sx,sy);
+                                    gizmoEditStarted=nativeGizmoBegin(axis,
+                                        surfaceX(downX),surfaceY(downY));
+                                if(gizmoEditStarted)nativeGizmoDrag(axis,sx,sy,
+                                    surfaceX(x),surfaceY(y));
                             }else nativeOrbit(dx,dy,1);
                             interactiveRender();
                         });

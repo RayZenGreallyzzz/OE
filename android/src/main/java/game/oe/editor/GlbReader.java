@@ -27,7 +27,7 @@ import java.util.Set;
  * Defensive limits are intentional for low-memory Android tablets.
  */
 public final class GlbReader {
-    public static final int MAX_BYTES = 24 * 1024 * 1024;
+    public static final int MAX_BYTES = 64 * 1024 * 1024;
     public static final int MAX_TRIANGLES = 90000;
     public static final int MAX_NODES = 1024;
     private static final int MAX_DECODED_VIEW = 32 * 1024 * 1024;
@@ -467,7 +467,7 @@ public final class GlbReader {
             if(j.textureIndex>=0&&j.uv!=null){
                 Integer previous=usedTextures.get(j.textureIndex);
                 if(previous==null){
-                    require(usedTextures.size()<4,"В GLB больше четырёх базовых текстур");
+                    require(usedTextures.size()<8,"В GLB больше восьми базовых текстур");
                     slot=usedTextures.size();
                     usedTextures.put(j.textureIndex,slot);
                 }else slot=previous;

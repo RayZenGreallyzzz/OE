@@ -46,3 +46,37 @@ jobs:
           g++ -std=c++17 -O2 -Wall -Wextra -Werror \
             tests/device_quality_profiles_smoke.cpp -o /tmp/oe-quality-test
           /tmp/oe-quality-test
+
+  construction-gizmo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify three-axis world-space quaternion rotations and full 360-degree turns
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/editor_gizmo_rotation_smoke.cpp -o /tmp/oe-editor-gizmo
+          /tmp/oe-editor-gizmo
+
+  road-model:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and test bounded spline road model
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/road_model_smoke.cpp -o /tmp/oe-roads-test
+          /tmp/oe-roads-test
+      - name: Test junction graph, auto-snap and X/T intersection invariants
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/road_network_smoke.cpp -o /tmp/oe-junctions-test
+          /tmp/oe-junctions-test
+      - name: Verify width-aware X/T junction polygons and clipped markings
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/road_junction_geometry_smoke.cpp -o /tmp/oe-junction-geometry-test
+          /tmp/oe-junction-geometry-test
+      - name: Validate sidewalk corners, curbs, crosswalk geometry and map edges
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/road_pedestrian_geometry_smoke.cpp -o /tmp/oe-pedestrian-test
+          /tmp/oe-pedestrian-test
+      - name: Validate medieval surfaces and deterministic low-memory paving budgets
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror tests/road_materials_smoke.cpp -o /tmp/oe-medieval-materials-test
+          /tmp/oe-medieval-materials-test

@@ -35,6 +35,8 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
+      - name: Bundle 105 verified Kenney GLBs and their original textures into APK
+        run: python3 android/tools/bundle_kenney.py
       - name: Build arm64 APK
         run: gradle --no-daemon :android:assembleDebug
       - uses: actions/upload-artifact@v4

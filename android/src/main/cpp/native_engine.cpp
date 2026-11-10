@@ -3,6 +3,11 @@
 #include "vendor/meshoptimizer/meshoptimizer.h"
 #include "vendor/basisu/transcoder/basisu_transcoder.h"
 #include "quality_profiles.h"
+#include "roads/road_model.h"
+#include "roads/road_network.h"
+#include "roads/road_junction_geometry.h"
+#include "roads/road_pedestrian_geometry.h"
+#include "gizmo_rotation.h"
 #include <GLES3/gl3.h>
 #include <android/log.h>
 #include <algorithm>
@@ -26,7 +31,12 @@ struct Vec3 {float x, y, z;};
 struct Vec4 {float x, y, z, w;};
 struct Mat4 {float m[16]{};};
 struct Mesh {GLuint vao=0, buffer=0; GLsizei count=0;};
-struct Entity {int id=0, type=0; float x=0, z=0, yaw=0, size=1; std::string asset; float y=0.f, sx=1.f,sy=1.f,sz=1.f; std::string paint;};
+struct Entity {int id=0, type=0; float x=0, z=0, yaw=0, size=1; std::string asset;
+ float y=0.f, sx=1.f,sy=1.f,sz=1.f; std::string paint;
+ // Extra world-space orientation is optional in v1 scenes. Existing yaw is
+ // folded into this normalized quaternion on first 3-axis rotation.
+ float qx=0.f,qy=0.f,qz=0.f,qw=1.f;
+};
 struct Color {float r,g,b;};
 struct Shader {
  GLuint program=0;
@@ -56,6 +66,8 @@ struct Asset {
 static Mesh gMeshes[3];
 static Mesh gStaticMeshes[17];
 static Mesh gPaintMesh; // Every decorative object is a single combined draw.
+static Mesh gRotationRings[3]; // Three colored XYZ torus strips; 3 draw calls.
+static Mesh gRoadMesh; // Cached terrain-conforming road splines.
 void bakeStaticMesh(int type);
 // Cached, combined flat terrain: one GLES draw call per frame instead of one per tile.
 struct TerrainGpu {
@@ -89,17 +101,33 @@ size_t textureCacheBytes(){
   bytes+=tex.bytes.size();
  return bytes;
 }
-static constexpr int MAX_ASSETS=12;
+// Up to 32 *distinct* meshes; many scene instances share one GPU asset.
+// Still bounded by MAX_TEXTURE_CACHE_BYTES and MAX_LOD_CACHE_BYTES.
+static constexpr int MAX_ASSETS=32;
 static constexpr int MAX_IMPORTED_TRIANGLES=90000;
 static Shader gShader;
 static std::vector<Entity> gEntities;
 static int gNextId=1, gSelected=0, gWidth=1, gHeight=1;
-static int gGizmoMode=0; // 0=move,1=yaw,2=scale
+static int gGizmoMode=0; // 0=move arrows, 1=XYZ 360 rings, 2=scale
+static bool gRotationSnap15=false;
+static Vec3 gGizmoLastPlane{};
+static bool gGizmoLastPlaneValid=false;
+static float gGizmoUnsnapped=0.f,gGizmoApplied=0.f;
 static bool gGizmoActive=false;
 static int gGizmoActiveId=0;
+static int gGizmoActiveAxis=-1;
 static float gYaw=.55f, gPitch=.45f, gDistance=28.f;
 static Vec3 gTarget{0,1.2f,1.3f};
 static bool gSceneInitialized=false, gDemoRoads=false;
+// Road graph is independent of scene entities; all access stays on the GLES thread.
+static std::vector<oe::roads::Road> gRoads;
+// Derived (not serialized): crossings, T-joins and connectivity, rebuilt with road mesh.
+static oe::roads::Network gRoadNetwork;
+static bool gRoadSidewalks=true, gRoadCrosswalks=true;
+static int gNextRoadId=1, gSelectedRoad=0, gRoadEditMode=0;
+static int gRoadRevision=0, gRoadUploadedRevision=-1, gRoadUploadedTerrainRevision=-1;
+static int gRoadDragId=0, gRoadDragPoint=-1;
+static bool gRoadDragChanged=false;
 constexpr float WORLD_TILE=64.0f;
 static int gWorldSize=1024; // Set in app to 1024/2048/4096/8192/16384 meters.
 struct TerrainBrush {float x,z,radius,strength;};
@@ -128,15 +156,25 @@ struct SceneSnapshot {
  float cameraDistance=28.f;
  std::vector<TerrainBrush> terrain;
  std::vector<TerrainPaint> paints;
+ std::vector<oe::roads::Road> roads;
+ int nextRoadId=1, selectedRoad=0;
+ bool roadSidewalks=true,roadCrosswalks=true;
 };
 static std::vector<SceneSnapshot> gUndo,gRedo;
 static bool gSuspendHistory=false;
 static constexpr size_t HISTORY_LIMIT=40;
-SceneSnapshot captureScene(){return {gEntities,gNextId,gSelected,gWorldSize,gDemoRoads,gTarget,gDistance,gBrushes,gTerrainPaint};}
+SceneSnapshot captureScene(){
+ return {gEntities,gNextId,gSelected,gWorldSize,gDemoRoads,gTarget,gDistance,
+         gBrushes,gTerrainPaint,gRoads,gNextRoadId,gSelectedRoad,
+         gRoadSidewalks,gRoadCrosswalks};
+}
 void restoreScene(const SceneSnapshot&s){
  gEntities=s.entities;gNextId=s.nextId;gSelected=s.selected;gWorldSize=s.worldSize;
  gDemoRoads=s.demoRoads;gTarget=s.target;gDistance=s.cameraDistance;
- gBrushes=s.terrain;gTerrainPaint=s.paints;gTerrainRevision++;gSceneInitialized=true;
+ gBrushes=s.terrain;gTerrainPaint=s.paints;gTerrainRevision++;
+ gRoads=s.roads;gNextRoadId=s.nextRoadId;gSelectedRoad=s.selectedRoad;
+ gRoadSidewalks=s.roadSidewalks;gRoadCrosswalks=s.roadCrosswalks;
+ gRoadRevision++;gRoadDragId=0;gRoadDragPoint=-1;gSceneInitialized=true;
 }
 void pushBounded(std::vector<SceneSnapshot>&stack,SceneSnapshot value){
  if(stack.size()>=HISTORY_LIMIT)stack.erase(stack.begin());
@@ -183,6 +221,59 @@ Mat4 mul(const Mat4&a,const Mat4&b){
 Mat4 translate(Vec3 v){auto m=identity();m.m[12]=v.x;m.m[13]=v.y;m.m[14]=v.z;return m;}
 Mat4 scale(Vec3 v){Mat4 m;m.m[0]=v.x;m.m[5]=v.y;m.m[10]=v.z;m.m[15]=1;return m;}
 Mat4 rotateY(float a){Mat4 m=identity();float c=std::cos(a),s=std::sin(a);m.m[0]=c;m.m[8]=s;m.m[2]=-s;m.m[10]=c;return m;}
+oe::gizmo::Quaternion entityQuaternion(const Entity&e){
+ return oe::gizmo::multiply(oe::gizmo::axisAngle(1,e.yaw),
+                            {e.qx,e.qy,e.qz,e.qw});
+}
+void setEntityQuaternion(Entity&e,oe::gizmo::Quaternion q){
+ q=oe::gizmo::normalized(q);
+ e.yaw=0.f;e.qx=q.x;e.qy=q.y;e.qz=q.z;e.qw=q.w;
+}
+void rotateEntityWorld(Entity&e,int axis,float degrees){
+ if(axis<0||axis>2||!std::isfinite(degrees)||degrees==0)return;
+ setEntityQuaternion(e,oe::gizmo::rotatedWorld(entityQuaternion(e),axis,degrees));
+}
+Mat4 quaternionMatrix(oe::gizmo::Quaternion q){
+ q=oe::gizmo::normalized(q);
+ const float x=q.x,y=q.y,z=q.z,w=q.w;
+ Mat4 m=identity();
+ m.m[0]=1-2*(y*y+z*z);m.m[4]=2*(x*y-z*w);m.m[8]=2*(x*z+y*w);
+ m.m[1]=2*(x*y+z*w);m.m[5]=1-2*(x*x+z*z);m.m[9]=2*(y*z-x*w);
+ m.m[2]=2*(x*z-y*w);m.m[6]=2*(y*z+x*w);m.m[10]=1-2*(x*x+y*y);
+ return m;
+}
+Vec3 entityEulerXYZ(const Entity&e){
+ // Y-X-Z Euler readout only; the actual orientation uses quaternions.
+ const Mat4 m=quaternionMatrix(entityQuaternion(e));
+ const float pitch=std::asin(clampf(-m.m[9],-1.f,1.f));
+ const float cosPitch=std::cos(pitch);
+ const float yaw=std::abs(cosPitch)>.00001f?
+    std::atan2(m.m[8],m.m[10]):std::atan2(-m.m[2],m.m[0]);
+ const float roll=std::abs(cosPitch)>.00001f?
+    std::atan2(m.m[1],m.m[5]):0.f;
+ return {pitch/RAD,yaw/RAD,roll/RAD};
+}
+// All rotations share one visual pivot, including imported models whose
+// normalized mesh is grounded at Y=0. Rotation does not rewrite source GLBs.
+float entityPivotHeight(const Entity&e){
+ if(e.type==6){
+  const auto it=gAssets.find(e.asset);
+  if(it!=gAssets.end())return it->second.centerY*e.size*e.sy;
+ }
+ return clampf(e.size*1.45f,.7f,3.f);
+}
+// Unit ring geometry, right-handed around the desired world axis.
+Vec3 ringPoint(int axis,float a,float radius){
+ const float c=std::cos(a)*radius,t=std::sin(a)*radius;
+ return axis==0?Vec3{0.f,c,t}:(axis==1?Vec3{c,0.f,t}:Vec3{c,t,0.f});
+}
+Mat4 entityModelMatrix(const Entity&e){
+ const float pivot=entityPivotHeight(e);
+ const Mat4 rotation=quaternionMatrix(entityQuaternion(e));
+ const Mat4 objectScale=scale({e.size*e.sx,e.size*e.sy,e.size*e.sz});
+ return mul(mul(translate({e.x,e.y+pivot,e.z}),rotation),
+            mul(translate({0.f,-pivot,0.f}),objectScale));
+}
 Mat4 perspective(float aspect){
  float f=1/std::tan(PI/6), near=.1f, far=560.f;Mat4 m;
  m.m[0]=f/aspect;m.m[5]=f;
@@ -440,6 +531,35 @@ void setupGL(){
   glDisableVertexAttribArray(2);
   glDisableVertexAttribArray(3);
  }
+ // Build three reusable solid torus-strip meshes ONCE per GLES context,
+ // instead of drawing 200+ boxes per frame. All triangles are untextured.
+ for(int axis=0;axis<3;axis++){
+  std::vector<float> data;data.reserve(72*6*6);
+  const Vec3 n=axis==0?Vec3{1,0,0}:(axis==1?Vec3{0,1,0}:Vec3{0,0,1});
+  const auto append=[&](Vec3 p){
+   data.insert(data.end(),{p.x,p.y,p.z,n.x,n.y,n.z});
+  };
+  for(int i=0;i<72;i++){
+   const float a=i*(2.f*PI/72.f),b=(i+1)*(2.f*PI/72.f);
+   const Vec3 a0=ringPoint(axis,a,.971f),a1=ringPoint(axis,a,1.029f);
+   const Vec3 b0=ringPoint(axis,b,.971f),b1=ringPoint(axis,b,1.029f);
+   append(a0);append(b0);append(a1);
+   append(a1);append(b0);append(b1);
+  }
+  Mesh &m=gRotationRings[axis];m={};
+  m.count=static_cast<GLsizei>(data.size()/6);
+  glGenVertexArrays(1,&m.vao);glBindVertexArray(m.vao);
+  glGenBuffers(1,&m.buffer);glBindBuffer(GL_ARRAY_BUFFER,m.buffer);
+  glBufferData(GL_ARRAY_BUFFER,static_cast<GLsizeiptr>(data.size()*sizeof(float)),
+               data.data(),GL_STATIC_DRAW);
+  glEnableVertexAttribArray(0);
+  glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,6*sizeof(float),nullptr);
+  glEnableVertexAttribArray(1);
+  glVertexAttribPointer(1,3,GL_FLOAT,GL_FALSE,6*sizeof(float),
+                       reinterpret_cast<void*>(3*sizeof(float)));
+  glDisableVertexAttribArray(2);glDisableVertexAttribArray(3);
+ }
+ glBindVertexArray(0);
  for(int kind=0;kind<17;kind++)if(kind!=6)bakeStaticMesh(kind);
  for(auto &kv:gAssets){
   uploadAsset(kv.second);
@@ -474,6 +594,21 @@ void setupGL(){
  glEnableVertexAttribArray(3);
  glVertexAttribPointer(3,2,GL_FLOAT,GL_FALSE,11*sizeof(float),
   reinterpret_cast<void*>(9*sizeof(float)));
+ glBindVertexArray(0);
+ // Curved roads use the same 11-float vertex layout as painted terrain.
+ gRoadMesh={};gRoadUploadedRevision=-1;gRoadUploadedTerrainRevision=-1;
+ glGenVertexArrays(1,&gRoadMesh.vao);
+ glGenBuffers(1,&gRoadMesh.buffer);
+ glBindVertexArray(gRoadMesh.vao);
+ glBindBuffer(GL_ARRAY_BUFFER,gRoadMesh.buffer);
+ for(int a=0;a<3;++a){
+  glEnableVertexAttribArray(a);
+  glVertexAttribPointer(a,3,GL_FLOAT,GL_FALSE,11*sizeof(float),
+      reinterpret_cast<void*>(static_cast<uintptr_t>(a*3*sizeof(float))));
+ }
+ glEnableVertexAttribArray(3);
+ glVertexAttribPointer(3,2,GL_FLOAT,GL_FALSE,11*sizeof(float),
+      reinterpret_cast<void*>(9*sizeof(float)));
  glBindVertexArray(0);
  glVertexAttrib3f(2,1,1,1);
  glEnable(GL_DEPTH_TEST);
@@ -531,8 +666,7 @@ void bindPaint(const TextureResource*paint);
 void drawImported(const Mat4&vp,const Entity&e){
  auto it=gAssets.find(e.asset);
  if(it==gAssets.end()||it->second.gpu.count==0)return;
- const Mat4 model=mul(mul(translate({e.x,e.y,e.z}),rotateY(e.yaw*RAD)),
-  scale({e.size*e.sx,e.size*e.sy,e.size*e.sz}));
+ const Mat4 model=entityModelMatrix(e);
  const Mat4 mvp=mul(vp,model);
  glUniformMatrix4fv(gShader.locMvp,1,GL_FALSE,mvp.m);
  glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
@@ -709,8 +843,7 @@ void drawStatic(const Mat4&vp,const Entity&e){
  if(e.type<0||e.type>=17||e.type==6)return;
  const Mesh&m=gStaticMeshes[e.type];
  if(m.count<=0)return;
- const Mat4 model=mul(mul(translate({e.x,e.y,e.z}),rotateY(e.yaw*RAD)),
-  scale({e.size*e.sx,e.size*e.sy,e.size*e.sz}));
+ const Mat4 model=entityModelMatrix(e);
  const Mat4 mvp=mul(vp,model);
  glUniformMatrix4fv(gShader.locMvp,1,GL_FALSE,mvp.m);
  glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
@@ -865,6 +998,301 @@ void drawTerrainPaint(const Mat4&vp){
  glUniform1f(gShader.locTextured,0.f);
  glBindTexture(GL_TEXTURE_2D,0);
 }
+// One cached VBO for all roads. Rebuilt on geometry/terrain edits or EGL recreation,
+// not on every camera frame. Each strip samples the sculpted terrain independently.
+void rebuildRoadMesh(){
+ if(!gRoadMesh.vao)return;
+ std::vector<float> vertices;
+ vertices.reserve(64*1024);
+ auto vertex=[&](float x,float z,float lift,Color c){
+  vertices.insert(vertices.end(),{x,terrainHeightAt(x,z)+lift,z,
+    0.f,1.f,0.f,c.r,c.g,c.b,0.f,0.f});
+ };
+ auto quad=[&](Vec3 a,Vec3 b,Vec3 c,Vec3 d,float lift,Color col){
+  vertex(a.x,a.z,lift,col);vertex(b.x,b.z,lift,col);vertex(c.x,c.z,lift,col);
+  vertex(a.x,a.z,lift,col);vertex(c.x,c.z,lift,col);vertex(d.x,d.z,lift,col);
+ };
+ const Color asphalt{.22f,.23f,.24f},border{.88f,.85f,.73f},
+             center{.98f,.86f,.44f};
+ const Color sidewalk{.52f,.53f,.52f},curb{.68f,.68f,.65f},
+             sidewalkWall{.38f,.39f,.38f},crosswalkPaint{.97f,.96f,.86f};
+ auto between=[](Vec3 a,Vec3 b,float t)->Vec3 {
+  return {a.x+(b.x-a.x)*t,0.f,a.z+(b.z-a.z)*t};
+ };
+ auto asVec=[](oe::roads::Point p)->Vec3{return {p.x,0.f,p.z};};
+ // Vertical faces use terrain-relative heights so the curb rises above
+ // asphalt even when the terrain has been sculpted.
+ auto verticalFace=[&](Vec3 a,Vec3 b,float low,float high,Color color){
+  vertex(a.x,a.z,low,color);vertex(b.x,b.z,low,color);
+  vertex(b.x,b.z,high,color);
+  vertex(a.x,a.z,low,color);vertex(b.x,b.z,high,color);
+  vertex(a.x,a.z,high,color);
+ };
+ // Geometry and line clipping share one width/direction-aware junction graph.
+ gRoadNetwork=oe::roads::buildNetwork(gRoads);
+ const auto junctions=oe::roads::makeJunctionSurfaces(
+     gRoads,gRoadNetwork,worldHalf());
+ for(const auto&road:gRoads){
+  if(road.points.size()<2)continue;
+  const auto samples=oe::roads::sample(road);
+  if(samples.size()<2)continue;
+  const auto palette=oe::roads::surfacePalette(road.material);
+  const Color roadColor{palette.base.r,palette.base.g,palette.base.b};
+  auto offset=[&](std::size_t idx,float xOffset)->Vec3 {
+   const std::size_t prev=idx?idx-1:0,next=std::min(idx+1,samples.size()-1);
+   float dx=samples[next].x-samples[prev].x;
+   float dz=samples[next].z-samples[prev].z;
+   const float inv=1.f/std::max(.0001f,std::hypot(dx,dz));
+   dx*=inv;dz*=inv;
+   return {clampf(samples[idx].x-dz*xOffset,-worldHalf(),worldHalf()),0.f,
+           clampf(samples[idx].z+dx*xOffset,-worldHalf(),worldHalf())};
+  };
+  auto paintStripe=[&](std::size_t i,float start,float end,Color col){
+   const Vec3 left0=offset(i-1,start),right0=offset(i-1,end);
+   const Vec3 left1=offset(i,start),right1=offset(i,end);
+   // Clip along the actual stripe centre, not the road centreline, so
+   // side markings stop at the *real polygon edge* of each intersection.
+   const auto visible=oe::roads::markingOutsideJunctions(
+       {(left0.x+right0.x)*.5f,(left0.z+right0.z)*.5f},
+       {(left1.x+right1.x)*.5f,(left1.z+right1.z)*.5f},junctions);
+   auto between=[](Vec3 a,Vec3 b,float t)->Vec3 {
+    return {a.x+(b.x-a.x)*t,0.f,a.z+(b.z-a.z)*t};
+   };
+   for(const auto span:visible){
+    if(span.end-span.begin<.0005f)continue;
+    quad(between(left0,left1,span.begin),between(right0,right1,span.begin),
+         between(right0,right1,span.end),between(left0,left1,span.end),
+         .126f,col);
+   }
+  };
+  for(std::size_t i=1;i<samples.size();++i){
+   const float half=road.width*.5f;
+   const Vec3 left0=offset(i-1,-half),left1=offset(i,-half);
+   const Vec3 right0=offset(i-1,half),right1=offset(i,half);
+   quad(left0,right0,right1,left1,.105f,roadColor);
+   if(gRoadSidewalks){
+    // Two narrow pavements follow both sides of the spline. Clip at the
+    // actual intersection contour instead of blocking the driving mouths.
+    for(const float side:{-1.f,1.f}){
+     const float innerOffset=side*(half+.02f);
+     const float outerOffset=side*(half+.02f+oe::roads::kSidewalkWidth);
+     const Vec3 in0=offset(i-1,innerOffset),in1=offset(i,innerOffset);
+     const Vec3 out0=offset(i-1,outerOffset),out1=offset(i,outerOffset);
+     const auto visible=oe::roads::markingOutsideJunctions(
+           {in0.x,in0.z},{in1.x,in1.z},junctions);
+     for(const auto range:visible){
+      if(range.end-range.begin<.0005f)continue;
+      const Vec3 a=between(in0,in1,range.begin),d=between(in0,in1,range.end);
+      const Vec3 b=between(out0,out1,range.begin),c=between(out0,out1,range.end);
+      if(std::hypot(a.x-b.x,a.z-b.z)<.05f)continue;
+      quad(a,b,c,d,.275f,sidewalk);
+      verticalFace(a,d,.108f,.275f,curb);
+      verticalFace(b,c,.04f,.275f,sidewalkWall);
+     }
+    }
+   }
+   if(road.material==oe::roads::kDirt){
+    // Two restrained cart-wheel ruts across the whole dirt road.
+    const auto&rut=palette.seam;
+    const Color rutCol{rut.r,rut.g,rut.b};
+    for(const float side:{-1.f,1.f}){
+     const float offsetMetres=side*half*.53f;
+     const Vec3 a=offset(i-1,offsetMetres-.105f);
+     const Vec3 b=offset(i-1,offsetMetres+.105f);
+     const Vec3 c=offset(i,offsetMetres+.105f);
+     const Vec3 d=offset(i,offsetMetres-.105f);
+     quad(a,b,c,d,.118f,rutCol);
+    }
+   }
+   if(!road.markings||road.material!=oe::roads::kAsphalt)continue;
+   const float line=.12f;
+   paintStripe(i,-half+line,-half+line*2,border);
+   paintStripe(i,half-line*2,half-line,border);
+   if((i/3)%2==0)paintStripe(i,-.065f,.065f,center);
+  }
+  // Cheap deterministic cobbles/flagstones, earthy patches or gravel specks.
+  // A fixed per-road budget avoids huge VBOs on 4 GB Android tablets. Large
+  // roads sample fewer details rather than allocating extra geometry.
+  if(road.material!=oe::roads::kAsphalt){
+   const int cols=oe::roads::detailColumns(road.width);
+   const std::size_t budget=std::max<std::size_t>(100,
+         oe::roads::kDetailTilesTotal/std::max<std::size_t>(1,gRoads.size()));
+   std::size_t rows=0;
+   for(std::size_t i=1;i<samples.size();++i){
+    const float seg=std::sqrt(oe::roads::distanceSquared(samples[i-1],samples[i]));
+    rows+=static_cast<std::size_t>(std::max(1,(int)std::ceil(seg/1.6f)));
+   }
+   const int stride=oe::roads::detailStride(rows,cols,budget);
+   std::size_t rowIndex=0,placed=0;
+   for(std::size_t i=1;i<samples.size()&&placed<budget;++i){
+    const float seg=std::sqrt(oe::roads::distanceSquared(samples[i-1],samples[i]));
+    const int parts=std::max(1,(int)std::ceil(seg/1.6f));
+    for(int row=0;row<parts&&placed<budget;++row,++rowIndex){
+     if(stride<=0||rowIndex%static_cast<std::size_t>(stride)!=0)continue;
+     const float t0=(row+.09f)/parts,t1=(row+.91f)/parts;
+     const float usable=road.width-.38f;
+     const float cell=usable/cols;
+     for(int column=0;column<cols&&placed<budget;++column){
+      const std::uint32_t hash=oe::roads::tileHash(
+          road.id,static_cast<int>(rowIndex),column);
+      if(road.material==oe::roads::kDirt&&hash%4u!=0u)continue;
+      if(road.material==oe::roads::kGravel&&hash%3u==0u)continue;
+      const float stagger=((rowIndex&1u)&&column>0)?cell*.15f:0.f;
+      float left=-road.width*.5f+.19f+cell*column+stagger+cell*.07f;
+      float right=std::min(road.width*.5f-.17f,
+                           left+cell*(road.material==oe::roads::kDirt?.52f:.87f));
+      if(right-left<.12f)continue;
+      const float mid=(t0+t1)*.5f;
+      const float rowBegin=(road.material==oe::roads::kDirt||
+                             road.material==oe::roads::kGravel)
+                           ?mid-(t1-t0)*.31f:t0;
+      const float rowEnd=(road.material==oe::roads::kDirt||
+                           road.material==oe::roads::kGravel)
+                         ?mid+(t1-t0)*.31f:t1;
+      const Vec3 a=between(offset(i-1,left),offset(i,left),rowBegin);
+      const Vec3 b=between(offset(i-1,right),offset(i,right),rowBegin);
+      const Vec3 c=between(offset(i-1,right),offset(i,right),rowEnd);
+      const Vec3 d=between(offset(i-1,left),offset(i,left),rowEnd);
+      const auto tone=oe::roads::tileColor(road.material,road.id,
+                                    static_cast<int>(rowIndex),column);
+      quad(a,b,c,d,.119f,{tone.r,tone.g,tone.b});
+      ++placed;
+     }
+    }
+   }
+  }
+ }
+ // Replace the old round overlays with convex asphalt polygons built
+ // from each road's left/right mouth cross-section. Tessellate each edge
+ // approximately every 2 m for tighter conformance to sculpted terrain.
+ for(const auto&junction:junctions){
+  const auto&outline=junction.outline;
+  if(outline.size()<3)continue;
+  // Adopt the predominant road surface; avoids gray asphalt islands in
+  // medieval streets while preserving original asphalt at mixed junctions.
+  int material=oe::roads::kAsphalt;
+  int votes[5]={};
+  int seedRoad=1;
+  for(const auto&mouth:junction.mouths){
+   for(const auto&road:gRoads)if(road.id==mouth.roadId){
+    ++votes[road.material];
+    seedRoad=road.id;
+    break;
+   }
+  }
+  for(int m=1;m<=oe::roads::kAncientSlate;++m)
+   if(votes[m]>votes[material])material=m;
+  const auto jp=oe::roads::surfacePalette(material);
+  const Color pavement{jp.base.r,jp.base.g,jp.base.b};
+  oe::roads::Point centre{0.f,0.f};
+  for(const auto p:outline){centre.x+=p.x;centre.z+=p.z;}
+  centre.x/=outline.size();centre.z/=outline.size();
+  for(std::size_t i=0;i<outline.size();++i){
+   const auto a=outline[i],b=outline[(i+1)%outline.size()];
+   const float length=std::sqrt(oe::roads::distanceSquared(a,b));
+   const int cuts=std::max(1,std::min(16,(int)std::ceil(length/2.f)));
+   for(int k=0;k<cuts;++k){
+    const auto p=oe::roads::mix2(a,b,(float)k/cuts);
+    const auto q=oe::roads::mix2(a,b,(float)(k+1)/cuts);
+    vertex(centre.x,centre.z,.175f,pavement);
+    vertex(p.x,p.z,.175f,pavement);
+    vertex(q.x,q.z,.175f,pavement);
+   }
+  }
+  if(jp.hasPavers){
+   // Inlaid stones fill the central polygon without crossing its boundary.
+   // Each patch is precomputed; no per-frame random variation or uploads.
+   int added=0,checked=0;
+   const float cell=1.45f;
+   int line=0;
+   for(float z=junction.minZ+.15f;z<junction.maxZ-.15f&&
+       added<160&&checked<2500;z+=cell,++line){
+    for(float x=junction.minX+.15f+(line%2)*.35f;
+        x<junction.maxX-.15f&&added<160&&checked<2500;x+=cell){
+     ++checked;
+     const oe::roads::Point p{x+.09f,z+.09f};
+     const oe::roads::Point q{x+cell-.15f,z+.09f};
+     const oe::roads::Point r{x+cell-.15f,z+cell-.15f};
+     const oe::roads::Point t{x+.09f,z+cell-.15f};
+     if(!oe::roads::insideJunction(p,junction)||
+        !oe::roads::insideJunction(q,junction)||
+        !oe::roads::insideJunction(r,junction)||
+        !oe::roads::insideJunction(t,junction))continue;
+     const auto rgb=oe::roads::tileColor(material,seedRoad,line,added);
+     quad({p.x,0,p.z},{q.x,0,q.z},{r.x,0,r.z},{t.x,0,t.z},
+          .189f,{rgb.r,rgb.g,rgb.b});
+     ++added;
+    }
+   }
+  }
+ }
+ // Convex corner aprons link the side pavements around an intersection.
+ // Mouth edges are deliberately skipped: no curb crosses vehicle lanes.
+ if(gRoadSidewalks){
+  for(const auto&junction:junctions){
+   for(const auto&apron:oe::roads::junctionCornerSidewalks(
+                             junction,worldHalf())){
+    const Vec3 a=asVec(apron.a),b=asVec(apron.b),
+               c=asVec(apron.c),d=asVec(apron.d);
+    quad(a,b,c,d,.275f,sidewalk);
+    verticalFace(a,b,.175f,.275f,curb);
+    verticalFace(d,c,.05f,.275f,sidewalkWall);
+   }
+  }
+ }
+ // Zebra bars lie *outside* each intersection mouth. The portable layout
+ // omits crossings if another junction or a map edge would cut them.
+ if(gRoadCrosswalks){
+  const auto crossings=oe::roads::makeCrosswalks(junctions,worldHalf());
+  for(const auto&crossing:crossings){
+   // No modern zebra markings on cobbles, dirt, gravel or fantasy paving.
+   auto found=std::find_if(gRoads.begin(),gRoads.end(),
+       [&crossing](const oe::roads::Road&r){return r.id==crossing.roadId;});
+   if(found==gRoads.end()||found->material!=oe::roads::kAsphalt)continue;
+   for(const auto&bar:crossing.bars){
+    quad(asVec(bar.a),asVec(bar.b),asVec(bar.c),asVec(bar.d),
+         .148f,crosswalkPaint);
+   }
+  }
+ }
+ gRoadMesh.count=static_cast<GLsizei>(vertices.size()/11);
+ glBindBuffer(GL_ARRAY_BUFFER,gRoadMesh.buffer);
+ glBufferData(GL_ARRAY_BUFFER,
+      static_cast<GLsizeiptr>(vertices.size()*sizeof(float)),
+      vertices.empty()?nullptr:vertices.data(),GL_DYNAMIC_DRAW);
+ gRoadUploadedRevision=gRoadRevision;
+ gRoadUploadedTerrainRevision=gTerrainRevision;
+}
+void drawRoads(const Mat4&vp){
+ if(!gRoadMesh.vao)return;
+ if(gRoadUploadedRevision!=gRoadRevision||
+    gRoadUploadedTerrainRevision!=gTerrainRevision)rebuildRoadMesh();
+ if(gRoadMesh.count){
+  const Mat4 model=identity();
+  glUniformMatrix4fv(gShader.locMvp,1,GL_FALSE,vp.m);
+  glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
+  glUniform3f(gShader.locColor,1,1,1);
+  glUniform1f(gShader.locLight,0.f);
+  glUniform1f(gShader.locPaintOverride,0.f);
+  glUniform1f(gShader.locOverlay,0.f);
+  glUniform1f(gShader.locTextured,0.f);
+  glBindVertexArray(gRoadMesh.vao);
+  glDrawArrays(GL_TRIANGLES,0,gRoadMesh.count);
+  ++gDrawCalls;gTriangles+=gRoadMesh.count/3;
+  glBindVertexArray(0);
+ }
+ // Highlight only selected control points; does not change the 3D scene.
+ if(gRoadEditMode){
+  for(const auto&road:gRoads)if(road.id==gSelectedRoad){
+   for(const auto&p:road.points){
+    if(std::abs(p.x-gTarget.x)>quality().viewRangeMetres+8.f||
+       std::abs(p.z-gTarget.z)>quality().viewRangeMetres+8.f)continue;
+    draw(vp,0,{p.x,terrainHeightAt(p.x,p.z)+.27f,p.z},
+       {.65f,.42f,.65f},0.f,{.98f,.62f,.17f});
+   }
+  }
+ }
+}
 bool groundPoint(float px,float py,float &x,float &z){
  const Vec3 eye=cameraEye(),forward=unit(sub(gTarget,eye));
  const Vec3 right=unit(cross(forward,{0,1,0})),up=cross(right,forward);
@@ -943,7 +1371,10 @@ void reset(bool demo){
  recordEdit(); // demo generation is a single undoable change
  const bool wasMuted=gSuspendHistory;
  gSuspendHistory=true;
- gEntities.clear();gBrushes.clear();gTerrainPaint.clear();gTerrainRevision++;gNextId=1;gSelected=0;
+ gEntities.clear();gBrushes.clear();gTerrainPaint.clear();gTerrainRevision++;
+ gRoads.clear();gNextRoadId=1;gSelectedRoad=0;
+ gRoadSidewalks=true;gRoadCrosswalks=true;gRoadRevision++;
+ gRoadDragId=0;gRoadDragPoint=-1;gNextId=1;gSelected=0;
  gSceneInitialized=true;gDemoRoads=demo;
  gTarget={0,1.2f,1.3f};gDistance=28.f;
  if(demo){
@@ -965,12 +1396,14 @@ const char* nameFor(int type){
  return type>=0&&type<17?names[type]:"Объект";
 }
 
-// Touch-friendly axis gizmo; drawn using existing simple meshes (no new shaders
-// or animation loop). X=red, Y=green, Z=blue. Rotation only changes yaw.
+// World-space manipulator. X=red, Y=green, Z=blue. All XYZ rings remain
+// touchable, independent of the orientation of a rotated building.
 Vec3 gizmoBase(const Entity&e){
- return {e.x,e.y+clampf(e.size*1.45f,.7f,3.0f),e.z};
+ return {e.x,e.y+entityPivotHeight(e),e.z};
 }
+
 float gizmoLength(){return clampf(gDistance*.095f,2.0f,13.f);}
+float rotationRingRadius(){return gizmoLength()*1.05f;}
 Vec3 gizmoEndpoint(const Entity&e,int axis){
  Vec3 p=gizmoBase(e);
  const float len=gizmoLength();
@@ -979,24 +1412,73 @@ Vec3 gizmoEndpoint(const Entity&e,int axis){
  if(axis==2)p.z+=len;
  return p;
 }
-bool gizmoProject(Vec3 p,float&px,float&py){
- const Vec4 q=apply(viewProjection(),{p.x,p.y,p.z,1.f});
+// Ray/rotation-plane intersection. The ring gesture is measured in 3D,
+// so rotation remains consistent as the camera orbits the house.
+bool rotationPlanePoint(int axis,float px,float py,Vec3 origin,Vec3&point){
+ if(axis<0||axis>2||!std::isfinite(px)||!std::isfinite(py))return false;
+ const Vec3 eye=cameraEye(),forward=unit(sub(gTarget,eye));
+ const Vec3 right=unit(cross(forward,{0,1,0})),up=cross(right,forward);
+ const float half=std::tan(PI/6.f);
+ const float aspect=static_cast<float>(gWidth)/std::max(1,gHeight);
+ const float u=(px*2.f/gWidth-1.f)*half*aspect;
+ const float v=(1.f-py*2.f/gHeight)*half;
+ const Vec3 ray=unit({forward.x+right.x*u+up.x*v,
+                       forward.y+right.y*u+up.y*v,
+                       forward.z+right.z*u+up.z*v});
+ const float denominator=axis==0?ray.x:axis==1?ray.y:ray.z;
+ if(std::abs(denominator)<.09f)return false;
+ const float originAxis=axis==0?origin.x:axis==1?origin.y:origin.z;
+ const float eyeAxis=axis==0?eye.x:axis==1?eye.y:eye.z;
+ const float t=(originAxis-eyeAxis)/denominator;
+ if(t<=.03f||t>1600.f)return false;
+ Vec3 p=sub({eye.x+ray.x*t,eye.y+ray.y*t,eye.z+ray.z*t},origin);
+ const float length=std::sqrt(dot(p,p));
+ if(!std::isfinite(length)||length<.0001f)return false;
+ point={p.x/length,p.y/length,p.z/length};
+ return true;
+}
+bool gizmoProjectVp(const Mat4&vp,Vec3 p,float&px,float&py){
+ const Vec4 q=apply(vp,{p.x,p.y,p.z,1.f});
  if(q.w<=.1f)return false;
  px=(q.x/q.w*.5f+.5f)*gWidth;
  py=(.5f-q.y/q.w*.5f)*gHeight;
  return std::isfinite(px)&&std::isfinite(py);
 }
+bool gizmoProject(Vec3 p,float&px,float&py){
+ return gizmoProjectVp(viewProjection(),p,px,py);
+}
 int gizmoHit(float px,float py){
  if(gGizmoMode<0||!selected()||!std::isfinite(px)||!std::isfinite(py))return -1;
  const Entity&e=*selected();
+ const Mat4 vp=viewProjection(); // compute once, not 432 times per touch
+ if(gGizmoMode==1){
+  const Vec3 center=gizmoBase(e);
+  const float radius=rotationRingRadius();
+  const float touchRadius=std::max(15.f,gWidth*.018f);
+  int best=-1;float closest=touchRadius;
+  for(int axis=0;axis<3;axis++)for(int i=0;i<72;i++){
+   const float a=i*(2.f*PI/72.f),b=(i+1)*(2.f*PI/72.f);
+   const Vec3 r0=ringPoint(axis,a,radius),r1=ringPoint(axis,b,radius);
+   float x0,y0,x1,y1;
+   if(!gizmoProjectVp(vp,{center.x+r0.x,center.y+r0.y,center.z+r0.z},x0,y0)||
+      !gizmoProjectVp(vp,{center.x+r1.x,center.y+r1.y,center.z+r1.z},x1,y1))
+      continue;
+   const float ux=x1-x0,uy=y1-y0,len=ux*ux+uy*uy;
+   if(len<.1f)continue;
+   const float t=clampf(((px-x0)*ux+(py-y0)*uy)/len,0.f,1.f);
+   const float dx=px-(x0+t*ux),dy=py-(y0+t*uy);
+   const float distance=std::sqrt(dx*dx+dy*dy);
+   if(distance<closest){closest=distance;best=axis;}
+  }
+  return best;
+ }
  float bx,by;
- if(!gizmoProject(gizmoBase(e),bx,by))return -1;
+ if(!gizmoProjectVp(vp,gizmoBase(e),bx,by))return -1;
  int hit=-1;
  float nearest=1e8f;
  for(int axis=0;axis<3;axis++){
-  if(gGizmoMode==1&&axis!=1)continue;
   float ex,ey;
-  if(!gizmoProject(gizmoEndpoint(e,axis),ex,ey))continue;
+  if(!gizmoProjectVp(vp,gizmoEndpoint(e,axis),ex,ey))continue;
   const float dx=ex-bx,dy=ey-by,len2=dx*dx+dy*dy;
   if(len2<625.f)continue;
   const float t=((px-bx)*dx+(py-by)*dy)/len2;
@@ -1016,8 +1498,31 @@ void drawGizmo(const Mat4&vp){
  const bool depth=glIsEnabled(GL_DEPTH_TEST);
  glDisable(GL_DEPTH_TEST); // selected handles always touchable
  const Color axisColor[3]={{.96f,.26f,.29f},{.31f,.90f,.45f},{.27f,.57f,1.f}};
+ if(gGizmoMode==1){
+  const float radius=rotationRingRadius();
+  const Mat4 model=mul(translate(origin),scale({radius,radius,radius}));
+  const Mat4 mvp=mul(vp,model);
+  glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
+  glUniformMatrix4fv(gShader.locMvp,1,GL_FALSE,mvp.m);
+  glUniform1f(gShader.locTextured,0.f);
+  glUniform1f(gShader.locPaintOverride,0.f);
+  glUniform1f(gShader.locOverlay,0.f);
+  for(int axis=0;axis<3;axis++){
+   const Mesh &m=gRotationRings[axis];
+   if(!m.vao||!m.count)continue;
+   Color color=axisColor[axis];
+   if(gGizmoActive&&gGizmoMode==1&&axis==gGizmoActiveAxis)
+    color={1.f,.95f,.46f};
+   glUniform3f(gShader.locColor,color.r,color.g,color.b);
+   glUniform1f(gShader.locLight,0.f);
+   glBindVertexArray(m.vao);glDrawArrays(GL_TRIANGLES,0,m.count);
+   ++gDrawCalls;gTriangles+=m.count/3;
+  }
+  glBindVertexArray(0);
+  if(depth)glEnable(GL_DEPTH_TEST);
+  return;
+ }
  for(int axis=0;axis<3;axis++){
-  if(gGizmoMode==1&&axis!=1)continue;
   Vec3 midpoint=origin,dimensions{thin,thin,thin};
   if(axis==0){midpoint.x+=len*.5f;dimensions.x=len;}
   if(axis==1){midpoint.y+=len*.5f;dimensions.y=len;}
@@ -1189,6 +1694,218 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePaintTerrainAtSc
  recordEdit();gTerrainPaint.push_back({x,z,radius,key});
  return static_cast<jint>(gTerrainPaint.size());
 }
+// Touch road editing is restricted to the owning GLES thread.
+oe::roads::Road* selectedRoad(){
+ for(auto&road:gRoads)if(road.id==gSelectedRoad)return &road;
+ return nullptr;
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeRoadMode(
+ JNIEnv*,jclass,jint mode){
+ gRoadEditMode=mode>=0&&mode<=2?mode:0;
+ gRoadDragId=0;gRoadDragPoint=-1;gRoadDragChanged=false;
+}
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeRoadBegin(
+ JNIEnv*,jclass,jfloat width,jboolean markings,jint material){
+ if(gRoads.size()>=oe::roads::kMaxRoads||
+    !oe::roads::validSurface(material)||
+    !std::isfinite(width)||width<oe::roads::kMinWidth||
+    width>oe::roads::kMaxWidth||gNextRoadId>=2147483647)return 0;
+ recordEdit();
+ const int id=gNextRoadId++;
+ gRoads.push_back({id,width,material==oe::roads::kAsphalt&&markings==JNI_TRUE,{},material});
+ gSelectedRoad=id;gRoadEditMode=1;gRoadRevision++;
+ return id;
+}
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeRoadAppend(
+ JNIEnv*,jclass,jfloat px,jfloat py,jfloat minSpacing){
+ if(gRoadEditMode!=1)return 0;
+ auto*road=selectedRoad();
+ if(!road||!std::isfinite(px)||!std::isfinite(py)||
+    !std::isfinite(minSpacing))return 0;
+ float x,z;
+ if(!groundPoint(px,py,x,z))return 0;
+ if(!oe::roads::append(*road,{x,z},worldHalf(),minSpacing))return 0;
+ ++gRoadRevision;
+ return static_cast<jint>(road->points.size());
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadFinish(
+ JNIEnv*,jclass){
+ auto*road=selectedRoad();
+ if(!road||gRoadEditMode!=1)return JNI_FALSE;
+ const bool valid=oe::roads::valid(*road,worldHalf());
+ if(valid){
+  // Finish-stage auto-snap: join either endpoint to the nearest existing
+  // spline within three metres, without changing source roads.
+  const auto start=oe::roads::snapEndpoint(*road,true,gRoads,worldHalf());
+  const auto end=oe::roads::snapEndpoint(*road,false,gRoads,worldHalf());
+  if(start.snapped||end.snapped)++gRoadRevision;
+ }
+ if(!valid){
+  const int id=road->id;
+  gRoads.erase(std::remove_if(gRoads.begin(),gRoads.end(),
+     [id](const oe::roads::Road&r){return r.id==id;}),gRoads.end());
+  gSelectedRoad=0;gRoadRevision++;
+ }
+ gRoadEditMode=0;
+ return valid?JNI_TRUE:JNI_FALSE;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadPickHandle(
+ JNIEnv*,jclass,jfloat px,jfloat py){
+ if(gRoadEditMode!=2||!std::isfinite(px)||!std::isfinite(py))return JNI_FALSE;
+ const Mat4 vp=viewProjection();
+ float best=32.f*32.f;int bestRoad=0,bestPoint=-1;
+ for(const auto&road:gRoads)for(std::size_t i=0;i<road.points.size();++i){
+  const auto&p=road.points[i];
+  Vec4 clip=apply(vp,{p.x,terrainHeightAt(p.x,p.z)+.27f,p.z,1.f});
+  if(clip.w<=0.f)continue;
+  const float sx=(clip.x/clip.w*.5f+.5f)*gWidth;
+  const float sy=(.5f-clip.y/clip.w*.5f)*gHeight;
+  const float d=(sx-px)*(sx-px)+(sy-py)*(sy-py);
+  if(d<best){best=d;bestRoad=road.id;bestPoint=static_cast<int>(i);}
+ }
+ gRoadDragId=bestRoad;gRoadDragPoint=bestPoint;gRoadDragChanged=false;
+ if(bestRoad){gSelectedRoad=bestRoad;return JNI_TRUE;}
+ return JNI_FALSE;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadDragHandle(
+ JNIEnv*,jclass,jfloat px,jfloat py){
+ if(gRoadEditMode!=2||gRoadDragId<=0||gRoadDragPoint<0)return JNI_FALSE;
+ float x,z;
+ if(!groundPoint(px,py,x,z))return JNI_FALSE;
+ for(auto&road:gRoads)if(road.id==gRoadDragId){
+  const std::size_t i=static_cast<std::size_t>(gRoadDragPoint);
+  if(i>=road.points.size())return JNI_FALSE;
+  oe::roads::Point point{x,z};
+  if(oe::roads::distanceSquared(road.points[i],point)<.01f)return JNI_FALSE;
+  if((i>0&&oe::roads::distanceSquared(road.points[i-1],point)<.25f*.25f)||
+     (i+1<road.points.size()&&
+      oe::roads::distanceSquared(road.points[i+1],point)<.25f*.25f))return JNI_FALSE;
+  if(!gRoadDragChanged){recordEdit();gRoadDragChanged=true;}
+  road.points[i]=point;++gRoadRevision;
+  return JNI_TRUE;
+ }
+ return JNI_FALSE;
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeRoadEndDrag(JNIEnv*,jclass){
+ if(gRoadDragChanged&&gRoadDragId>0&&gRoadDragPoint>=0){
+  for(auto&road:gRoads)if(road.id==gRoadDragId){
+   const std::size_t index=static_cast<std::size_t>(gRoadDragPoint);
+   if(index==0||index+1==road.points.size()){
+    const auto snap=oe::roads::snapEndpoint(
+        road,index==0,gRoads,worldHalf());
+    if(snap.snapped)++gRoadRevision;
+   }
+   break;
+  }
+ }
+ gRoadDragId=0;gRoadDragPoint=-1;gRoadDragChanged=false;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadSetWidth(
+ JNIEnv*,jclass,jfloat width){
+ auto*road=selectedRoad();
+ if(!road||!std::isfinite(width)||width<oe::roads::kMinWidth||
+    width>oe::roads::kMaxWidth)return JNI_FALSE;
+ if(road->width==width)return JNI_TRUE;
+ recordEdit();road->width=width;++gRoadRevision;return JNI_TRUE;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadSetMarkings(
+ JNIEnv*,jclass,jboolean enabled){
+ auto*road=selectedRoad();
+ if(!road)return JNI_FALSE;
+ const bool value=enabled==JNI_TRUE;
+ if(value&&road->material!=oe::roads::kAsphalt)return JNI_FALSE;
+ if(road->markings==value)return JNI_TRUE;
+ recordEdit();road->markings=value;++gRoadRevision;return JNI_TRUE;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadSetMaterial(
+ JNIEnv*,jclass,jint material){
+ auto*road=selectedRoad();
+ if(!road||!oe::roads::validSurface(material))return JNI_FALSE;
+ if(road->material==material)return JNI_TRUE;
+ recordEdit();
+ road->material=material;
+ if(material!=oe::roads::kAsphalt)road->markings=false;
+ ++gRoadRevision;return JNI_TRUE;
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeRoadMedievalPreset(
+ JNIEnv*,jclass){
+ if(!gRoadSidewalks&&!gRoadCrosswalks)return;
+ recordEdit();gRoadSidewalks=false;gRoadCrosswalks=false;++gRoadRevision;
+}
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeRoadTogglePedestrian(
+ JNIEnv*,jclass,jint feature){
+ bool*value=feature==0?&gRoadSidewalks:feature==1?&gRoadCrosswalks:nullptr;
+ if(!value)return -1;
+ recordEdit();
+ *value=!*value;
+ ++gRoadRevision;
+ return *value?1:0;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRoadDelete(
+ JNIEnv*,jclass){
+ auto*road=selectedRoad();if(!road)return JNI_FALSE;
+ const int id=road->id;
+ recordEdit();
+ gRoads.erase(std::remove_if(gRoads.begin(),gRoads.end(),
+     [id](const oe::roads::Road&r){return r.id==id;}),gRoads.end());
+ gSelectedRoad=0;gRoadDragId=0;gRoadDragPoint=-1;++gRoadRevision;
+ return JNI_TRUE;
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeRoadSelect(
+ JNIEnv*,jclass,jint id){
+ gSelectedRoad=0;
+ for(const auto&road:gRoads)if(road.id==id){gSelectedRoad=id;break;}
+}
+JNIEXPORT jintArray JNICALL Java_game_oe_editor_EditorActivity_nativeRoadIds(
+ JNIEnv*env,jclass){
+ jintArray out=env->NewIntArray(static_cast<jsize>(gRoads.size()));
+ if(!out)return nullptr;
+ std::vector<jint> ids;ids.reserve(gRoads.size());
+ for(const auto&road:gRoads)ids.push_back(road.id);
+ if(!ids.empty())env->SetIntArrayRegion(out,0,static_cast<jsize>(ids.size()),ids.data());
+ return out;
+}
+JNIEXPORT jobjectArray JNICALL Java_game_oe_editor_EditorActivity_nativeRoadLabels(
+ JNIEnv*env,jclass){
+ jclass clazz=env->FindClass("java/lang/String");if(!clazz)return nullptr;
+ jobjectArray result=env->NewObjectArray(static_cast<jsize>(gRoads.size()),clazz,nullptr);
+ if(!result)return nullptr;
+ for(jsize i=0;i<static_cast<jsize>(gRoads.size());++i){
+  const auto&road=gRoads[static_cast<std::size_t>(i)];
+  std::ostringstream label;
+  label<<"Дорога #"<<road.id<<" · "<<road.points.size()<<" узлов · "
+       <<road.width<<" м · "<<oe::roads::surfaceName(road.material)
+       <<(road.markings?" · разметка":"");
+  jstring item=env->NewStringUTF(label.str().c_str());
+  env->SetObjectArrayElement(result,i,item);env->DeleteLocalRef(item);
+ }
+ return result;
+}
+JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeRoadNetworkReport(
+ JNIEnv*env,jclass){
+ const auto graph=oe::roads::buildNetwork(gRoads);
+ std::ostringstream out;
+ out<<"Дорог: "<<gRoads.size()<<" / "<<oe::roads::kMaxRoads
+    <<"\nАвтоматических перекрёстков: "<<graph.junctions.size()
+    <<"\nПар связанных дорог: "<<graph.connectedPairs
+    <<"\nСоединение концов: до "<<oe::roads::kSnapDistance<<" м"
+    <<"\nПерекрёстки обновляются при изменении дороги.";
+ if(graph.overflow>0)
+  out<<"\nВнимание: достигнут лимит "<<oe::roads::kMaxJunctions
+     <<" узлов перекрёстков.";
+ return env->NewStringUTF(out.str().c_str());
+}
+JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeRoadInfo(
+ JNIEnv*env,jclass){
+ const auto*road=selectedRoad();
+ if(!road)return env->NewStringUTF("Дорога не выбрана. Нажми «Список дорог».");
+ std::ostringstream report;
+ report<<"Дорога #"<<road->id<<"\nТочек: "<<road->points.size()
+       <<" / "<<oe::roads::kMaxPoints<<"\nШирина: "<<road->width
+       <<" м\nПокрытие: "<<oe::roads::surfaceName(road->material)
+       <<"\nРазметка: "<<(road->markings?"есть":"нет");
+ return env->NewStringUTF(report.str().c_str());
+}
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeInit(JNIEnv*,jclass){
  setupGL();if(!gSceneInitialized)reset(true);
 }
@@ -1207,6 +1924,7 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDraw(JNIEnv*,jcl
  const Frustum frustum=makeFrustum(vp);
  drawWorld(vp);
  drawTerrainPaint(vp);
+ drawRoads(vp);
  for(const auto&e:gEntities)drawEntity(vp,frustum,e);
  drawGizmo(vp);
  glBindVertexArray(0);
@@ -1215,22 +1933,54 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDraw(JNIEnv*,jcl
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeSetGizmoMode(
  JNIEnv*,jclass,jint mode){
- if(mode>=0&&mode<=2){gGizmoMode=mode;gGizmoActive=false;}
+ if(mode>=0&&mode<=2){gGizmoMode=mode;gGizmoActive=false;gGizmoActiveAxis=-1;}
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeSetRotationSnap(
+ JNIEnv*,jclass,jboolean enabled){
+ gRotationSnap15=enabled==JNI_TRUE;
 }
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeGizmoHit(
  JNIEnv*,jclass,jfloat px,jfloat py){return gizmoHit(px,py);}
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeGizmoBegin(
- JNIEnv*,jclass,jint axis){
- if(!selected()||axis<0||axis>2||(gGizmoMode==1&&axis!=1))
-  return JNI_FALSE;
- recordEdit();gGizmoActive=true;gGizmoActiveId=gSelected;
+ JNIEnv*,jclass,jint axis,jfloat px,jfloat py){
+ if(!selected()||axis<0||axis>2||
+    !std::isfinite(px)||!std::isfinite(py))return JNI_FALSE;
+ recordEdit();gGizmoActive=true;gGizmoActiveId=gSelected;gGizmoActiveAxis=axis;
+ gGizmoUnsnapped=0.f;gGizmoApplied=0.f;
+ gGizmoLastPlaneValid=gGizmoMode==1&&
+  rotationPlanePoint(axis,px,py,gizmoBase(*selected()),gGizmoLastPlane);
  return JNI_TRUE;
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeGizmoDrag(
- JNIEnv*,jclass,jint axis,jfloat dx,jfloat dy){
- if(!gGizmoActive||gGizmoActiveId!=gSelected||!std::isfinite(dx)||!std::isfinite(dy)||
+ JNIEnv*,jclass,jint axis,jfloat dx,jfloat dy,jfloat px,jfloat py){
+ if(!gGizmoActive||gGizmoActiveId!=gSelected||axis!=gGizmoActiveAxis||
+    !std::isfinite(dx)||!std::isfinite(dy)||
+    !std::isfinite(px)||!std::isfinite(py)||
     std::abs(dx)>1000.f||std::abs(dy)>1000.f||axis<0||axis>2)return;
  Entity*e=selected();if(!e)return;
+ if(gGizmoMode==1){
+  Vec3 newPoint{};
+  const bool valid=rotationPlanePoint(axis,px,py,gizmoBase(*e),newPoint);
+  float delta=0.f;
+  if(valid&&gGizmoLastPlaneValid)
+    delta=oe::gizmo::signedPlaneDegrees(
+     gGizmoLastPlane.x,gGizmoLastPlane.y,gGizmoLastPlane.z,
+     newPoint.x,newPoint.y,newPoint.z,axis);
+  else
+    delta=(dx+dy*.25f)*.38f; // Edge-on ring: bounded screen-drag fallback.
+  gGizmoLastPlaneValid=valid;
+  if(valid)gGizmoLastPlane=newPoint;
+  delta=clampf(delta,-30.f,30.f);
+  gGizmoUnsnapped+=delta;
+  const float target=gRotationSnap15?
+    std::round(gGizmoUnsnapped/15.f)*15.f:gGizmoUnsnapped;
+  const float apply=target-gGizmoApplied;
+  if(std::abs(apply)>.00001f){
+   rotateEntityWorld(*e,axis,apply);
+   gGizmoApplied=target;
+  }
+  return;
+ }
  const Vec3 origin=gizmoBase(*e),tip=gizmoEndpoint(*e,axis);
  float bx,by,ex,ey;
  if(!gizmoProject(origin,bx,by)||!gizmoProject(tip,ex,ey))return;
@@ -1242,8 +1992,6 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeGizmoDrag(
   if(axis==0)e->x=clampf(e->x+amount,-worldHalf(),worldHalf());
   if(axis==1)e->y=clampf(e->y+amount,-24.f,160.f);
   if(axis==2)e->z=clampf(e->z+amount,-worldHalf(),worldHalf());
- }else if(gGizmoMode==1&&axis==1){
-  e->yaw=std::fmod(e->yaw+clampf(pixels*.55f,-20.f,20.f)+360.f,360.f);
  }else if(gGizmoMode==2){
   const float factor=std::exp(clampf(pixels*.009f,-.20f,.20f));
   float *value=axis==0?&e->sx:(axis==1?&e->sy:&e->sz);
@@ -1251,7 +1999,8 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeGizmoDrag(
  }
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeGizmoEnd(JNIEnv*,jclass){
- gGizmoActive=false;gGizmoActiveId=0;
+ gGizmoActive=false;gGizmoActiveId=0;gGizmoActiveAxis=-1;
+ gGizmoLastPlaneValid=false;
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeOrbit(JNIEnv*,jclass,jfloat dx,jfloat dy,jfloat zoom){
  gYaw-=dx*.006f;
@@ -1348,6 +2097,8 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeSetWorldSize
  float half=static_cast<float>(newSize)*.5f;
  // Never silently hide buildings when shrinking the world.
  for(const auto&e:gEntities)if(std::abs(e.x)>half-1.f||std::abs(e.z)>half-1.f)return JNI_FALSE;
+ for(const auto&road:gRoads)for(const auto&point:road.points)
+  if(std::abs(point.x)>half-1.f||std::abs(point.z)>half-1.f)return JNI_FALSE;
  if(gWorldSize==newSize)return JNI_TRUE;
  recordEdit();
  gWorldSize=newSize;
@@ -1369,8 +2120,8 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePick(JNIEnv*,jcl
   float left=1e9f,top=1e9f,right=-1e9f,bottom=-1e9f,minW=1e9f;
   int visible=0;
   for(float xx:{-range,range})for(float zz:{-range,range})for(float yy:{0.f,h}){
-    float a=e.yaw*RAD,k=e.size,c=std::cos(a),s=std::sin(a);
-    Vec4 q=apply(vp,{e.x+(c*xx*e.sx+s*zz*e.sz)*k,e.y+yy*k*e.sy,e.z+(c*zz*e.sz-s*xx*e.sx)*k,1});
+    const Mat4 model=entityModelMatrix(e);
+    const Vec4 q=apply(vp,apply(model,{xx,yy,zz,1.f}));
     if(q.w<.1f)continue;visible++;
     float sx=(q.x/q.w*.5f+.5f)*gWidth, sy=(.5f-q.y/q.w*.5f)*gHeight;
     left=std::min(left,sx);right=std::max(right,sx);
@@ -1475,8 +2226,26 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeChangeSelectedHe
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeSnapSelectedToGround(JNIEnv*,jclass){
  if(Entity*e=selected()){
-  const float y=terrainHeightAt(e->x,e->z);
-  if(y!=e->y){recordEdit();e->y=y;}
+  const float ground=terrainHeightAt(e->x,e->z);
+  float desired=ground;
+  // Imported model may be tipped sideways; the grounding point is the
+  // lowest transformed source vertex, not the original GLB's Y=0 plane.
+  if(e->type==6){
+   auto it=gAssets.find(e->asset);
+   if(it!=gAssets.end()&&it->second.vertexStride==11&&!it->second.vertices.empty()){
+    const Mat4 transform=entityModelMatrix(*e);
+    const auto&v=it->second.vertices;
+    float minY=std::numeric_limits<float>::infinity();
+    for(size_t j=0;j+2<v.size();j+=11){
+     const float transformed=transform.m[1]*v[j]+
+         transform.m[5]*v[j+1]+transform.m[9]*v[j+2]+transform.m[13];
+     minY=std::min(minY,transformed);
+    }
+    if(std::isfinite(minY))desired=ground+e->y-minY;
+   }
+  }
+  desired=clampf(desired,-24.f,160.f);
+  if(std::abs(desired-e->y)>.0001f){recordEdit();e->y=desired;}
  }
 }
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeApplyTerrainBrushAtScreen(
@@ -1493,8 +2262,44 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeTerrainBrushCoun
  return static_cast<jint>(gBrushes.size());
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeRotate(JNIEnv*,jclass,jfloat deg){
- if(!std::isfinite(deg)||deg==0)return;
- if(Entity*e=selected()){recordEdit();e->yaw=std::fmod(e->yaw+deg,360.f);}
+ if(!std::isfinite(deg)||deg==0||std::abs(deg)>360.f)return;
+ if(Entity*e=selected()){recordEdit();rotateEntityWorld(*e,1,deg);}
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeRotateSelectedAxis(
+ JNIEnv*,jclass,jint axis,jfloat degrees){
+ if(axis<0||axis>2||!std::isfinite(degrees)||degrees==0||
+    std::abs(degrees)>360.f)return;
+ if(Entity*e=selected()){
+  recordEdit();rotateEntityWorld(*e,axis,degrees);
+ }
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeResetSelectedRotation(
+ JNIEnv*,jclass){
+ if(Entity*e=selected()){
+  recordEdit();e->yaw=0.f;e->qx=e->qy=e->qz=0.f;e->qw=1.f;
+ }
+}
+JNIEXPORT jdoubleArray JNICALL Java_game_oe_editor_EditorActivity_nativeSelectedRotationEuler(
+ JNIEnv*env,jclass){
+ const Entity*e=selected();if(!e)return nullptr;
+ const Vec3 r=entityEulerXYZ(*e);
+ const jdouble angles[3]={r.x,r.y,r.z};
+ jdoubleArray a=env->NewDoubleArray(3);
+ if(a)env->SetDoubleArrayRegion(a,0,3,angles);
+ return a;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeSetSelectedRotationEuler(
+ JNIEnv*,jclass,jdouble x,jdouble y,jdouble z){
+ if(!std::isfinite(x)||!std::isfinite(y)||!std::isfinite(z)||
+    std::abs(x)>36000.||std::abs(y)>36000.||std::abs(z)>36000.)
+    return JNI_FALSE;
+ Entity*e=selected();if(!e)return JNI_FALSE;
+ const auto q=oe::gizmo::multiply(
+   oe::gizmo::axisAngle(1,static_cast<float>(y)),
+   oe::gizmo::multiply(oe::gizmo::axisAngle(0,static_cast<float>(x)),
+                        oe::gizmo::axisAngle(2,static_cast<float>(z))));
+ recordEdit();setEntityQuaternion(*e,q);
+ return JNI_TRUE;
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeScaleSelectedAxis(
  JNIEnv*,jclass,jint axis,jfloat factor){
@@ -1516,17 +2321,23 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeScale(JNIEnv*,jc
 }
 JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSelectedInfo(JNIEnv*env,jclass){
  Entity*e=selected();if(!e)return env->NewStringUTF("Выбери здание касанием или через список «Объекты»");
- std::ostringstream out;out<<nameFor(e->type)<<" #" <<e->id<<"  |  X "<<std::fixed<<std::setprecision(3)
- <<e->x<<"  Z "<<e->z<<"  Y "<<e->y<<"  ↻ "<<e->yaw<<"°  Размер "<<e->size
- << " XYZ "<<e->sx<<"/"<<e->sy<<"/"<<e->sz;
+ const Vec3 angles=entityEulerXYZ(*e);
+ std::ostringstream out;out<<nameFor(e->type)<<" #" <<e->id<<" | X "<<std::fixed<<std::setprecision(2)
+ <<e->x<<" Z "<<e->z<<" Y "<<e->y<<" | ↻ XYZ "
+ <<std::setprecision(1)<<angles.x<<"°/"<<angles.y<<"°/"<<angles.z<<"°"
+ <<" | Размер "<<std::setprecision(2)<<e->size;
+
  return env->NewStringUTF(out.str().c_str());
 }
 JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSceneSnapshot(JNIEnv*env,jclass){
- std::ostringstream out;out<<std::fixed<<std::setprecision(6)<<"{\"version\":1,\"worldSize\":"<<gWorldSize<<",\"demoRoads\":"<<(gDemoRoads?"true":"false")<<",\"items\":[";
+ std::ostringstream out;out<<std::fixed<<std::setprecision(6)<<"{\"version\":1,\"worldSize\":"<<gWorldSize<<",\"demoRoads\":"<<(gDemoRoads?"true":"false")<<",\"roadSidewalks\":"<<(gRoadSidewalks?"true":"false")
+  <<",\"roadCrosswalks\":"<<(gRoadCrosswalks?"true":"false")
+  <<",\"items\":[";
  for(size_t i=0;i<gEntities.size();i++){
   const auto&e=gEntities[i];if(i)out<<",";
   out<<"{\"type\":"<<e.type<<",\"x\":"<<e.x<<",\"z\":"<<e.z
-     <<",\"yaw\":"<<e.yaw<<",\"size\":"<<e.size<<",\"y\":"<<e.y<<",\"sx\":"<<e.sx<<",\"sy\":"<<e.sy<<",\"sz\":"<<e.sz;
+     <<",\"yaw\":"<<e.yaw<<",\"size\":"<<e.size<<",\"y\":"<<e.y<<",\"sx\":"<<e.sx<<",\"sy\":"<<e.sy<<",\"sz\":"<<e.sz
+     <<",\"qx\":"<<e.qx<<",\"qy\":"<<e.qy<<",\"qz\":"<<e.qz<<",\"qw\":"<<e.qw;
   if(e.type==6)out<<",\"asset\":\""<<e.asset<<"\"";
   if(!e.paint.empty())out<<",\"paint\":\""<<e.paint<<"\"";
   out<<"}";
@@ -1540,6 +2351,19 @@ JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSceneSnapshot
  for(size_t i=0;i<gTerrainPaint.size();i++){
   const auto&paint=gTerrainPaint[i];if(i)out<<",";
   out<<"["<<paint.x<<","<<paint.z<<","<<paint.radius<<",\""<<paint.texture<<"\"]";
+ }
+ out<<"],\"roads\":[";
+ bool firstRoad=true;
+ for(const auto&road:gRoads){
+  // An unfinished one-point stroke is intentionally excluded from saved scenes.
+  if(!oe::roads::valid(road,worldHalf()))continue;
+  if(!firstRoad)out<<",";firstRoad=false;
+  out<<"["<<road.id<<","<<road.width<<","<<(road.markings?1:0)<<",[";
+  for(std::size_t i=0;i<road.points.size();++i){
+   if(i)out<<",";
+   out<<"["<<road.points[i].x<<","<<road.points[i].z<<"]";
+  }
+  out<<"],"<<road.material<<"]";
  }
  out<<"]}";return env->NewStringUTF(out.str().c_str());
 }
@@ -1574,6 +2398,26 @@ JNIEXPORT jobjectArray JNICALL Java_game_oe_editor_EditorActivity_nativeLoadedAs
 }
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeCanRegisterMore(JNIEnv*,jclass,jint count){
  return count>=0 && static_cast<size_t>(count)<=MAX_ASSETS-gAssets.size()?JNI_TRUE:JNI_FALSE;
+}
+// Remove GPU resources only when neither active entities nor bounded Undo/Redo
+// snapshots refer to them. All calls happen on the GLES thread.
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeTrimUnusedAssets(JNIEnv*,jclass){
+ auto referenced=[](const std::string&key)->bool{
+  for(const auto&e:gEntities)if(e.type==6&&e.asset==key)return true;
+  for(const auto&s:gUndo)for(const auto&e:s.entities)
+   if(e.type==6&&e.asset==key)return true;
+  for(const auto&s:gRedo)for(const auto&e:s.entities)
+   if(e.type==6&&e.asset==key)return true;
+  return false;
+ };
+ int count=0;
+ for(auto it=gAssets.begin();it!=gAssets.end();){
+  if(referenced(it->first)){++it;continue;}
+  releaseAssetGpu(it->second);
+  it=gAssets.erase(it);
+  ++count;
+ }
+ return count;
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDiscardUnusedAsset(JNIEnv*env,jclass,jstring key){
  if(!key)return;
@@ -1614,7 +2458,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsse
  const jsize batchLength=env->GetArrayLength(batchData);
  if(batchLength<=0||batchLength>6144||batchLength%3!=0)return JNI_FALSE;
  const jsize imageCount=env->GetArrayLength(imageData);
- if(imageCount<0||imageCount>4||env->GetArrayLength(imageInfo)!=imageCount*3)
+ if(imageCount<0||imageCount>8||env->GetArrayLength(imageInfo)!=imageCount*3)
   return JNI_FALSE;
  Asset prepared;
  prepared.vertexStride=11;prepared.centerY=centerY;prepared.radius=radius;
@@ -1635,6 +2479,10 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsse
   consumed+=count;
  }
  if(consumed!=vertexCount)return JNI_FALSE;
+ if(vertexCount>18000){
+  __android_log_print(ANDROID_LOG_INFO,"OE","Heavy mesh %d triangles: skip GLES-thread optional LOD rebuild",
+                      static_cast<int>(vertexCount/3));
+ }
  std::vector<jint> info(static_cast<size_t>(imageCount*3));
  if(imageCount){
   env->GetIntArrayRegion(imageInfo,0,imageCount*3,info.data());
@@ -1672,7 +2520,13 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsse
  if(textureCacheBytes()-oldBytes+totalNew>MAX_TEXTURE_CACHE_BYTES)return JNI_FALSE;
  // Only entirely static GLBs are eligible for automatic LOD generation.
  // Unsafe files with skins, animations or morph targets retain full geometry.
- if(preserveOriginalRig!=JNI_TRUE){
+ // meshopt_simplifyWithAttributes was running synchronously on the
+ // GLES render thread. A 90k-triangle medieval house can take seconds,
+ // freezing every frame and queuing touch events. Keep source LOD0 exact,
+ // and only build optional LODs for genuinely small meshes. Large meshes
+ // are still GPU registered and placed, not silently decimated.
+ // Safe mobile model limit for synchronous optional work: 6k triangles.
+ if(preserveOriginalRig!=JNI_TRUE&&vertexCount<=18000){
   buildStaticLods(prepared);
   size_t newBytes=0;
   for(const auto&lod:prepared.lods)newBytes+=lod.vertices.size()*sizeof(float);
@@ -1712,11 +2566,17 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsse
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene(
  JNIEnv*env,jclass,jint size,jboolean demo,jintArray kinds,jfloatArray transforms,
  jobjectArray modelKeys,jfloatArray terrainData,jobjectArray objectPaintKeys,
- jfloatArray painting,jobjectArray terrainPaintKeys){
+ jfloatArray painting,jobjectArray terrainPaintKeys,
+ jintArray roadIds,jfloatArray roadWidths,jbooleanArray roadMarkings,
+ jintArray roadCounts,jintArray roadMaterials,jfloatArray roadCoordinates,
+ jboolean roadSidewalks,jboolean roadCrosswalks){
  if(!allowedWorldSize(size)||!kinds||!transforms||!modelKeys||!terrainData||
-    !objectPaintKeys||!painting||!terrainPaintKeys)return JNI_FALSE;
+    !objectPaintKeys||!painting||!terrainPaintKeys||
+    !roadIds||!roadWidths||!roadMarkings||!roadCounts||!roadMaterials||
+    !roadCoordinates)
+    return JNI_FALSE;
  const jsize n=env->GetArrayLength(kinds);
- if(n<0||n>MAX_ENTITIES||env->GetArrayLength(transforms)!=n*8||
+ if(n<0||n>MAX_ENTITIES||env->GetArrayLength(transforms)!=n*12||
     env->GetArrayLength(modelKeys)!=n||env->GetArrayLength(objectPaintKeys)!=n)return JNI_FALSE;
  const jsize paintFloats=env->GetArrayLength(painting);
  if(paintFloats<0||paintFloats%3!=0||
@@ -1726,10 +2586,10 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  if(brushFloats<0||brushFloats%4!=0||
     brushFloats>static_cast<jsize>(MAX_TERRAIN_BRUSHES*4))return JNI_FALSE;
  std::array<jint,MAX_ENTITIES> types{};
- std::array<jfloat,MAX_ENTITIES*8> matrix{};
+ std::array<jfloat,MAX_ENTITIES*12> matrix{};
  if(n){
   env->GetIntArrayRegion(kinds,0,n,types.data());
-  env->GetFloatArrayRegion(transforms,0,n*8,matrix.data());
+  env->GetFloatArrayRegion(transforms,0,n*12,matrix.data());
   if(env->ExceptionCheck())return JNI_FALSE;
  }
  std::array<jfloat,MAX_TERRAIN_BRUSHES*4> brushRaw{};
@@ -1769,12 +2629,20 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  staged.reserve(static_cast<size_t>(n));
  for(jsize i=0;i<n;i++){
   const int type=types[i];
-  const float x=matrix[i*8],z=matrix[i*8+1],yaw=matrix[i*8+2],
-              scl=matrix[i*8+3],y=matrix[i*8+4],
-              sx=matrix[i*8+5],sy=matrix[i*8+6],sz=matrix[i*8+7];
+  const float x=matrix[i*12],z=matrix[i*12+1],yaw=matrix[i*12+2],
+              scl=matrix[i*12+3],y=matrix[i*12+4],
+              sx=matrix[i*12+5],sy=matrix[i*12+6],sz=matrix[i*12+7],
+              qx=matrix[i*12+8],qy=matrix[i*12+9],
+              qz=matrix[i*12+10],qw=matrix[i*12+11];
   if(type<0||type>16||!std::isfinite(x)||!std::isfinite(z)||
     !std::isfinite(yaw)||!std::isfinite(scl)||!std::isfinite(y)||
     !std::isfinite(sx)||!std::isfinite(sy)||!std::isfinite(sz)||
+    !std::isfinite(qx)||!std::isfinite(qy)||
+    !std::isfinite(qz)||!std::isfinite(qw)||
+    std::abs(qx)>1.01f||std::abs(qy)>1.01f||
+    std::abs(qz)>1.01f||std::abs(qw)>1.01f||
+    qx*qx+qy*qy+qz*qz+qw*qw<.49f||
+    qx*qx+qy*qy+qz*qz+qw*qw>1.51f||
     std::abs(x)>half||std::abs(z)>half||std::abs(yaw)>36000||
     scl<.2f||scl>8.f||y<-24.f||y>160.f||
     sx<.10f||sx>8.f||sy<.10f||sy>8.f||sz<.10f||sz>8.f)return JNI_FALSE;
@@ -1798,11 +2666,63 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
   env->ReleaseStringUTFChars(paintKey,paintRaw);env->DeleteLocalRef(paintKey);
   if(!paintName.empty()&&(!validPaintKey(paintName)||
      gPaintTextures.find(paintName)==gPaintTextures.end()))return JNI_FALSE;
-  staged.push_back({static_cast<int>(i)+1,type,x,z,yaw,scl,key,y,sx,sy,sz,paintName});
+  Entity restored{static_cast<int>(i)+1,type,x,z,yaw,scl,key,y,sx,sy,sz,paintName};
+  const auto q=oe::gizmo::normalized({qx,qy,qz,qw});
+  restored.qx=q.x;restored.qy=q.y;restored.qz=q.z;restored.qw=q.w;
+  staged.push_back(std::move(restored));
  }
+  // Validate staged road data before changing any scene or terrain.
+ const jsize rn=env->GetArrayLength(roadIds);
+ if(rn<0||rn>static_cast<jsize>(oe::roads::kMaxRoads)||
+    env->GetArrayLength(roadWidths)!=rn||
+    env->GetArrayLength(roadMarkings)!=rn||
+    env->GetArrayLength(roadCounts)!=rn||
+    env->GetArrayLength(roadMaterials)!=rn)return JNI_FALSE;
+ const jsize coordinateCount=env->GetArrayLength(roadCoordinates);
+ if(coordinateCount<0||
+    coordinateCount>static_cast<jsize>(oe::roads::kMaxRoads*oe::roads::kMaxPoints*2)||
+    coordinateCount%2)return JNI_FALSE;
+ std::array<jint,oe::roads::kMaxRoads> idsRaw{},countsRaw{},materialsRaw{};
+ std::array<jfloat,oe::roads::kMaxRoads> widthsRaw{};
+ std::array<jboolean,oe::roads::kMaxRoads> markingsRaw{};
+ std::array<jfloat,oe::roads::kMaxRoads*oe::roads::kMaxPoints*2> pointsRaw{};
+ if(rn){
+  env->GetIntArrayRegion(roadIds,0,rn,idsRaw.data());
+  env->GetIntArrayRegion(roadCounts,0,rn,countsRaw.data());
+  env->GetIntArrayRegion(roadMaterials,0,rn,materialsRaw.data());
+  env->GetFloatArrayRegion(roadWidths,0,rn,widthsRaw.data());
+  env->GetBooleanArrayRegion(roadMarkings,0,rn,markingsRaw.data());
+ }
+ if(coordinateCount)
+  env->GetFloatArrayRegion(roadCoordinates,0,coordinateCount,pointsRaw.data());
+ if(env->ExceptionCheck())return JNI_FALSE;
+ std::vector<oe::roads::Road> stagedRoads;stagedRoads.reserve(static_cast<std::size_t>(rn));
+ std::size_t offset=0;int nextRoadId=1;
+ for(jsize i=0;i<rn;++i){
+  const int id=idsRaw[i],count=countsRaw[i];
+  if(id<=0||id>=2147483647||count<2||
+     count>static_cast<int>(oe::roads::kMaxPoints)||
+     offset+static_cast<std::size_t>(count)*2>static_cast<std::size_t>(coordinateCount))
+     return JNI_FALSE;
+  for(const auto&previous:stagedRoads)if(previous.id==id)return JNI_FALSE;
+  oe::roads::Road road{id,widthsRaw[i],markingsRaw[i]==JNI_TRUE,{},materialsRaw[i]};
+  road.points.reserve(static_cast<std::size_t>(count));
+  for(int j=0;j<count;++j){
+   road.points.push_back({pointsRaw[offset],pointsRaw[offset+1]});
+   offset+=2;
+  }
+  if(!oe::roads::valid(road,half))return JNI_FALSE;
+  nextRoadId=std::max(nextRoadId,id+1);
+  stagedRoads.push_back(std::move(road));
+ }
+ if(offset!=static_cast<std::size_t>(coordinateCount))return JNI_FALSE;
  // Commit: no validation or allocation failures below this point.
  gEntities.swap(staged);gBrushes.swap(stagedBrushes);
  gTerrainPaint.swap(stagedPaint);gTerrainRevision++;
+ gRoads.swap(stagedRoads);gNextRoadId=nextRoadId;gSelectedRoad=0;
+ gRoadSidewalks=roadSidewalks==JNI_TRUE;
+ gRoadCrosswalks=roadCrosswalks==JNI_TRUE;
+ gRoadDragId=0;gRoadDragPoint=-1;gRoadEditMode=0;++gRoadRevision;
  gWorldSize=size;gDemoRoads=demo==JNI_TRUE;
  gNextId=static_cast<int>(n)+1;gSelected=0;
  gTarget={0,terrainHeightAt(0,1.3f)+1.2f,1.3f};gDistance=28.f;

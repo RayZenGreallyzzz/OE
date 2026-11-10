@@ -13,7 +13,7 @@ import java.util.Arrays;
  */
 final class TextureReader {
     private TextureReader(){}
-    static final int MAX_SOURCE_BYTES=24*1024*1024;
+    static final int MAX_SOURCE_BYTES=40*1024*1024;
     static final int MAX_DIMENSION=8192;
     static final int DEFAULT_LIMIT=1024;
     static final int MAX_LIMIT=2048;

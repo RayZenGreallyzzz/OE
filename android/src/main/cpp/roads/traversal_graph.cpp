@@ -11,7 +11,6 @@
 namespace oe { namespace roads {
 namespace {
 constexpr double kSurfaceLift=.14;
-constexpr double kPi=3.14159265358979323846;
 constexpr std::uint64_t kBridgeNodeBit=1ULL<<63;
 struct Deck {double length,width,height;};
 struct End {
@@ -237,6 +236,39 @@ bool suggestBridgeDeckHeight(const RoadTopology& roads,
        deckFor(bridge.type).height*bridge.size*bridge.sy;
  if(!finite(next)||next< -24.||next>160.)return false;
  suggestedEntityY=next;
+ return true;
+}
+bool suggestBridgeRoadAlignment(const RoadTopology& roads,
+                                const BridgeInstance& bridge,
+                                const TerrainHeight& ground,
+                                BridgeAlignment& suggested){
+ if(!ground||!bridgeValid(bridge))return false;
+ BridgePose current;
+ if(!pose(bridge,current))return false;
+ std::vector<End> ends;
+ if(!collectRoadEnds(roads,ground,ends))return false;
+ Snap a{},b{};
+ if(!closestEnd(current.a,current.b,ends,a,false)||
+    !closestEnd(current.b,current.a,ends,b,false)||
+    a.node==b.node||std::abs(a.road.y-b.road.y)>1.2)return false;
+ const double dx=b.road.x-a.road.x,dz=b.road.z-a.road.z;
+ const double gap=std::hypot(dx,dz);
+ const Deck deck=deckFor(bridge.type);
+ const double length=deck.length*std::abs(bridge.size*bridge.sx);
+ if(gap<.25||std::abs(gap-length)>2.0)return false;
+ BridgeInstance candidate=bridge;
+ candidate.center={(a.road.x+b.road.x)*.5,(a.road.z+b.road.z)*.5};
+ candidate.yaw=std::atan2(dz,dx);
+ candidate.y=(a.road.y+b.road.y)*.5-deck.height*bridge.size*bridge.sy;
+ if(candidate.y< -24.||candidate.y>160.)return false;
+ BridgePose adjusted;
+ if(!pose(candidate,adjusted))return false;
+ Snap checkA{},checkB{};
+ if(!closestEnd(adjusted.a,adjusted.b,ends,checkA,true)||
+    !closestEnd(adjusted.b,adjusted.a,ends,checkB,true)||
+    checkA.node!=a.node||checkB.node!=b.node)return false;
+ const BridgeAlignment result{candidate.center,candidate.y,candidate.yaw};
+ suggested=result;
  return true;
 }
 }} // namespace oe::roads

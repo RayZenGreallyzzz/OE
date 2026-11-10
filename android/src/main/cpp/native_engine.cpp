@@ -2750,6 +2750,30 @@ static oe::roads::TerrainHeight oePlayTerrainCopy(){
   return std::max(-24.f,std::min(140.f,h));
  };
 }
+// R5.9a: conservative, explicitly supported Play solids. Static meshes
+// only: stock houses, straight wall segments and stone pillars. Doors stay
+// open; imported GLBs and complex bridges are not guessed as collision boxes.
+bool oePlaySolidFromEntity(const Entity&e,oe::runtime::SolidBox&out){
+ const double sx=std::abs(static_cast<double>(e.size)*e.sx);
+ const double sy=std::abs(static_cast<double>(e.size)*e.sy);
+ const double sz=std::abs(static_cast<double>(e.size)*e.sz);
+ if(!std::isfinite(sx)||!std::isfinite(sy)||!std::isfinite(sz)||
+    sx<.02||sy<.02||sz<.02)return false;
+ double halfX=0.,halfY=0.,halfZ=0.,localY=0.;
+ switch(e.type){
+  case 0:case 1:case 2:
+   halfX=2.85;halfY=1.525;halfZ=2.375;localY=1.75;break;
+  case 10: // Wall mesh: 3.2 x 2.8 x 0.26 metres
+   halfX=1.6;halfY=1.4;halfZ=.13;localY=1.4;break;
+  case 15: // Pillar: narrow stone shaft, not a massive floor obstacle
+   halfX=.2;halfY=1.45;halfZ=.2;localY=1.45;break;
+  default:return false; // deliberately not a solid in this prototype
+ }
+ out.center={e.x,e.y+localY*e.size*e.sy,e.z};
+ out.halfExtents={halfX*sx,halfY*sy,halfZ*sz};
+ out.yawRadians=static_cast<double>(e.yaw)*RAD;
+ return oe::runtime::validSolidBox(out);
+}
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativePlayStart(
  JNIEnv*,jclass){
  // A Play request must not end or commit a half-painted or half-authored
@@ -2759,8 +2783,15 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativePlayStart(
  oe::roads::TraversalGraph traversal;
  if(!oeCurrentTraversalGraph(traversal))return JNI_FALSE;
  std::vector<oe::runtime::SceneItem> items;
+ std::vector<oe::runtime::SolidBox> solids;
  items.reserve(gEntities.size());
+ solids.reserve(gEntities.size());
  for(const auto&e:gEntities){
+  if(e.type<=2||e.type==10||e.type==15){
+   oe::runtime::SolidBox box;
+   if(!oePlaySolidFromEntity(e,box))return JNI_FALSE;
+   solids.push_back(box);
+  }
   oe::runtime::SceneItem item;
   item.name="Object "+std::to_string(e.id);
   item.meshAsset=e.type==6?e.asset:"builtin:"+std::to_string(e.type);
@@ -2783,7 +2814,8 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativePlayStart(
   }
  }
  auto stage=std::make_unique<oe::runtime::PlaySession>(512);
- if(!stage->start(items,traversal,oePlayTerrainCopy(),worldHalf(),x,z,gYaw))
+ if(!stage->start(items,traversal,oePlayTerrainCopy(),worldHalf(),x,z,
+                  gYaw,solids))
   return JNI_FALSE;
  // A failure above leaves ALL editor data and the old preview unchanged.
  std::vector<Entity> copied=gEntities;

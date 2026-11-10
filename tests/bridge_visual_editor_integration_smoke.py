@@ -31,6 +31,6 @@ for needle in [
     assert needle in model,needle
 assert "roads/bridge_approach_visual.cpp" in cmake
 assert "R5.8a" in roadmap
-assert "OE PLAY STOP R5.8b TEST" in (root/"android/src/main/AndroidManifest.xml").read_text()
-assert "versionCode 38" in (root/"android/build.gradle").read_text()
+assert "OE PLAY SOLIDS R5.9a TEST" in (root/"android/src/main/AndroidManifest.xml").read_text()
+assert "versionCode 39" in (root/"android/build.gradle").read_text()
 print("OE_BANK_VISUAL_EDITOR_OK: cache invalidation, material batching, safe surface authority")

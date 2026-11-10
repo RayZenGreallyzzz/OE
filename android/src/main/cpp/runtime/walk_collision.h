@@ -2,6 +2,7 @@
 // OE R5.6 — portable 60 Hz character feet / landscape / road / bridge
 // collision. Editor preview and future Game Runtime share the SAME solver.
 #include "oe_runtime.h"
+#include "solid_collision.h"
 #include "../roads/traversal_graph.h"
 #include <cstddef>
 #include <cstdint>
@@ -38,6 +39,9 @@ public:
                 roads::TerrainHeight terrain,double worldHalf=512.);
  // Place feet on the reachable ground/road in a bounded world. Cannot
  // teleport a test player from UNDER a bridge onto its roof.
+ // Optional, runtime-Play-only immutable obstacle snapshot (<=300 boxes).
+ // Validation is atomic; the editor's ghost uses an empty set by default.
+ bool setStaticSolids(const std::vector<SolidBox>&solids);
  bool spawn(double x,double z);
  // Move a discrete 60 Hz simulation; controls are in world XZ axes.
  // Input vector is normalized; jump fires once on the first step.
@@ -61,6 +65,7 @@ private:
  bool inBounds(double x,double z) const noexcept;
  roads::TerrainHeight terrain_{};
  std::vector<roads::WalkSurface> surfaces_;
+ std::vector<SolidBox> solids_;
  double worldHalf_=512.;
  WalkState state_{};
  bool active_=false;

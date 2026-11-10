@@ -183,6 +183,7 @@ jobs:
             tests/bridge_bank_transition_smoke.cpp \
             android/src/main/cpp/runtime/oe_runtime.cpp \
             android/src/main/cpp/runtime/walk_collision.cpp \
+            android/src/main/cpp/runtime/solid_collision.cpp \
             android/src/main/cpp/roads/road_network.cpp \
             android/src/main/cpp/roads/road_topology.cpp \
             android/src/main/cpp/roads/traversal_graph.cpp \
@@ -218,6 +219,7 @@ jobs:
             tests/play_session_smoke.cpp \
             android/src/main/cpp/runtime/oe_runtime.cpp \
             android/src/main/cpp/runtime/walk_collision.cpp \
+            android/src/main/cpp/runtime/solid_collision.cpp \
             android/src/main/cpp/runtime/play_session.cpp \
             android/src/main/cpp/roads/road_network.cpp \
             android/src/main/cpp/roads/road_topology.cpp \
@@ -227,6 +229,26 @@ jobs:
           /tmp/oe-play-session
       - name: Verify Android Play/Stop GL-only integration and legacy scene compatibility
         run: python3 tests/play_editor_integration_smoke.py
+  play-solid-collisions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prove wall/building solid collision with rotation and jump limits
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -pedantic \
+            tests/solid_collision_smoke.cpp \
+            android/src/main/cpp/runtime/solid_collision.cpp \
+            android/src/main/cpp/runtime/oe_runtime.cpp \
+            android/src/main/cpp/runtime/walk_collision.cpp \
+            android/src/main/cpp/runtime/play_session.cpp \
+            android/src/main/cpp/roads/road_network.cpp \
+            android/src/main/cpp/roads/road_topology.cpp \
+            android/src/main/cpp/roads/traversal_graph.cpp \
+            android/src/main/cpp/medieval/structures.cpp \
+            -o /tmp/oe-play-solids
+          /tmp/oe-play-solids
+      - name: Confirm conservative editor-solid mapping and no scene serialization
+        run: python3 tests/play_solid_editor_integration_smoke.py
   runtime-walk-collisions:
     runs-on: ubuntu-latest
     steps:
@@ -237,6 +259,7 @@ jobs:
             tests/walk_collision_smoke.cpp \
             android/src/main/cpp/runtime/oe_runtime.cpp \
             android/src/main/cpp/runtime/walk_collision.cpp \
+            android/src/main/cpp/runtime/solid_collision.cpp \
             android/src/main/cpp/roads/traversal_graph.cpp \
             android/src/main/cpp/roads/road_topology.cpp \
             android/src/main/cpp/roads/road_network.cpp \

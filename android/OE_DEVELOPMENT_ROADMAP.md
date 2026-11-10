@@ -87,9 +87,14 @@ These features are implemented in experimental branches with successful automate
 - On pause, import or Stop: cancel pending starts, clear runtime player/world and restore editor. Scene v1–v8 and .oezip assets unchanged. Strict portable PlaySession and Android integration smoke plus Android arm64 CI required. See android/PLAY_STOP_ISOLATION_R58B_088.md.
 - **Still gated by real Allwinner A523 tablet tests:** launch/stop, paused app, fingers/camera, unsaved edit restoration, bridge crossing, performance, textures and archive roundtrip. No merge before user permission.
 
-### R5.9 — Runtime P2/P3 and asset decoupling (not implemented)
-- After QA, add proper whole-body walls/railings/capsule collision, interactive gameplay entities and independent runtime render asset mapping before separate game shell.
-- Offline standalone game APK export on the tablet, NPC systems and package signing remain later milestones.
+### R5.9a — initial Play-only wall/building solid collision (experimental; tablet QA pending)
+- Portable bounded 3D-height OBB obstacles with swept horizontal character radius and simple axis slide in the 60Hz Runtime walker; sourced only from authored stock houses, stone walls and stone pillars. Wall collision is enabled in isolated Play only, not the editor ghost.
+- Lightweight obstacle snapshots do not change authored scene objects/Undo/Redo, collision mesh, .oezip or scene v1–v8. No imported GLB mesh collision, doors, bridge parapets, swept triangle capsules, dynamics or trigger events yet.
+- Separate Android debug QA build, host swept/rotated solid tests and physical A523 verification required. See android/PLAY_SOLID_COLLISIONS_R59A_089.md.
+
+### R5.9b — advanced Runtime collision and P3 (NOT implemented)
+- Build accurate rounded capsule/triangle mesh collisions and per-asset authored colliders, railings, stairs and transparent doorway holes; runtime scripts, triggers and NPCs only after core player physics is verified on tablet.
+- Independent Runtime P4 renderer and on-device standalone APK export/signing (B1–B3) remain later milestones.
 
 ### Road quality gate
 - Test actual road creation, point moving, smoothing, snapping, multiple T/X/Y junctions, PNG overlays, layered materials, Undo/Redo, local save and .oezip import/export on the target Android tablet.
@@ -139,4 +144,4 @@ These features are implemented in experimental branches with successful automate
 - Do not start the next milestone simply because a previous experimental APK compiled. Get real tablet validation and preserve project backups.
 
 ## How to continue future chats
-Reference this roadmap and the latest draft experimental PR (R5.8b: isolated Runtime Play/Stop preview). R5.1–R5.8b remain experimental and need physical A523 QA. Continue with real tablet Play/Stop and road quality acceptance, then complete Runtime P2–P4 and on-device APK Build B1–B3. Never confuse GitHub CI-built editor debug APKs with independently exported game APKs produced offline on the tablet.
+Reference this roadmap and latest experimental R5.9a draft: bounded Play-only colliders for stock buildings, wall segments and pillars. Road quality and Play/Stop still require physical Allwinner A523 QA; do not claim production readiness or merge without explicit user approval. Continue accurate gameplay body physics (R5.9b), Runtime P3–P4, then genuinely offline standalone APK Build B1–B3 on the tablet. Never confuse CI-built editor debug APKs with game APKs exported on the device.

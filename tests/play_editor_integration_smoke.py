@@ -56,7 +56,7 @@ assert "world_.loadStaticScene(scene)" in runtime
 assert "walker_.applyToWorld(world_,playerId_)" in runtime
 assert "world_.stepTicks(fixedTicks)" in runtime
 assert "runtime/play_session.cpp" in cmake
-assert "OE PLAY STOP R5.8b TEST" in manifest
-assert "versionCode 38" in (root/"android/build.gradle").read_text()
+assert "OE PLAY SOLIDS R5.9a TEST" in manifest
+assert "versionCode 39" in (root/"android/build.gradle").read_text()
 assert "version>=1&&version<=8" in (root/"android/src/main/java/game/oe/editor/ProjectArchive.java").read_text()
 print("OE_PLAY_EDITOR_OK: separate Runtime ECS snapshot, GL-only Play/Stop, blocked authoring and camera")

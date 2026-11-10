@@ -2574,7 +2574,7 @@ static oe::roads::BridgeInstance oeBridgeFromEntity(const Entity&e){
  bridge.id=static_cast<std::uint64_t>(e.id);
  bridge.type=e.type;
  bridge.center={e.x,e.z};
- bridge.y=e.y;bridge.yaw=static_cast<double>(e.yaw)*RAD;bridge.size=e.size;
+ bridge.y=e.y;bridge.yaw=-static_cast<double>(e.yaw)*RAD;bridge.size=e.size;
  bridge.sx=e.sx;bridge.sy=e.sy;bridge.sz=e.sz;
  return bridge;
 }
@@ -2636,7 +2636,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeBridgeAutoAl
  const float nx=static_cast<float>(proposal.center.x);
  const float nz=static_cast<float>(proposal.center.z);
  const float ny=static_cast<float>(proposal.y);
- const float nr=static_cast<float>(proposal.yaw/RAD);
+ const float nr=-static_cast<float>(proposal.yaw/RAD);
  if(std::abs(e->x-nx)<.0001f&&std::abs(e->z-nz)<.0001f&&
     std::abs(e->y-ny)<.0001f&&std::abs(e->yaw-nr)<.0001f)return JNI_FALSE;
  recordEdit();

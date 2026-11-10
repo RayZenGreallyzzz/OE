@@ -23,6 +23,8 @@ This is NOT a standalone game APK built offline by the tablet.
   orbits a third-person camera that is separate from editor camera. The
   analog pad and jump input persist from R5.7. Stop restores editor
   camera/selection because Play does not write gTarget, gYaw, or gPitch.
+- Play refuses to begin while a road, paint stroke, gizmo drag or placement
+  is unfinished; it never silently commits a partially edited scene.
 - Starting Play is atomic: it constructs a new scene and collision controller
   first. On failure, it does not modify the current authoring scene.
   Stop, Android pause, errors and imports cancel active or pending Play.

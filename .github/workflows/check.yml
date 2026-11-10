@@ -173,6 +173,24 @@ jobs:
             android/src/main/cpp/roads/road_network.cpp \
             -o /tmp/oe-roads-test
           /tmp/oe-roads-test
+  runtime-walk-collisions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify physically grounded feet, connected bridges, jumps and safe drops
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -pedantic \
+            tests/walk_collision_smoke.cpp \
+            android/src/main/cpp/runtime/oe_runtime.cpp \
+            android/src/main/cpp/runtime/walk_collision.cpp \
+            android/src/main/cpp/roads/traversal_graph.cpp \
+            android/src/main/cpp/roads/road_topology.cpp \
+            android/src/main/cpp/roads/road_network.cpp \
+            android/src/main/cpp/medieval/structures.cpp \
+            -o /tmp/oe-walk-collision-test
+          /tmp/oe-walk-collision-test
+      - name: Check editor preview ABI and no scene mutation
+        run: python3 tests/walk_editor_integration_smoke.py
   runtime-core:
     runs-on: ubuntu-latest
     steps:

@@ -7,11 +7,14 @@ namespace oe { namespace runtime {
 bool PlaySession::start(const std::vector<SceneItem>&scene,
                         const roads::TraversalGraph&walkSurfaces,
                         roads::TerrainHeight terrain,double worldHalf,
-                        double spawnX,double spawnZ,double yaw){
+                        double spawnX,double spawnZ,double yaw,
+                        const std::vector<SolidBox>&staticSolids){
  if(active_||!std::isfinite(yaw)||!std::isfinite(spawnX)||
     !std::isfinite(spawnZ)||scene.size()+1>world_.capacity())return false;
  if(!walker_.configure(walkSurfaces,std::move(terrain),worldHalf)||
-    !walker_.spawn(spawnX,spawnZ))return false;
+    !walker_.setStaticSolids(staticSolids)||!walker_.spawn(spawnX,spawnZ)){
+  walker_.clear();return false;
+ }
  if(!world_.loadStaticScene(scene)){walker_.clear();return false;}
  const EntityId actor=world_.create("OE Play character");
  if(!world_.alive(actor)||!world_.setCamera(actor,Camera{})||

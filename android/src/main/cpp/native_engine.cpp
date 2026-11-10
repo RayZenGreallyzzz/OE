@@ -2501,6 +2501,61 @@ JNIEXPORT jintArray JNICALL Java_game_oe_editor_EditorActivity_nativeMedievalSur
  if(array)env->SetIntArrayRegion(array,0,3,stats);
  return array;
 }
+// Every lake is editor-authored water (not game physics). Existing
+// terrain brush is the excavation tool; placed water has a separate level.
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeLakePlaceAtScreen(
+ JNIEnv*,jclass,jfloat px,jfloat py,jfloat radius,jfloat fillDepth){
+ if(gLakes.size()>=oe::water::kMaxLakes||!std::isfinite(fillDepth)||
+    fillDepth<.5f||fillDepth>32.f)return 0;
+ float x=0,z=0;
+ if(!groundPoint(px,py,x,z))return 0;
+ const oe::water::Lake candidate{x,z,radius,terrainHeightAt(x,z)+fillDepth};
+ if(!oe::water::validLake(candidate,worldHalf()))return 0;
+ recordEdit();
+ gLakes.push_back(candidate);gSelectedLake=static_cast<int>(gLakes.size())-1;
+ ++gLakeRevision;
+ return static_cast<jint>(gLakes.size());
+}
+JNIEXPORT jobjectArray JNICALL Java_game_oe_editor_EditorActivity_nativeLakeNames(
+ JNIEnv*env,jclass){
+ jclass klass=env->FindClass("java/lang/String");
+ jobjectArray names=env->NewObjectArray(static_cast<jsize>(gLakes.size()),klass,nullptr);
+ for(jsize i=0;i<static_cast<jsize>(gLakes.size());++i){
+  const auto&lake=gLakes[static_cast<std::size_t>(i)];
+  std::ostringstream line;line<<std::fixed<<std::setprecision(1)
+      <<"Озеро "<<i+1<<" · X "<<lake.x<<" Z "<<lake.z
+      <<" · радиус "<<lake.radius<<" м · вода "<<lake.level<<" м";
+  jstring item=env->NewStringUTF(line.str().c_str());
+  env->SetObjectArrayElement(names,i,item);env->DeleteLocalRef(item);
+ }
+ return names;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeLakeSelect(
+ JNIEnv*,jclass,jint index){
+ if(index<0||static_cast<std::size_t>(index)>=gLakes.size())return JNI_FALSE;
+ gSelectedLake=index;return JNI_TRUE;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeLakeAdjust(
+ JNIEnv*,jclass,jfloat levelDelta,jfloat radiusDelta){
+ if(gSelectedLake<0||static_cast<std::size_t>(gSelectedLake)>=gLakes.size()||
+    !std::isfinite(levelDelta)||!std::isfinite(radiusDelta)||
+    std::abs(levelDelta)>10.f||std::abs(radiusDelta)>32.f||
+    (levelDelta==0.f&&radiusDelta==0.f))return JNI_FALSE;
+ oe::water::Lake updated=gLakes[static_cast<std::size_t>(gSelectedLake)];
+ updated.radius+=radiusDelta;updated.level+=levelDelta;
+ if(!oe::water::validLake(updated,worldHalf()))return JNI_FALSE;
+ recordEdit();
+ gLakes[static_cast<std::size_t>(gSelectedLake)]=updated;
+ ++gLakeRevision;return JNI_TRUE;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeLakeDelete(
+ JNIEnv*,jclass){
+ if(gSelectedLake<0||static_cast<std::size_t>(gSelectedLake)>=gLakes.size())
+   return JNI_FALSE;
+ recordEdit();
+ gLakes.erase(gLakes.begin()+gSelectedLake);
+ gSelectedLake=-1;++gLakeRevision;return JNI_TRUE;
+}
 JNIEXPORT jintArray JNICALL Java_game_oe_editor_EditorActivity_nativeRoadTopologyStats(
  JNIEnv*env,jclass){
  oe::roads::RoadTopology topology;
@@ -2823,6 +2878,12 @@ JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSceneSnapshot
    out<<"["<<road.controlPoints[j].x<<","<<road.controlPoints[j].z<<"]";
   }
   out<<"]}";
+ }
+ out<<"],\\"lakes\\":[";
+ for(std::size_t i=0;i<gLakes.size();++i){
+  if(i)out<<",";
+  const auto&lake=gLakes[i];
+  out<<"["<<lake.x<<","<<lake.z<<","<<lake.radius<<","<<lake.level<<"]";
  }
  out<<"]}";return env->NewStringUTF(out.str().c_str());
 }

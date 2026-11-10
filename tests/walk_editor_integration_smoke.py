@@ -6,6 +6,7 @@ native=(root/"android/src/main/cpp/native_engine.cpp").read_text()
 java=(root/"android/src/main/java/game/oe/editor/EditorActivity.java").read_text()
 cmake=(root/"android/src/main/cpp/CMakeLists.txt").read_text()
 runtime=(root/"android/src/main/cpp/runtime/walk_collision.cpp").read_text()
+core=(root/"android/src/main/cpp/runtime/oe_runtime.h").read_text()
 header=(root/"android/src/main/cpp/runtime/walk_collision.h").read_text()
 for pattern in (
     '"runtime/walk_collision.h"',
@@ -37,11 +38,12 @@ for pattern in (
 ):
     assert pattern in java,("UI controls",pattern)
 for pattern in (
-    "kFixedTimeStep","kWalkStepHeight",
+    "kWalkStepHeight",
     "kWalkGravity", "kJumpSpeed",
     "bool applyToWorld(World&world,EntityId actor) const noexcept;",
 ):
     assert pattern in header,("Runtime header",pattern)
+assert "kFixedTimeStep" in core, "60 Hz is supplied by existing core header"
 for pattern in (
     "quadHeight(", "s.bridge&&!connected.count(s.ownerId)",
     "std::hypot((right-left)", "next.verticalVelocity+=kWalkGravity*kDt",

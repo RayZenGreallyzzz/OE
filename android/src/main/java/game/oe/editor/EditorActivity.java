@@ -1358,6 +1358,23 @@ public class EditorActivity extends Activity {
     }
     private void selectLibraryObject(AssetLibrary.Entry entry){
         if(importing){message("Подожди: предыдущая модель загружается");return;}
+        // The original 53 MiB stylized-building GLB is a single multi-house
+        // scene, not a standalone house. Parsing/decoding the whole file plus
+        // uploading its textures can exhaust a 4 GiB tablet, causing a freeze.
+        // Keep the full byte-identical GLB safely in the APK for later offline
+        // splitting, but do not start a doomed import on the GLES tablet.
+        if(entry.path.toLowerCase(Locale.ROOT).endsWith(".glb")&&
+           entry.bytes>24L*1024*1024){
+            new AlertDialog.Builder(this)
+                .setTitle("Тяжёлая объединённая модель")
+                .setMessage("«"+entry.label()+"» — "+(entry.bytes/(1024*1024))+
+                    " МиБ. Это целая сцена домов одним GLB, а не отдельный дом. "+
+                    "Загрузка целиком может зависнуть на планшете. "+
+                    "Используй отдельные дома из раздела «Дома». "+
+                    "Исходная модель и все текстуры сохранены внутри APK без изменений.")
+                .setPositiveButton("Понятно",null).show();
+            return;
+        }
         importing=true;
         message("Загружаю отдельно: "+entry.label());
         new Thread(()->{

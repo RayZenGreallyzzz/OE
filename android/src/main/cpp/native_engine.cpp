@@ -1351,8 +1351,25 @@ Color roadPreviewColor(const std::string& material){
  if(material=="builtin:grass")return {.28f,.47f,.25f};
  return {.71f,.67f,.59f}; // Built-in untextured material; custom PNG/JPG uses white tint.
 }
-static bool oeBridgeModuleType(int type); // implemented with traversal JNI below
-static oe::roads::BridgeInstance oeBridgeFromEntity(const Entity&e);
+static bool oeBridgeModuleType(int type){
+ return type==oe::medieval::kStoneBridge||
+        type==oe::medieval::kTimberBridge||
+        type==oe::medieval::kNarrowFootbridge||
+        type==oe::medieval::kRopeBridge||
+        type==oe::medieval::kSteppingStoneFord||
+        type==oe::medieval::kWideCartBridge||
+        type==oe::medieval::kSwampCauseway;
+}
+static oe::roads::BridgeInstance oeBridgeFromEntity(const Entity&e){
+ oe::roads::BridgeInstance bridge;
+ bridge.id=static_cast<std::uint64_t>(e.id);
+ bridge.type=e.type;
+ bridge.center={e.x,e.z};
+ bridge.y=e.y;bridge.yaw=-static_cast<double>(e.yaw)*RAD;bridge.size=e.size;
+ bridge.sx=e.sx;bridge.sy=e.sy;bridge.sz=e.sz;
+ return bridge;
+}
+
 std::uint64_t bridgeVisualStamp(){
  std::uint64_t hash=14695981039346656037ULL;
  const auto mix=[&](std::uint32_t bits){
@@ -2662,24 +2679,6 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeLakeDelete(
 // A portable traversal/collision-surface snapshot. No ghost collision
 // objects are written to the scene or JSON: it is derived from authored
 // road control points and existing modular bridge entities on demand.
-static bool oeBridgeModuleType(int type){
- return type==oe::medieval::kStoneBridge||
-        type==oe::medieval::kTimberBridge||
-        type==oe::medieval::kNarrowFootbridge||
-        type==oe::medieval::kRopeBridge||
-        type==oe::medieval::kSteppingStoneFord||
-        type==oe::medieval::kWideCartBridge||
-        type==oe::medieval::kSwampCauseway;
-}
-static oe::roads::BridgeInstance oeBridgeFromEntity(const Entity&e){
- oe::roads::BridgeInstance bridge;
- bridge.id=static_cast<std::uint64_t>(e.id);
- bridge.type=e.type;
- bridge.center={e.x,e.z};
- bridge.y=e.y;bridge.yaw=-static_cast<double>(e.yaw)*RAD;bridge.size=e.size;
- bridge.sx=e.sx;bridge.sy=e.sy;bridge.sz=e.sz;
- return bridge;
-}
 static bool oeCurrentRoadGraph(oe::roads::RoadTopology& graph){
  // Read-only: no automatic snapping/rewriting old saved roads.
  return oe::roads::buildRoadTopology(gRoads.all(),graph,0.);

@@ -122,10 +122,15 @@ public class EditorActivity extends Activity {
     private static native int nativeApplyTerrainBrushAtScreen(float x,float y,float radius,float amount);
     private static native int nativeTerrainBrushCount();
     private static native void nativeSetGizmoMode(int mode);
+    private static native void nativeSetRotationSnap(boolean enabled);
     private static native int nativeGizmoHit(float x,float y);
-    private static native boolean nativeGizmoBegin(int axis);
-    private static native void nativeGizmoDrag(int axis,float dx,float dy);
+    private static native boolean nativeGizmoBegin(int axis,float x,float y);
+    private static native void nativeGizmoDrag(int axis,float dx,float dy,float x,float y);
     private static native void nativeGizmoEnd();
+    private static native void nativeRotateSelectedAxis(int axis,float degrees);
+    private static native void nativeResetSelectedRotation();
+    private static native double[] nativeSelectedRotationEuler();
+    private static native boolean nativeSetSelectedRotationEuler(double x,double y,double z);
     private static native int nativeAddImportedPlaced(String key, float x, float z, float yaw, float size);
     private static final int PICK_GLB = 702, PICK_PROJECT=703, SAVE_PROJECT=704, PICK_PAINT=705,
             PICK_LIBRARY=AssetLibrary.PICK_LIBRARY;
@@ -143,6 +148,7 @@ public class EditorActivity extends Activity {
     private LinearLayout toolDrawer, paletteItems, inspectorPanel, advancedInspector;
     private boolean drawerOpen=false;
     private volatile int gizmoMode=0;
+    private volatile boolean snapRotation15=false;
     private volatile String activePaintKey="";
     private volatile boolean paintTerrainMode=false;
     private volatile float paintRadius=16f;
@@ -320,7 +326,7 @@ public class EditorActivity extends Activity {
         inspectorPanel.addView(selectionText);
         LinearLayout modes=row();
         addControl(modes,"↔ Двигать",()->changeGizmoMode(0));
-        addControl(modes,"⟳ Повернуть",()->changeGizmoMode(1));
+        addControl(modes,"⟳ XYZ 360°",()->changeGizmoMode(1));
         addControl(modes,"⤢ Масштаб",()->changeGizmoMode(2));
         inspectorPanel.addView(modes);
         LinearLayout quick=row();
@@ -348,6 +354,23 @@ public class EditorActivity extends Activity {
         addControl(heightRow,"↺",()->edit(()->nativeRotate(-turnStep)));
         addControl(heightRow,"↻",()->edit(()->nativeRotate(turnStep)));
         advancedInspector.addView(heightRow);
+        LinearLayout rotateRowX=row();
+        addControl(rotateRowX,"🔴 X −90°",()->edit(()->nativeRotateSelectedAxis(0,-90)));
+        addControl(rotateRowX,"🔴 X +90°",()->edit(()->nativeRotateSelectedAxis(0,90)));
+        advancedInspector.addView(rotateRowX);
+        LinearLayout rotateRowZ=row();
+        addControl(rotateRowZ,"🔵 Z −90°",()->edit(()->nativeRotateSelectedAxis(2,-90)));
+        addControl(rotateRowZ,"🔵 Z +90°",()->edit(()->nativeRotateSelectedAxis(2,90)));
+        advancedInspector.addView(rotateRowZ);
+        LinearLayout rotateTools=row();
+        addControl(rotateTools,"15°: вкл/выкл",this::toggleRotationSnap);
+        addControl(rotateTools,"XYZ точно",this::editSelectedRotation);
+        addControl(rotateTools,"⟲ Сброс",()->edit(EditorActivity::nativeResetSelectedRotation));
+        advancedInspector.addView(rotateTools);
+        LinearLayout uprightRow=row();
+        addControl(uprightRow,"↥ Поставить на землю",()->
+            edit(EditorActivity::nativeSnapSelectedToGround));
+        advancedInspector.addView(uprightRow);
         LinearLayout scaleRow=row();
         addControl(scaleRow,"− Размер",()->edit(()->nativeScale(1f/scaleStep)));
         addControl(scaleRow,"+ Размер",()->edit(()->nativeScale(scaleStep)));
@@ -670,7 +693,7 @@ public class EditorActivity extends Activity {
         gizmoMode=mode;
         surface.queueEvent(()->{nativeSetGizmoMode(mode);surface.requestRender();});
         statusText.setText(mode==0?"3D-оси: тяни X (красная), Y (зелёная), Z (синяя)":
-            mode==1?"3D-ось Y: тяни зелёный маркер для поворота вокруг вертикали":
+            mode==1?"Вращение XYZ 360°: тяни красное (X), зелёное (Y), синее (Z) кольцо. В «Точно» есть шаг 15° и ±90°.":
                      "3D-оси: тяни цветной маркер для изменения масштаба по выбранной оси");
     }
     private void enterPlaceMode(int kind, String asset) {
@@ -1432,7 +1455,7 @@ public class EditorActivity extends Activity {
     }
     private static final class SavedEntity {
         int type;
-        float x,z,yaw,size,y,sx=1f,sy=1f,sz=1f;
+        float x,z,yaw,size,y,sx=1f,sy=1f,sz=1f,qx=0f,qy=0f,qz=0f,qw=1f;
         String asset,paint="";
     }
     private static boolean validAsset(String name) {
@@ -1530,7 +1553,7 @@ public class EditorActivity extends Activity {
             SavedEntity[] items=new SavedEntity[arr.length()];
             HashSet<String> assets=new HashSet<>();
             int[] kinds=new int[arr.length()];
-            float[] transforms=new float[arr.length()*8];
+            float[] transforms=new float[arr.length()*12];
             JSONArray brushJson=document.optJSONArray("terrain");
             int brushCount=brushJson==null?0:brushJson.length();
             if(brushCount>64)throw new Exception("Слишком много изменений рельефа");
@@ -1591,6 +1614,16 @@ public class EditorActivity extends Activity {
                     throw new Exception("Неверный масштаб детали "+i);
                 e.x=(float)x;e.z=(float)z;e.yaw=(float)yaw;e.size=(float)size;e.y=(float)y;
                 e.sx=(float)sx;e.sy=(float)sy;e.sz=(float)sz;
+                double qx=object.optDouble("qx",0.0),qy=object.optDouble("qy",0.0),
+                       qz=object.optDouble("qz",0.0),qw=object.optDouble("qw",1.0);
+                double qlen=qx*qx+qy*qy+qz*qz+qw*qw;
+                if(!Double.isFinite(qlen)||qlen<.49||qlen>1.51||
+                   Math.abs(qx)>1.01||Math.abs(qy)>1.01||
+                   Math.abs(qz)>1.01||Math.abs(qw)>1.01)
+                    throw new Exception("Некорректный поворот модели "+i);
+                double inv=1.0/Math.sqrt(qlen);
+                e.qx=(float)(qx*inv);e.qy=(float)(qy*inv);
+                e.qz=(float)(qz*inv);e.qw=(float)(qw*inv);
                 e.paint=object.optString("paint","");
                 if(!e.paint.isEmpty()){
                     if(!validTexture(e.paint))throw new Exception("Неверная текстура объекта "+i);
@@ -1604,14 +1637,18 @@ public class EditorActivity extends Activity {
                 }
                 items[i]=e;
                 kinds[i]=e.type;
-                transforms[i*8]=e.x;
-                transforms[i*8+1]=e.z;
-                transforms[i*8+2]=e.yaw;
-                transforms[i*8+3]=e.size;
-                transforms[i*8+4]=e.y;
-                transforms[i*8+5]=e.sx;
-                transforms[i*8+6]=e.sy;
-                transforms[i*8+7]=e.sz;
+                transforms[i*12]=e.x;
+                transforms[i*12+1]=e.z;
+                transforms[i*12+2]=e.yaw;
+                transforms[i*12+3]=e.size;
+                transforms[i*12+4]=e.y;
+                transforms[i*12+5]=e.sx;
+                transforms[i*12+6]=e.sy;
+                transforms[i*12+7]=e.sz;
+                transforms[i*12+8]=e.qx;
+                transforms[i*12+9]=e.qy;
+                transforms[i*12+10]=e.qz;
+                transforms[i*12+11]=e.qw;
                 modelKeys[i]=e.asset;
             }
             if(assets.size()>MAX_ASSETS)throw new Exception("Слишком много разных GLB-моделей");
@@ -1960,8 +1997,10 @@ public class EditorActivity extends Activity {
                             final int axis=touchedGizmoAxis;
                             if(axis>=0&&placingKind==-1&&terrainMode==0&&!paintTerrainMode){
                                 if(!gizmoEditStarted&&movedEnough)
-                                    gizmoEditStarted=nativeGizmoBegin(axis);
-                                if(gizmoEditStarted)nativeGizmoDrag(axis,sx,sy);
+                                    gizmoEditStarted=nativeGizmoBegin(axis,
+                                        surfaceX(downX),surfaceY(downY));
+                                if(gizmoEditStarted)nativeGizmoDrag(axis,sx,sy,
+                                    surfaceX(x),surfaceY(y));
                             }else nativeOrbit(dx,dy,1);
                             interactiveRender();
                         });

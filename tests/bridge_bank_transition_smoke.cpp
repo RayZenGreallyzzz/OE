@@ -104,6 +104,23 @@ int main(){
  assert(graph.fullBridges==1&&graph.approachSurfaces==2);
  assert(walker.configure(graph,flat,512));
 
+ // An INVALID closer road cap must not hide a farther, valid one.
+ // Side lane is 1.9m from mouth (but alongside deck, not approaching).
+ // Real stone road is 2.2m from mouth and has two safe physical contacts.
+ RoadTopology alternatives;
+ assert(buildRoadTopology({
+   road(41,{{-16,1.9},{-4.05,1.9}}),
+   road(42,{{-16,0},{-6.25,0}}),
+   road(43,{{5.25,0},{16,0}})
+ },alternatives,0.));
+ assert(buildTraversalGraph(alternatives,{bridge},flat,graph));
+ assert(graph.fullBridges==1&&graph.approachSurfaces==2);
+ std::uint64_t leftRoadMaterial=0;
+ for(const auto&surface:graph.surfaces)
+  if(surface.approach&&surface.a.x<0.)leftRoadMaterial=surface.materialRoadId;
+ assert(leftRoadMaterial==42); // never use nearer side-passing lane
+ assert(walker.configure(graph,flat,512));
+
  // A forced bad height source cannot corrupt the previous graph.
  const auto previous=graph;
  assert(!buildTraversalGraph(topo,{bridge},

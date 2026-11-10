@@ -22,6 +22,7 @@ struct WalkPoint {double x=0,y=0,z=0;};
 struct WalkSurface {
  std::uint64_t ownerId=0;
  bool bridge=false; // a simplified 4-corner WALKABLE deck, not railing collider
+ bool approach=false; // tiny grade-checked bank-to-bridge transition
  WalkPoint a,b,c,d; // quad in physical XYZ metres
 };
 enum class WalkEdgeKind:unsigned char{ Road,Bridge,Approach };
@@ -40,7 +41,7 @@ struct TraversalGraph {
  std::vector<WalkSurface> surfaces;
  std::vector<BridgeStatus> bridges;
  std::size_t fullBridges=0,oneEndedBridges=0,detachedBridges=0;
- std::size_t roadSurfaces=0,bridgeSurfaces=0;
+ std::size_t roadSurfaces=0,bridgeSurfaces=0,approachSurfaces=0;
 };
 
 // A road approaches a bridge ONLY via a real road DEAD END close to the

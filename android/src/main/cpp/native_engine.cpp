@@ -2475,6 +2475,10 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsse
   consumed+=count;
  }
  if(consumed!=vertexCount)return JNI_FALSE;
+ if(vertexCount>18000){
+  __android_log_print(ANDROID_LOG_INFO,"OE","Heavy mesh %d triangles: skip GLES-thread optional LOD rebuild",
+                      static_cast<int>(vertexCount/3));
+ }
  std::vector<jint> info(static_cast<size_t>(imageCount*3));
  if(imageCount){
   env->GetIntArrayRegion(imageInfo,0,imageCount*3,info.data());
@@ -2512,7 +2516,13 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsse
  if(textureCacheBytes()-oldBytes+totalNew>MAX_TEXTURE_CACHE_BYTES)return JNI_FALSE;
  // Only entirely static GLBs are eligible for automatic LOD generation.
  // Unsafe files with skins, animations or morph targets retain full geometry.
- if(preserveOriginalRig!=JNI_TRUE){
+ // meshopt_simplifyWithAttributes was running synchronously on the
+ // GLES render thread. A 90k-triangle medieval house can take seconds,
+ // freezing every frame and queuing touch events. Keep source LOD0 exact,
+ // and only build optional LODs for genuinely small meshes. Large meshes
+ // are still GPU registered and placed, not silently decimated.
+ // Safe mobile model limit for synchronous optional work: 6k triangles.
+ if(preserveOriginalRig!=JNI_TRUE&&vertexCount<=18000){
   buildStaticLods(prepared);
   size_t newBytes=0;
   for(const auto&lod:prepared.lods)newBytes+=lod.vertices.size()*sizeof(float);

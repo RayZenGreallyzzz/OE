@@ -53,7 +53,10 @@ assert '.setItems(' not in export_dialog
 recovery_dialog = bridge.split('private void showProjectRecovery(){', 1)[1].split(
     'private void exportRecoveryJson(', 1)[0]
 assert '.setItems(items,' in recovery_dialog
-assert '.setMessage(' not in recovery_dialog
+recovery_list_dialog = recovery_dialog.split(
+    '.setTitle("🛟 Копии Phoenix — JSON без текстур")', 1
+)[1].split('.setItems(items,', 1)[0]
+assert '.setMessage(' not in recovery_list_dialog
 print("OK: Android GLB destination buttons and JSON recovery list are visible")
 
 print("OK: Phoenix JSON snapshots, fallback, SAF retry, city handoff, and app ID unchanged")

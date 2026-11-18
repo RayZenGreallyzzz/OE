@@ -2,6 +2,7 @@ package game.oe.editor;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ClipData;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
@@ -92,11 +93,34 @@ public final class PhoenixBuilderActivity extends Activity {
                 if(fileChooser!=null)fileChooser.onReceiveValue(null);
                 fileChooser=result;
                 try {
-                    startActivityForResult(params.createIntent(),PICK_FILE);
+                    // ACTION_OPEN_DOCUMENT supports PNG/WebP, ZIP and multiple files
+                    // across Android document providers. The WebView-generated
+                    // intent can be treated as image capture or single-selection
+                    // on some tablets even for <input type=file multiple>.
+                    Intent pick=new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                    pick.addCategory(Intent.CATEGORY_OPENABLE);
+                    pick.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    boolean image=false;
+                    String[] accepted=params.getAcceptTypes();
+                    if(accepted!=null){
+                        for(String a:accepted){
+                            String t=a==null?"":a.toLowerCase(Locale.ROOT);
+                            if(t.startsWith("image/")||t.equals(".png")||
+                               t.equals(".jpg")||t.equals(".jpeg")||
+                               t.equals(".webp")||t.equals(".bmp")||
+                               t.equals(".gif")){image=true;break;}
+                        }
+                    }
+                    pick.setType(image?"image/*":"*/*");
+                    pick.putExtra(Intent.EXTRA_ALLOW_MULTIPLE,
+                        params.getMode()==FileChooserParams.MODE_OPEN_MULTIPLE);
+                    startActivityForResult(pick,PICK_FILE);
                     return true;
                 }catch(Exception error) {
                     fileChooser=null;
                     result.onReceiveValue(null);
+                    Toast.makeText(PhoenixBuilderActivity.this,
+                        "Не открыть файлы: "+error.getMessage(),Toast.LENGTH_LONG).show();
                     return false;
                 }
             }
@@ -178,8 +202,20 @@ public final class PhoenixBuilderActivity extends Activity {
         super.onActivityResult(req,result,data);
         if(req==PICK_FILE){
             if(fileChooser!=null){
-                fileChooser.onReceiveValue(
-                    WebChromeClient.FileChooserParams.parseResult(result,data));
+                Uri[] selected=null;
+                if(result==RESULT_OK&&data!=null){
+                    ClipData clips=data.getClipData();
+                    if(clips!=null&&clips.getItemCount()>0){
+                        int n=Math.min(256,clips.getItemCount());
+                        selected=new Uri[n];
+                        for(int i=0;i<n;i++)selected[i]=clips.getItemAt(i).getUri();
+                    }else if(data.getData()!=null){
+                        selected=new Uri[]{data.getData()};
+                    }
+                }
+                if(selected==null)
+                    selected=WebChromeClient.FileChooserParams.parseResult(result,data);
+                fileChooser.onReceiveValue(selected);
                 fileChooser=null;
             }
             return;
@@ -252,19 +288,50 @@ public final class PhoenixBuilderActivity extends Activity {
             catch(IOException error){stream=null;return false;}
             pendingSave=staging;staging=null;
             runOnUiThread(()->{
-                Intent request=new Intent(Intent.ACTION_CREATE_DOCUMENT);
-                request.addCategory(Intent.CATEGORY_OPENABLE);
-                request.setType(pendingMime);
-                request.putExtra(Intent.EXTRA_TITLE,pendingName);
-                try{startActivityForResult(request,SAVE_FILE);}
-                catch(Exception error){
+                final boolean isGlb="model/gltf-binary".equals(pendingMime)||
+                    pendingName.toLowerCase(Locale.ROOT).endsWith(".glb");
+                if(isGlb){
                     new AlertDialog.Builder(PhoenixBuilderActivity.this)
-                        .setTitle("Не удалось открыть выбор папки")
-                        .setMessage(error.getMessage())
-                        .setPositiveButton("ОК",null).show();
-                }
+                        .setTitle("📦 Готовый дом GLB")
+                        .setMessage("Куда сохранить построенное здание? "+
+                            "«В город OE» сразу вернёт тебя на карту в режим размещения. "+
+                            "«На устройство» откроет выбор папки Android.")
+                        .setItems(new String[]{"🏰 В город Orvetra Engine",
+                                               "📱 На устройство"},(d,choice)->{
+                            if(choice==0){
+                                File exported=pendingSave;
+                                pendingSave=null;
+                                if(exported==null||!exported.isFile()||
+                                    exported.length()<20){
+                                    Toast.makeText(PhoenixBuilderActivity.this,
+                                        "GLB не найден",Toast.LENGTH_LONG).show();
+                                    return;
+                                }
+                                Intent result=new Intent();
+                                result.setData(Uri.fromFile(exported));
+                                setResult(RESULT_OK,result);
+                                finish();
+                            }else startDeviceSave();
+                        })
+                        .setOnCancelListener(d->{
+                            if(pendingSave!=null){pendingSave.delete();pendingSave=null;}
+                        }).show();
+                }else startDeviceSave();
             });
             return true;
+        }
+        private void startDeviceSave(){
+            Intent request=new Intent(Intent.ACTION_CREATE_DOCUMENT);
+            request.addCategory(Intent.CATEGORY_OPENABLE);
+            request.setType(pendingMime==null?"application/octet-stream":pendingMime);
+            request.putExtra(Intent.EXTRA_TITLE,pendingName);
+            try{startActivityForResult(request,SAVE_FILE);}
+            catch(Exception error){
+                new AlertDialog.Builder(PhoenixBuilderActivity.this)
+                    .setTitle("Не удалось открыть выбор папки")
+                    .setMessage(error.getMessage())
+                    .setPositiveButton("ОК",null).show();
+            }
         }
         private File projectFile(){return new File(getFilesDir(),"phoenix_uv44_project.json");}
         @JavascriptInterface public synchronized boolean saveCleanProject(String json){

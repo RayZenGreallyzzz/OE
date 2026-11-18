@@ -27,6 +27,11 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.AtomicMoveNotSupportedException;
+import org.json.JSONObject;
+import org.json.JSONArray;
+import java.util.Date;
+import java.text.SimpleDateFormat;
 import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.Locale;
@@ -46,6 +51,8 @@ public final class PhoenixBuilderActivity extends Activity {
     private static final int PICK_FILE=7241,SAVE_FILE=7242;
     private static final long MAX_EXPORT_BYTES=1024L*1024*1024;
     private static final long DISK_RESERVE=16L*1024*1024;
+    private static final int SAVE_HISTORY=3;
+    private static final int MAX_PROJECT_JSON_BYTES=48*1024*1024;
     private WebView web;
     private android.webkit.ValueCallback<Uri[]> fileChooser;
     private final PhoenixBridge bridge=new PhoenixBridge();
@@ -391,28 +398,115 @@ public final class PhoenixBuilderActivity extends Activity {
             });
             return true;
         }
-        private File projectFile(){return new File(getFilesDir(),"phoenix_uv44_project.json");}
-        @JavascriptInterface public synchronized boolean saveCleanProject(String json){
-            if(json==null||json.length()>18*1024*1024)return false;
-            File target=projectFile(),tmp=new File(target.getPath()+".part");
+        private File projectFile(){
+            return new File(getFilesDir(),"phoenix_uv44_project.json");
+        }
+        private File projectBackup(int slot){
+            return new File(getFilesDir(),"phoenix_uv44_project.bak"+slot+".json");
+        }
+        private boolean validProjectJson(String json){
+            if(json==null||json.length()<10)return false;
+            try{
+                JSONObject doc=new JSONObject(json);
+                return doc.optInt("version",-1)==2 &&
+                    doc.opt("objects") instanceof JSONArray;
+            }catch(Exception error){return false;}
+        }
+        private String readValidProject(File file){
+            try{
+                if(!file.isFile()||file.length()<10||
+                    file.length()>MAX_PROJECT_JSON_BYTES)return null;
+                String content=new String(Files.readAllBytes(file.toPath()),
+                    StandardCharsets.UTF_8);
+                return validProjectJson(content)?content:null;
+            }catch(Exception ignored){return null;}
+        }
+        private void atomicWriteFile(File dest,byte[] bytes) throws IOException{
+            File tmp=new File(dest.getParentFile(),dest.getName()+".new");
             try(FileOutputStream out=new FileOutputStream(tmp)){
-                byte[] bytes=json.getBytes(StandardCharsets.UTF_8);
-                if(bytes.length>24*1024*1024)return false;
-                out.write(bytes);out.getFD().sync();
-            }catch(IOException error){tmp.delete();return false;}
-            try {
-                Files.move(tmp.toPath(),target.toPath(),
+                out.write(bytes);
+                out.getFD().sync();
+            }catch(IOException error){tmp.delete();throw error;}
+            try{
+                try{
+                    Files.move(tmp.toPath(),dest.toPath(),
+                        StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.ATOMIC_MOVE);
+                }catch(AtomicMoveNotSupportedException unavailable){
+                    Files.move(tmp.toPath(),dest.toPath(),
+                        StandardCopyOption.REPLACE_EXISTING);
+                }
+            }finally{tmp.delete();}
+        }
+        private void atomicCopyFile(File source,File dest) throws IOException{
+            File tmp=new File(dest.getParentFile(),dest.getName()+".new");
+            try{
+                Files.copy(source.toPath(),tmp.toPath(),
                     StandardCopyOption.REPLACE_EXISTING);
+                try(FileOutputStream out=new FileOutputStream(tmp,true)){
+                    out.getFD().sync();
+                }
+                try{
+                    Files.move(tmp.toPath(),dest.toPath(),
+                        StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.ATOMIC_MOVE);
+                }catch(AtomicMoveNotSupportedException unsupported){
+                    Files.move(tmp.toPath(),dest.toPath(),
+                        StandardCopyOption.REPLACE_EXISTING);
+                }
+            }finally{tmp.delete();}
+        }
+        // Versioned, on-disk and atomic snapshots. Every save preserves the
+        // last known-good project. Never rotate in an invalid/truncated JSON.
+        @JavascriptInterface public synchronized boolean saveCleanProject(String json){
+            lastError="";
+            if(json==null||json.length()>32*1024*1024||!validProjectJson(json)){
+                lastError="JSON проекта повреждён или превышает лимит";
+                return false;
+            }
+            byte[] data=json.getBytes(StandardCharsets.UTF_8);
+            if(data.length>MAX_PROJECT_JSON_BYTES){
+                lastError="Файл проекта слишком большой";return false;
+            }
+            File live=projectFile();
+            try{
+                if(live.getUsableSpace()<data.length*2L+DISK_RESERVE){
+                    lastError="Недостаточно памяти для двух безопасных копий";
+                    return false;
+                }
+                // Copies rotate oldest-first. A failure keeps the live file.
+                for(int slot=SAVE_HISTORY;slot>=2;slot--){
+                    File older=projectBackup(slot-1);
+                    if(readValidProject(older)!=null)
+                        atomicCopyFile(older,projectBackup(slot));
+                }
+                if(readValidProject(live)!=null)
+                    atomicCopyFile(live,projectBackup(1));
+                atomicWriteFile(live,data);
                 return true;
-            }catch(IOException error){tmp.delete();return false;}
+            }catch(Exception error){
+                lastError="Не удалось сохранить безопасную копию: "+
+                    error.getMessage();
+                return false;
+            }
         }
         @JavascriptInterface public synchronized String loadCleanProject(){
-            File source=projectFile();
-            try{
-                if(!source.isFile()||source.length()>24*1024*1024)return null;
-                return new String(Files.readAllBytes(source.toPath()),
-                    StandardCharsets.UTF_8);
-            }catch(IOException error){return null;}
+            String live=readValidProject(projectFile());
+            if(live!=null)return live;
+            for(int slot=1;slot<=SAVE_HISTORY;slot++){
+                String recovered=readValidProject(projectBackup(slot));
+                if(recovered==null)continue;
+                final int recoveredSlot=slot;
+                runOnUiThread(()->new AlertDialog.Builder(PhoenixBuilderActivity.this)
+                    .setTitle("🛟 Восстановлен проект Phoenix")
+                    .setMessage("Основной JSON повреждён или отсутствует. "+
+                        "Открыта сохранённая копия №"+recoveredSlot+
+                        ". Перед продолжением сохрани проект в приложении "+
+                        "и экспортируй портативную копию на устройство.")
+                    .setPositiveButton("Понятно",null).show());
+                return recovered;
+            }
+            return null;
         }
         @JavascriptInterface public String loadProject(){
             return loadCleanProject(); // stable Phoenix persistence.js expects this

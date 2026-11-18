@@ -12,7 +12,8 @@ public final class PhoenixFileVerifierTest {
     }
     private static boolean throwsVerification(File original,byte[] candidate) {
         try {
-            PhoenixFileVerifier.verify(original,new ByteArrayInputStream(candidate));
+            PhoenixFileVerifier.verify(original,
+                candidate==null?null:new ByteArrayInputStream(candidate));
             return false;
         }catch(IOException expected){
             return true;

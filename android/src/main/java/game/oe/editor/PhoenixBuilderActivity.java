@@ -69,7 +69,7 @@ public final class PhoenixBuilderActivity extends Activity {
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
         settings.setAllowFileAccess(false);
-        settings.setAllowContentAccess(false);
+        settings.setAllowContentAccess(true); // Android SAF document picker imports via granted content:// URIs
         settings.setAllowFileAccessFromFileURLs(false);
         settings.setAllowUniversalAccessFromFileURLs(false);
         settings.setJavaScriptCanOpenWindowsAutomatically(false);
@@ -288,6 +288,9 @@ public final class PhoenixBuilderActivity extends Activity {
                 return new String(Files.readAllBytes(source.toPath()),
                     StandardCharsets.UTF_8);
             }catch(IOException error){return null;}
+        }
+        @JavascriptInterface public String loadProject(){
+            return loadCleanProject(); // stable Phoenix persistence.js expects this
         }
         @JavascriptInterface public boolean saveProject(String json){
             return saveCleanProject(json);

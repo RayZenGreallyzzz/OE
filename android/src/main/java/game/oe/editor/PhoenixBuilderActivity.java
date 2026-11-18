@@ -306,7 +306,6 @@ public final class PhoenixBuilderActivity extends Activity {
                                                "📱 На устройство"},(d,choice)->{
                             if(choice==0){
                                 File exported=pendingSave;
-                                pendingSave=null;
                                 if(exported==null||!exported.isFile()||
                                     exported.length()<20){
                                     Toast.makeText(PhoenixBuilderActivity.this,
@@ -329,6 +328,7 @@ public final class PhoenixBuilderActivity extends Activity {
                                         .setNegativeButton("Отмена",null).show();
                                     return;
                                 }
+                                pendingSave=null;
                                 Intent result=new Intent();
                                 result.setData(Uri.fromFile(exported));
                                 setResult(RESULT_OK,result);

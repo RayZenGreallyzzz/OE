@@ -162,17 +162,19 @@ public class EditorActivity extends Activity {
     private volatile float terrainRadius=96f;
     private volatile float terrainStrength=20f;
     private volatile float moveStep=.001f,turnStep=5f,scaleStep=1.05f;
-    private volatile int textureLimit=1024; // Applies to newly imported GLB only.
+    private volatile int textureLimit=1024; // GPU preview ONLY; original saved GLB bytes are never changed.
     private volatile int deviceRamMiB=4096;
     private volatile int qualityChoice=-1; // -1=conservative automatic recommendation
     private volatile int qualityActive=1;
     private volatile String[] gpuCapabilities=null;
+    // This list controls only the display resolution, NOT the imported
+    // geometry, GLB file, texture detail, culling, or native renderer tier.
     private static final String[] QUALITY_MODES={
-        "Авто — с учётом RAM/GPU",
-        "Экономия — 55% рендер",
-        "Низкое — 70% рендер",
-        "Баланс — 85% рендер",
-        "Высокое — 100% рендер"
+        "Авто — разрешение по возможностям планшета",
+        "55% — экономия энергии",
+        "70% — меньше нагрузка",
+        "85% — чёткое изображение",
+        "100% — разрешение экрана"
     };
     private final int gold = Color.rgb(240, 192, 113);
     private final int text = Color.rgb(234, 228, 218);
@@ -230,8 +232,10 @@ public class EditorActivity extends Activity {
     }
     @Override public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        qualityChoice=getPreferences(MODE_PRIVATE).getInt("oe_quality_tier",-1);
+        qualityChoice=getPreferences(MODE_PRIVATE).getInt("oe_display_resolution",-1);
         if(qualityChoice<-1||qualityChoice>3)qualityChoice=-1;
+        textureLimit=getPreferences(MODE_PRIVATE).getInt("oe_glb_preview_texture_limit",1024);
+        if(textureLimit!=1024&&textureLimit!=2048)textureLimit=1024;
         ActivityManager manager=(ActivityManager)getSystemService(ACTIVITY_SERVICE);
         if(manager!=null){
             ActivityManager.MemoryInfo mem=new ActivityManager.MemoryInfo();
@@ -522,7 +526,7 @@ public class EditorActivity extends Activity {
             addPaletteOption("📏 Радиус кисти земли",this::choosePaintRadius);
             addPaletteOption("✕ Завершить покраску",this::cancelPlace);
             addPaletteOption("Импорт модели: GLB / glTF / VOX",this::pickGlb);
-            addPaletteOption("Качество GLB 1024 / 2048 px",this::chooseTextureLimit);
+            addPaletteOption("Детализация текстур GLB при просмотре",this::chooseTextureLimit);
             addPaletteOption("Форматы и ограничения",()->new AlertDialog.Builder(this)
                 .setTitle("Текстуры OE")
                 .setMessage("Можно загружать PNG/JPG до 1024px и наносить на объекты или землю. "
@@ -530,7 +534,7 @@ public class EditorActivity extends Activity {
                     +"Draco пока не поддерживается. KTX2 BasisU ETC1S/UASTC LDR -> ETC2 включён в тестовом режиме.")
                 .setPositiveButton("Понятно",null).show());
         }else if("Проект".equals(category)){
-            addPaletteOption("⚡ Графика и качество",this::chooseDeviceProfile);
+            addPaletteOption("🖼 Разрешение показа (не меняет GLB)",this::chooseDeviceProfile);
             addPaletteOption("🖥 Информация о GPU",this::showDeviceCapabilities);
             addPaletteOption("💾 Сохранить локально",this::saveScene);
             addPaletteOption("📂 Загрузить локально",this::loadScene);
@@ -746,22 +750,23 @@ public class EditorActivity extends Activity {
         message("Коснись земли для деформации · максимум 64 мазка на карту");
     }
     private void selectDeviceQuality(int selected){
-        if(selected< -1||selected>3)return;
+        if(selected<-1||selected>3)return;
         qualityChoice=selected;
-        getPreferences(MODE_PRIVATE).edit().putInt("oe_quality_tier",selected).apply();
+        // Persist only DISPLAY RESOLUTION, never the source asset or its
+        // preview texture limit. Renderer geometry/culling remains independent.
+        getPreferences(MODE_PRIVATE).edit()
+            .putInt("oe_display_resolution",selected).apply();
         if(surface==null)return;
         surface.queueEvent(()->{
-            final int tier=selected<0?nativeRecommendQuality(deviceRamMiB):selected;
-            if(!nativeSetQualityProfile(tier))return;
-            qualityActive=tier;
-            textureLimit=tier==3?2048:1024;
-            final float scale=nativeQualityScale(tier);
+            final int displayTier=selected<0?
+                nativeRecommendQuality(deviceRamMiB):selected;
+            final float scale=nativeQualityScale(displayTier);
             ui(()->{
                 surface.applyRenderScale(scale);
-                if(statusText!=null)statusText.setText("Графика: "+
-                    QUALITY_MODES[tier+1]+(selected<0?" · автоподбор":" · вручную"));
+                if(statusText!=null)
+                    statusText.setText("Разрешение экрана: "+
+                        Math.round(scale*100.f)+"% · модель GLB не изменяется");
             });
-            surface.requestRender();
         });
     }
     private void showEngineSettings(){
@@ -770,13 +775,15 @@ public class EditorActivity extends Activity {
         final String selected=qualityChoice<0?"Авто":
             QUALITY_MODES[qualityChoice+1].split(" — ")[0];
         final String[] sections={
-            "🖼 Качество изображения · "+selected,
+            "🖼 Разрешение изображения · "+selected,
+            "🧱 Детализация текстур GLB на экране · "+textureLimit+" px",
             "🖥 Видеочип и возможности"
         };
         new AlertDialog.Builder(this)
             .setTitle("⚙️ Настройки OE")
             .setItems(sections,(dialog,which)->{
                 if(which==0)chooseDeviceProfile();
+                else if(which==1)chooseTextureLimit();
                 else showDeviceCapabilities();
             })
             .setNegativeButton("Закрыть",null)
@@ -785,7 +792,7 @@ public class EditorActivity extends Activity {
     private void chooseDeviceProfile(){
         if(importing){message("Заверши импорт проекта");return;}
         new AlertDialog.Builder(this)
-            .setTitle("🖼 Качество изображения")
+            .setTitle("🖼 Разрешение показа · исходная модель неизменна")
             .setSingleChoiceItems(QUALITY_MODES,qualityChoice+1,
                 (dialog,which)->{selectDeviceQuality(which-1);dialog.dismiss();})
             .setNeutralButton("Видеочип",(dialog,which)->showDeviceCapabilities())
@@ -817,14 +824,28 @@ public class EditorActivity extends Activity {
     }
     private void chooseTextureLimit(){
         final String[] choices={
-            "1024 px · экономия памяти и энергии (рекомендуется)",
-            "2048 px · более чёткие детали, больше расход видеопамяти"};
-        new AlertDialog.Builder(this).setTitle("Лимит текстур для новых GLB")
+            "1024 px · экономия видеопамяти на планшете",
+            "2048 px · чёткие текстуры при просмотре (требует больше GPU-памяти)"};
+        new AlertDialog.Builder(this)
+            .setTitle("🧱 Текстуры GLB · только отображение")
             .setSingleChoiceItems(choices,textureLimit==1024?0:1,(dialog,which)->{
                 textureLimit=which==0?1024:2048;
-                message("Лимит: "+textureLimit+" px · уже загруженные модели не изменяются");
+                getPreferences(MODE_PRIVATE).edit()
+                    .putInt("oe_glb_preview_texture_limit",textureLimit).apply();
+                message("Просмотр новых/повторно открытых GLB: "+textureLimit+
+                    " px · оригинальная модель и текстуры не изменяются");
                 dialog.dismiss();
-            }).setNegativeButton("Отмена",null).show();
+            })
+            .setNeutralButton("Оригиналы сохраняются", (dialog,which)->
+                new AlertDialog.Builder(this)
+                    .setTitle("Источник всегда в полном качестве")
+                    .setMessage("OE хранит исходный GLB без перекодирования. "+
+                        "1024/2048 px ограничивает только текстуры "+
+                        "видеокарты при просмотре. Смена разрешения экрана "+
+                        "не изменяет геометрию, материалы и сохранённый GLB. "+
+                        "Уже загруженные модели меняются при повторной загрузке сцены.")
+                    .setPositiveButton("Понятно",null).show())
+            .setNegativeButton("Отмена",null).show();
     }
     private void chooseTerrainBrush(){
         final String[] choices={"Небольшая · 32м / 8м","Средняя · 64м / 16м",
@@ -1989,13 +2010,16 @@ public class EditorActivity extends Activity {
                                                         javax.microedition.khronos.egl.EGLConfig config) {
                     nativeInit();
                     gpuCapabilities=nativeGetGpuCapabilities();
-                    final int tier=qualityChoice<0?nativeRecommendQuality(deviceRamMiB):qualityChoice;
-                    if(nativeSetQualityProfile(tier)){
-                        qualityActive=tier;
-                        textureLimit=tier==3?2048:1024;
-                        final float scale=nativeQualityScale(tier);
-                        ui(()->applyRenderScale(scale));
-                    }
+                    // Stable native geometry/detail profile is chosen for the
+                    // tablet independently of the screen-resolution setting.
+                    // Moving the resolution slider MUST NOT regenerate LODs,
+                    // downsample GLB preview textures, or modify source GLBs.
+                    final int rendererTier=nativeRecommendQuality(deviceRamMiB);
+                    if(nativeSetQualityProfile(rendererTier))
+                        qualityActive=rendererTier;
+                    final int displayTier=qualityChoice<0?rendererTier:qualityChoice;
+                    final float scale=nativeQualityScale(displayTier);
+                    ui(()->applyRenderScale(scale));
                     refreshSelected();
                 }
                 @Override public void onSurfaceChanged(javax.microedition.khronos.opengles.GL10 gl, int w, int h) {

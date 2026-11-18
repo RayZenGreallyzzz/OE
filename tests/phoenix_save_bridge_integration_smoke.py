@@ -39,5 +39,21 @@ assert "if(available>0&&available<data.length*2L+DISK_RESERVE)" in bridge
 assert "private File projectFile()" in bridge
 assert 'startActivityForResult(new Intent(this,PhoenixBuilderActivity.class),PHOENIX_BUILDER)' in editor
 assert "applicationId 'game.oe.editor.phoenix013fix1'" in gradle
-assert "versionCode 30" in gradle
+assert "versionCode 31" in gradle
+# Android AlertDialog.Builder.setMessage and setItems share the same content
+# region: if both are set, the message wins and the destination list vanishes.
+# The GLB export must use explicit buttons instead.
+export_dialog = bridge.split('private void showNextSave(){', 1)[1].split(
+    'private void startDeviceSave(){', 1)[0]
+assert '.setPositiveButton("🏰 В город OE"' in export_dialog
+assert '.setNeutralButton("📱 На устройство"' in export_dialog
+assert '.setNegativeButton("Отмена"' in export_dialog
+assert '.setItems(' not in export_dialog
+# The "recovery copies" list also must not combine list content and message.
+recovery_dialog = bridge.split('private void showProjectRecovery(){', 1)[1].split(
+    'private void exportRecoveryJson(', 1)[0]
+assert '.setItems(items,' in recovery_dialog
+assert '.setMessage(' not in recovery_dialog
+print("OK: Android GLB destination buttons and JSON recovery list are visible")
+
 print("OK: Phoenix JSON snapshots, fallback, SAF retry, city handoff, and app ID unchanged")

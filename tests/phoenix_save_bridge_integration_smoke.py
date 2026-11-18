@@ -39,7 +39,26 @@ assert "if(available>0&&available<data.length*2L+DISK_RESERVE)" in bridge
 assert "private File projectFile()" in bridge
 assert 'startActivityForResult(new Intent(this,PhoenixBuilderActivity.class),PHOENIX_BUILDER)' in editor
 assert "applicationId 'game.oe.editor.phoenix013fix1'" in gradle
-assert "versionCode 31" in gradle
+assert "versionCode 32" in gradle
+# Graphics settings must live in the always-visible top-right toolbar,
+# use existing native quality implementation, and persist the selection.
+assert 'Button settingsButton=button("⚙️",this::showEngineSettings);' in editor
+assert 'top.addView(settingsButton,new LinearLayout.LayoutParams(dp(46),dp(43)));' in editor
+assert 'private void showEngineSettings(){' in editor
+settings = editor.split('private void showEngineSettings(){',1)[1].split(
+    'private void chooseDeviceProfile(){',1)[0]
+assert '.setTitle("⚙️ Настройки OE")' in settings
+assert '🖼 Качество изображения' in settings
+assert '.setItems(sections,' in settings
+assert '.setMessage(' not in settings  # Android bug: hides the options
+assert 'else showDeviceCapabilities();' in settings
+assert 'getPreferences(MODE_PRIVATE).edit().putInt("oe_quality_tier",selected).apply();' in editor
+assert 'surface.applyRenderScale(scale);' in editor
+assert 'nativeSetQualityProfile(tier)' in editor
+assert 'QUALITY_MODES' in editor
+assert 'qualityChoice=getPreferences(MODE_PRIVATE).getInt("oe_quality_tier",-1);' in editor
+print("OK: top-right graphics gear, native quality profiles and persistence")
+
 # Android AlertDialog.Builder.setMessage and setItems share the same content
 # region: if both are set, the message wins and the destination list vanishes.
 # The GLB export must use explicit buttons instead.

@@ -9,6 +9,7 @@ import android.os.Bundle;
 import android.util.Base64;
 import android.view.View;
 import android.webkit.JavascriptInterface;
+import android.webkit.ConsoleMessage;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
@@ -161,6 +162,16 @@ public final class PhoenixBuilderActivity extends Activity {
             }
         });
         web.setWebChromeClient(new WebChromeClient(){
+            @Override public boolean onConsoleMessage(ConsoleMessage message){
+                // Original standalone UV44 logs individual failed imports
+                // even when the batch UI only shows "0 / N". Preserve those
+                // diagnostics on the device (without changing Phoenix JS).
+                if(message.messageLevel()==ConsoleMessage.MessageLevel.ERROR||
+                   message.messageLevel()==ConsoleMessage.MessageLevel.WARNING)
+                    android.util.Log.w("OE-Phoenix",
+                        "JS ("+message.lineNumber()+"): "+message.message());
+                return true;
+            }
             @Override public boolean onShowFileChooser(WebView view,
                     android.webkit.ValueCallback<Uri[]> result,
                     FileChooserParams params) {
@@ -175,17 +186,29 @@ public final class PhoenixBuilderActivity extends Activity {
                     pick.addCategory(Intent.CATEGORY_OPENABLE);
                     pick.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
                     boolean image=false;
+                    boolean png=false,webp=false,unrestricted=false;
                     String[] accepted=params.getAcceptTypes();
                     if(accepted!=null){
                         for(String a:accepted){
-                            String t=a==null?"":a.toLowerCase(Locale.ROOT);
+                            String t=a==null?"":a.toLowerCase(Locale.ROOT).trim();
                             if(t.startsWith("image/")||t.equals(".png")||
                                t.equals(".jpg")||t.equals(".jpeg")||
                                t.equals(".webp")||t.equals(".bmp")||
-                               t.equals(".gif")){image=true;break;}
+                               t.equals(".gif"))image=true;
+                            if(t.equals(".png")||t.equals("image/png"))png=true;
+                            if(t.equals(".webp")||t.equals("image/webp"))webp=true;
+                            if(t.equals("image/*")||t.equals(".jpg")||
+                               t.equals(".jpeg")||t.equals("image/jpeg")||
+                               t.equals(".bmp")||t.equals(".gif"))unrestricted=true;
                         }
                     }
                     pick.setType(image?"image/*":"*/*");
+                    // Graffiti accepts only transparent PNG/WebP. Keep JPG
+                    // out of that picker instead of selecting files that
+                    // Phoenix would then silently reject in batch mode.
+                    if(image&&png&&webp&&!unrestricted)
+                        pick.putExtra(Intent.EXTRA_MIME_TYPES,
+                            new String[]{"image/png","image/webp"});
                     pick.putExtra(Intent.EXTRA_ALLOW_MULTIPLE,
                         params.getMode()==FileChooserParams.MODE_OPEN_MULTIPLE);
                     startActivityForResult(pick,PICK_FILE);
@@ -386,6 +409,14 @@ public final class PhoenixBuilderActivity extends Activity {
                 }
                 if(selected==null)
                     selected=WebChromeClient.FileChooserParams.parseResult(result,data);
+                if(selected!=null&&selected.length>0){
+                    final int count=selected.length;
+                    Toast.makeText(this,
+                        "📁 Android передал "+count+
+                        (count==1?" файл":" файлов")+
+                        ". Проверь итог загрузки в папке Phoenix.",
+                        Toast.LENGTH_SHORT).show();
+                }
                 fileChooser.onReceiveValue(selected);
                 fileChooser=null;
             }

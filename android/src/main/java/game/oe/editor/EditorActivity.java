@@ -133,7 +133,7 @@ public class EditorActivity extends Activity {
     private static native boolean nativeSetSelectedRotationEuler(double x,double y,double z);
     private static native int nativeAddImportedPlaced(String key, float x, float z, float yaw, float size);
     private static final int PICK_GLB = 702, PICK_PROJECT=703, SAVE_PROJECT=704, PICK_PAINT=705,
-            PICK_LIBRARY=AssetLibrary.PICK_LIBRARY;
+            PICK_LIBRARY=AssetLibrary.PICK_LIBRARY, PHOENIX_BUILDER=710;
     private static final int MAX_ASSETS = 32;
 
     private EditorSurface surface;
@@ -447,7 +447,7 @@ public class EditorActivity extends Activity {
             addPaletteOption("🔥 Открыть Phoenix Builder UV44",()->{
                 cancelPlace();
                 toggleDrawer(false);
-                startActivity(new Intent(this,PhoenixBuilderActivity.class));
+                startActivityForResult(new Intent(this,PhoenixBuilderActivity.class),PHOENIX_BUILDER);
             });
             addPaletteOption("📥 Импорт готового GLB из Phoenix",this::pickGlb);
             addPaletteOption("ℹ Редактор зданий отдельный от ландшафта и дорог",
@@ -1470,16 +1470,40 @@ public class EditorActivity extends Activity {
             }
             return;
         }
-        if(requestCode!=PICK_GLB || resultCode!=RESULT_OK || intent==null || intent.getData()==null)return;
+        if((requestCode!=PICK_GLB&&requestCode!=PHOENIX_BUILDER)||
+           resultCode!=RESULT_OK||intent==null||intent.getData()==null)return;
         final Uri uri=intent.getData();
+        final File phoenixTemp;
+        if(requestCode==PHOENIX_BUILDER){
+            try{
+                if(!"file".equals(uri.getScheme())||uri.getPath()==null)
+                    throw new Exception("Phoenix не передал GLB");
+                File candidate=new File(uri.getPath()).getCanonicalFile();
+                File allowed=new File(getCacheDir(),"phoenix-export").getCanonicalFile();
+                if(!candidate.getPath().startsWith(allowed.getPath()+File.separator)||
+                   !candidate.isFile()||candidate.length()<20||
+                   candidate.length()>GlbReader.MAX_BYTES)
+                    throw new Exception("Неправильный размер GLB для города (макс. 24 МБ)");
+                phoenixTemp=candidate;
+            }catch(Exception e){
+                message("Phoenix → OE: "+e.getMessage());return;
+            }
+        }else phoenixTemp=null;
         if(importing)return;
         importing=true;
         message("Распознаю GLB / glTF / VOX…");
         new Thread(() -> {
             try {
-                InputStream stream=getContentResolver().openInputStream(uri);
+                InputStream stream=phoenixTemp==null?
+                    getContentResolver().openInputStream(uri):
+                    new java.io.FileInputStream(phoenixTemp);
                 if(stream==null)throw new Exception("Не удалось открыть файл");
-                byte[] original=limitedRead(stream);
+                byte[] original;
+                try{original=limitedRead(stream);}
+                finally{
+                    if(phoenixTemp!=null&&!phoenixTemp.delete())
+                        android.util.Log.w("OE","Phoenix staging GLB cleanup failed");
+                }
                 UniversalModelReader.Converted converted=UniversalModelReader.convert(original);
                 byte[] bytes=converted.glb;
                 final String key=GlbReader.key(bytes);
@@ -1532,7 +1556,7 @@ public class EditorActivity extends Activity {
                                             final String alert=notice;
                                             ui(() -> statusText.setText(alert));
                                             message("Модель импортирована. "+notice);
-                                        }else message("Модель готова: "+model.triangles+" треугольников. Коснись карты.");
+                                        }else message("Модель готова: "+model.triangles+" треугольников. Коснись карты, затем 💾 Сохранить город.");
                                     }else message("Не удалось загрузить модель: память, лимит или GPU");
                                 });
                             }catch(Exception e){

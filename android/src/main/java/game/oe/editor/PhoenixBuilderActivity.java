@@ -28,8 +28,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.AtomicMoveNotSupportedException;
-import java.security.MessageDigest;
-import java.util.Arrays;
 import org.json.JSONObject;
 import org.json.JSONArray;
 import java.util.Date;
@@ -454,22 +452,9 @@ public final class PhoenixBuilderActivity extends Activity {
         }
     }
 
-    private static byte[] fileSha256(InputStream source) throws Exception {
-        MessageDigest digest=MessageDigest.getInstance("SHA-256");
-        byte[] buf=new byte[VERIFY_BUFFER_BYTES];
-        try(InputStream in=source){
-            for(int n;(n=in.read(buf))!=-1;)digest.update(buf,0,n);
-        }
-        return digest.digest();
-    }
-    private void verifyDocumentCopy(File source,Uri destination) throws Exception{
-        byte[] expected=fileSha256(new FileInputStream(source));
-        InputStream actual=getContentResolver().openInputStream(destination);
-        if(actual==null)throw new IOException(
-            "Android не разрешил прочитать сохранённый файл для проверки");
-        if(!Arrays.equals(expected,fileSha256(actual)))
-            throw new IOException("Проверка файла не совпала: копия неполная. "+
-                "Исходный файл сохранён для повторного экспорта.");
+    private void verifyDocumentCopy(File source,Uri destination) throws IOException {
+        PhoenixFileVerifier.verify(source,
+            getContentResolver().openInputStream(destination));
     }
 
     // The public API matches the original stable UV44 JS calls:

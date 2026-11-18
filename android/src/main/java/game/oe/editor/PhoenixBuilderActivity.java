@@ -83,9 +83,8 @@ public final class PhoenixBuilderActivity extends Activity {
            "model/gltf-binary".equals(next.mime)){
             new AlertDialog.Builder(this)
                 .setTitle("📦 Готовый дом GLB")
-                .setMessage("Сохранить здание в город OE или на устройство?")
-                .setItems(new String[]{"🏰 В город OE","📱 На устройство"},(dialog,choice)->{
-                    if(choice!=0){startDeviceSave();return;}
+                .setMessage("Готовый GLB сохранён во временной папке. Выбери действие:")
+                .setPositiveButton("🏰 В город OE",(dialog,choice)->{
                     if(next.file.length()>24L*1024*1024){
                         new AlertDialog.Builder(this)
                             .setTitle("Модель больше ограничения OE")
@@ -101,6 +100,8 @@ public final class PhoenixBuilderActivity extends Activity {
                     setResult(RESULT_OK,data);
                     finish();
                 })
+                .setNeutralButton("📱 На устройство",(dialog,which)->startDeviceSave())
+                .setNegativeButton("Отмена",(dialog,which)->dropPending())
                 .setOnCancelListener(d->dropPending()).show();
         }else startDeviceSave();
     }
@@ -313,9 +314,7 @@ public final class PhoenixBuilderActivity extends Activity {
             items[i]=labels.get(i)+" · "+date;
         }
         new AlertDialog.Builder(this)
-            .setTitle("🛟 Копии Phoenix")
-            .setMessage("Это JSON расположения деталей. Для переноса "+
-                "с текстурами также нужен полный проект из вкладки «Файлы».")
+            .setTitle("🛟 Копии Phoenix — JSON без текстур")
             .setItems(items,(dialog,which)->{
                 File selected=files.get(which);
                 String label=labels.get(which);

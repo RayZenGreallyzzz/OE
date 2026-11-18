@@ -48,16 +48,31 @@ assert 'private void showEngineSettings(){' in editor
 settings = editor.split('private void showEngineSettings(){',1)[1].split(
     'private void chooseDeviceProfile(){',1)[0]
 assert '.setTitle("⚙️ Настройки OE")' in settings
-assert '🖼 Качество изображения' in settings
+assert '🖼 Разрешение изображения' in settings
+assert 'Детализация текстур GLB на экране' in settings
 assert '.setItems(sections,' in settings
 assert '.setMessage(' not in settings  # Android bug: hides the options
+assert 'else if(which==1)chooseTextureLimit();' in settings
 assert 'else showDeviceCapabilities();' in settings
-assert 'getPreferences(MODE_PRIVATE).edit().putInt("oe_quality_tier",selected).apply();' in editor
+assert 'qualityPrefs.getInt("oe_display_resolution",' in editor
+assert 'qualityPrefs.getInt("oe_quality_tier",-1)' in editor  # migration
+assert 'textureLimit=getPreferences(MODE_PRIVATE).getInt("oe_glb_preview_texture_limit",1024);' in editor
+assert '.putInt("oe_display_resolution",selected).apply();' in editor
+assert '.putInt("oe_glb_preview_texture_limit",textureLimit).apply();' in editor
 assert 'surface.applyRenderScale(scale);' in editor
-assert 'nativeSetQualityProfile(tier)' in editor
+assert 'nativeSetQualityProfile(rendererTier)' in editor
 assert 'QUALITY_MODES' in editor
-assert 'qualityChoice=getPreferences(MODE_PRIVATE).getInt("oe_quality_tier",-1);' in editor
-print("OK: top-right graphics gear, native quality profiles and persistence")
+resolution_change = editor.split('private void selectDeviceQuality(int selected){',1)[1].split(
+    'private void showEngineSettings(){',1)[0]
+# Never switch geometry LOD, culling or texture decode when merely changing
+# screen resolution. GLB source bytes are never rewritten.
+assert 'nativeSetQualityProfile' not in resolution_change
+assert 'textureLimit=' not in resolution_change
+assert 'GlbReader.decode' not in resolution_change
+assert 'nativeQualityScale(displayTier)' in resolution_change
+assert 'getPreferences(MODE_PRIVATE).edit()' in resolution_change
+assert 'Файл проекта' not in resolution_change
+print("OK: screen resolution changes only GLES buffer scale; source GLB quality untouched")
 
 # Android AlertDialog.Builder.setMessage and setItems share the same content
 # region: if both are set, the message wins and the destination list vanishes.

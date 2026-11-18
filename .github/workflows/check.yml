@@ -14,6 +14,8 @@ jobs:
       - run: node --check src/engine.js
       - run: node --check src/editor.js
       - run: node --test tests/engine.test.cjs
+      - name: Guard Phoenix save/recovery bridge against regressions
+        run: python3 tests/phoenix_save_bridge_integration_smoke.py
   meshopt-codec:
     runs-on: ubuntu-latest
     steps:

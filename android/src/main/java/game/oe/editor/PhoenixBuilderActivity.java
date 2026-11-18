@@ -58,6 +58,7 @@ public final class PhoenixBuilderActivity extends Activity {
     private final PhoenixBridge bridge=new PhoenixBridge();
     private File pendingSave;
     private String pendingName,pendingMime;
+    private boolean fileCopyInProgress=false;
     private static final class ReadyFile {
         final File file;
         final String name,mime;
@@ -72,7 +73,7 @@ public final class PhoenixBuilderActivity extends Activity {
         showNextSave();
     }
     private void showNextSave(){
-        if(pendingSave!=null)return;
+        if(pendingSave!=null||fileCopyInProgress)return;
         ReadyFile next=pendingQueue.poll();
         if(next==null)return;
         pendingSave=next.file;pendingName=next.name;pendingMime=next.mime;
@@ -390,15 +391,26 @@ public final class PhoenixBuilderActivity extends Activity {
             return;
         }
         if(req==SAVE_FILE){
-            File source=pendingSave;pendingSave=null;
-            pendingName=null;pendingMime=null;
+            final File source=pendingSave;
+            final String name=pendingName,mime=pendingMime;
+            pendingSave=null;pendingName=null;pendingMime=null;
+            if(source==null||!source.isFile()){
+                showNextSave();return;
+            }
             if(result!=RESULT_OK||data==null||data.getData()==null){
-                if(source!=null)source.delete();
-                showNextSave();
+                // Cancellation is not a corrupted export, only a cancelled
+                // folder selection. Ask before discarding the finished bytes.
+                pendingSave=source;pendingName=name;pendingMime=mime;
+                new AlertDialog.Builder(this)
+                    .setTitle("Сохранение отменено")
+                    .setMessage("Файл Phoenix ещё готов к экспорту. Повторить выбор папки?")
+                    .setPositiveButton("Повторить",(d,w)->startDeviceSave())
+                    .setNegativeButton("Удалить временную копию",(d,w)->dropPending())
+                    .show();
                 return;
             }
-            Uri uri=data.getData();
-            if(source==null||!source.isFile())return;
+            final Uri uri=data.getData();
+            fileCopyInProgress=true;
             new Thread(()->{
                 try(InputStream in=new FileInputStream(source);
                     OutputStream out=getContentResolver().openOutputStream(uri,"w")){
@@ -406,14 +418,28 @@ public final class PhoenixBuilderActivity extends Activity {
                     byte[] buf=new byte[65536];
                     for(int n;(n=in.read(buf))!=-1;)out.write(buf,0,n);
                     out.flush();
-                    runOnUiThread(()->Toast.makeText(this,
-                        "✅ Файл Phoenix сохранён",Toast.LENGTH_LONG).show());
+                    source.delete();
+                    runOnUiThread(()->{
+                        fileCopyInProgress=false;
+                        Toast.makeText(this,"✅ Файл Phoenix сохранён на устройство",
+                            Toast.LENGTH_LONG).show();
+                        showNextSave();
+                    });
                 }catch(Exception error){
-                    runOnUiThread(()->new AlertDialog.Builder(this)
-                        .setTitle("Ошибка экспорта Phoenix")
-                        .setMessage(error.getMessage())
-                        .setPositiveButton("ОК",null).show());
-                }finally{source.delete();runOnUiThread(PhoenixBuilderActivity.this::showNextSave);}
+                    // Never delete a successfully prepared GLB/JSON when a
+                    // document provider rejects a write. Offer retry.
+                    runOnUiThread(()->{
+                        fileCopyInProgress=false;
+                        pendingSave=source;pendingName=name;pendingMime=mime;
+                        new AlertDialog.Builder(this)
+                            .setTitle("Ошибка копирования Phoenix")
+                            .setMessage("Оригинальный файл сохранён временно. "+
+                                "Выбери другую папку. Причина: "+error.getMessage())
+                            .setPositiveButton("Повторить",(d,w)->startDeviceSave())
+                            .setNegativeButton("Отмена",(d,w)->dropPending())
+                            .show();
+                    });
+                }
             },"phoenix-saf-export").start();
         }
     }

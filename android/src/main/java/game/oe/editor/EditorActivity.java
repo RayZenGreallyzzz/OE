@@ -54,6 +54,7 @@ public class EditorActivity extends Activity {
     private static native boolean nativeSetQualityProfile(int tier);
     private static native float nativeQualityScale(int tier);
     private static native String[] nativeGetGpuCapabilities();
+    private static native void nativeSetImportedLighting(boolean enabled);
     private static native void nativeOrbit(float dx, float dy, float zoom);
     private static native void nativePan(float dx, float dy);
     private static native void nativeFocusLocation(int index);
@@ -163,6 +164,7 @@ public class EditorActivity extends Activity {
     private volatile float terrainStrength=20f;
     private volatile float moveStep=.001f,turnStep=5f,scaleStep=1.05f;
     private volatile int textureLimit=1024; // GPU preview ONLY; original saved GLB bytes are never changed.
+    private volatile boolean glbSoftLighting=true; // Imported GLB shading, not source data.
     private volatile int deviceRamMiB=4096;
     private volatile int qualityChoice=-1; // -1=conservative automatic recommendation
     private volatile int qualityActive=1;
@@ -240,6 +242,7 @@ public class EditorActivity extends Activity {
         if(qualityChoice<-1||qualityChoice>3)qualityChoice=-1;
         textureLimit=getPreferences(MODE_PRIVATE).getInt("oe_glb_preview_texture_limit",1024);
         if(textureLimit!=1024&&textureLimit!=2048)textureLimit=1024;
+        glbSoftLighting=getPreferences(MODE_PRIVATE).getBoolean("oe_glb_soft_lighting",true);
         ActivityManager manager=(ActivityManager)getSystemService(ACTIVITY_SERVICE);
         if(manager!=null){
             ActivityManager.MemoryInfo mem=new ActivityManager.MemoryInfo();
@@ -781,6 +784,7 @@ public class EditorActivity extends Activity {
         final String[] sections={
             "🖼 Разрешение изображения · "+selected,
             "🧱 Детализация текстур GLB на экране · "+textureLimit+" px",
+            "☀️ Освещение зданий GLB · "+(glbSoftLighting?"Мягкое":"Классическое"),
             "🖥 Видеочип и возможности"
         };
         new AlertDialog.Builder(this)
@@ -788,6 +792,7 @@ public class EditorActivity extends Activity {
             .setItems(sections,(dialog,which)->{
                 if(which==0)chooseDeviceProfile();
                 else if(which==1)chooseTextureLimit();
+                else if(which==2)chooseGlbLighting();
                 else showDeviceCapabilities();
             })
             .setNegativeButton("Закрыть",null)
@@ -825,6 +830,31 @@ public class EditorActivity extends Activity {
                 .setNeutralButton("Выбрать профиль",(dialog,which)->chooseDeviceProfile())
                 .show());
         });
+    }
+    private void chooseGlbLighting(){
+        // This option modifies only the runtime appearance of imported
+        // GLBs. Original model geometry, embedded textures and saved city
+        // are never rewritten when the owner switches lighting.
+        final String[] choices={
+            "☀️ Мягкое дневное · цвета glTF в sRGB, небо и солнце",
+            "🔹 Классическое · прежний вид OE 0.7.13"
+        };
+        new AlertDialog.Builder(this)
+            .setTitle("☀️ Освещение зданий GLB")
+            .setSingleChoiceItems(choices,glbSoftLighting?0:1,(dialog,which)->{
+                glbSoftLighting=which==0;
+                getPreferences(MODE_PRIVATE).edit()
+                    .putBoolean("oe_glb_soft_lighting",glbSoftLighting).apply();
+                surface.queueEvent(()->{
+                    nativeSetImportedLighting(glbSoftLighting);
+                    surface.requestRender();
+                });
+                message(glbSoftLighting?
+                    "Мягкое дневное освещение включено · исходный GLB не меняется":
+                    "Восстановлено классическое освещение OE");
+                dialog.dismiss();
+            })
+            .setNegativeButton("Отмена",null).show();
     }
     private void chooseTextureLimit(){
         final String[] choices={
@@ -2013,6 +2043,7 @@ public class EditorActivity extends Activity {
                 @Override public void onSurfaceCreated(javax.microedition.khronos.opengles.GL10 gl,
                                                         javax.microedition.khronos.egl.EGLConfig config) {
                     nativeInit();
+                    nativeSetImportedLighting(glbSoftLighting);
                     gpuCapabilities=nativeGetGpuCapabilities();
                     // Stable native geometry/detail profile is chosen for the
                     // tablet independently of the screen-resolution setting.

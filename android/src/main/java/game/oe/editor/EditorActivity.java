@@ -232,7 +232,11 @@ public class EditorActivity extends Activity {
     }
     @Override public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        qualityChoice=getPreferences(MODE_PRIVATE).getInt("oe_display_resolution",-1);
+        // Retain the owner's previous display choice when upgrading from v31,
+        // but keep new changes strictly separate from renderer/GLB quality.
+        android.content.SharedPreferences qualityPrefs=getPreferences(MODE_PRIVATE);
+        qualityChoice=qualityPrefs.getInt("oe_display_resolution",
+            qualityPrefs.getInt("oe_quality_tier",-1));
         if(qualityChoice<-1||qualityChoice>3)qualityChoice=-1;
         textureLimit=getPreferences(MODE_PRIVATE).getInt("oe_glb_preview_texture_limit",1024);
         if(textureLimit!=1024&&textureLimit!=2048)textureLimit=1024;
@@ -832,7 +836,7 @@ public class EditorActivity extends Activity {
                 textureLimit=which==0?1024:2048;
                 getPreferences(MODE_PRIVATE).edit()
                     .putInt("oe_glb_preview_texture_limit",textureLimit).apply();
-                message("Просмотр новых/повторно открытых GLB: "+textureLimit+
+                message("Просмотр новых GLB: "+textureLimit+
                     " px · оригинальная модель и текстуры не изменяются");
                 dialog.dismiss();
             })
@@ -843,7 +847,7 @@ public class EditorActivity extends Activity {
                         "1024/2048 px ограничивает только текстуры "+
                         "видеокарты при просмотре. Смена разрешения экрана "+
                         "не изменяет геометрию, материалы и сохранённый GLB. "+
-                        "Уже загруженные модели меняются при повторной загрузке сцены.")
+                        "Уже загруженные модели обновятся после полного перезапуска OE.")
                     .setPositiveButton("Понятно",null).show())
             .setNegativeButton("Отмена",null).show();
     }

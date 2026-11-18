@@ -39,7 +39,7 @@ assert "if(available>0&&available<data.length*2L+DISK_RESERVE)" in bridge
 assert "private File projectFile()" in bridge
 assert 'startActivityForResult(new Intent(this,PhoenixBuilderActivity.class),PHOENIX_BUILDER)' in editor
 assert "applicationId 'game.oe.editor.phoenix013fix1'" in gradle
-assert "versionCode 32" in gradle
+assert "versionCode 33" in gradle
 # Graphics settings must live in the always-visible top-right toolbar,
 # use existing native quality implementation, and persist the selection.
 assert 'Button settingsButton=button("⚙️",this::showEngineSettings);' in editor
@@ -53,6 +53,7 @@ assert 'Детализация текстур GLB на экране' in settings
 assert '.setItems(sections,' in settings
 assert '.setMessage(' not in settings  # Android bug: hides the options
 assert 'else if(which==1)chooseTextureLimit();' in settings
+assert 'else if(which==2)chooseGlbLighting();' in settings
 assert 'else showDeviceCapabilities();' in settings
 assert 'qualityPrefs.getInt("oe_display_resolution",' in editor
 assert 'qualityPrefs.getInt("oe_quality_tier",-1)' in editor  # migration
@@ -73,6 +74,26 @@ assert 'nativeQualityScale(displayTier)' in resolution_change
 assert 'getPreferences(MODE_PRIVATE).edit()' in resolution_change
 assert 'Файл проекта' not in resolution_change
 print("OK: screen resolution changes only GLES buffer scale; source GLB quality untouched")
+
+# Lighting is selectable but only changes the imported-GLB renderer.
+cpp = (ROOT / "android/src/main/cpp/native_engine.cpp").read_text()
+assert 'nativeSetImportedLighting(' in editor
+assert 'nativeSetImportedLighting(glbSoftLighting);' in editor
+assert 'glbSoftLighting=getPreferences(MODE_PRIVATE).getBoolean("oe_glb_soft_lighting",true);' in editor
+assert '.putBoolean("oe_glb_soft_lighting",glbSoftLighting).apply();' in editor
+assert 'private void chooseGlbLighting(){' in editor
+assert "☀️ Освещение зданий GLB" in editor
+assert 'glUniform1f(gShader.locImportedLighting,gImportedSoftLighting?1.f:0.f);' in cpp
+assert 'glUniform1f(gShader.locImportedLighting,0.f); // Do not alter road/terrain/gizmos.' in cpp
+assert 'JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeSetImportedLighting(' in cpp
+assert 'uniform float uImportedLighting;' in cpp
+assert 'if(uImportedLighting>.5)' in cpp
+assert 'vec3 linearTexture=pow(clamp(texel.rgb,0.,1.),vec3(2.2));' in cpp
+assert 'color=pow(litLinear,vec3(1.0/2.2));' in cpp
+assert 'gShader.locImportedLighting=glGetUniformLocation(gShader.program,"uImportedLighting");' in cpp
+assert 'void drawWorld(' in cpp and 'void drawImported(' in cpp
+print("OK: isolated glTF lighting in native renderer with reversible persisted setting")
+
 
 # Android AlertDialog.Builder.setMessage and setItems share the same content
 # region: if both are set, the message wins and the destination list vanishes.

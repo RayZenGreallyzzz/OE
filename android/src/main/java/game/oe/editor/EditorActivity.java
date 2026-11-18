@@ -274,6 +274,11 @@ public class EditorActivity extends Activity {
         top.addView(undo,new LinearLayout.LayoutParams(dp(45),dp(43)));
         Button redo=button("↷",this::redoAction);
         top.addView(redo,new LinearLayout.LayoutParams(dp(45),dp(43)));
+        // Rightmost, always-visible entry to graphics settings.
+        // Future preferences are added in showEngineSettings(), not the toolbar.
+        Button settingsButton=button("⚙️",this::showEngineSettings);
+        settingsButton.setContentDescription("Настройки Orvetra Engine");
+        top.addView(settingsButton,new LinearLayout.LayoutParams(dp(46),dp(43)));
         root.addView(top,new FrameLayout.LayoutParams(-1,dp(49),Gravity.TOP));
         roadDoneButton=button("✓ Завершить дорогу",this::finishRoadMode);
         FrameLayout.LayoutParams doneParams=new FrameLayout.LayoutParams(dp(175),dp(46),
@@ -759,10 +764,28 @@ public class EditorActivity extends Activity {
             surface.requestRender();
         });
     }
+    private void showEngineSettings(){
+        // Use list content WITHOUT setMessage: on Android, setMessage combined
+        // with setItems hides the choices (the old Phoenix GLB dialog bug).
+        final String selected=qualityChoice<0?"Авто":
+            QUALITY_MODES[qualityChoice+1].split(" — ")[0];
+        final String[] sections={
+            "🖼 Качество изображения · "+selected,
+            "🖥 Видеочип и возможности"
+        };
+        new AlertDialog.Builder(this)
+            .setTitle("⚙️ Настройки OE")
+            .setItems(sections,(dialog,which)->{
+                if(which==0)chooseDeviceProfile();
+                else showDeviceCapabilities();
+            })
+            .setNegativeButton("Закрыть",null)
+            .show();
+    }
     private void chooseDeviceProfile(){
         if(importing){message("Заверши импорт проекта");return;}
         new AlertDialog.Builder(this)
-            .setTitle("Качество графики OE")
+            .setTitle("🖼 Качество изображения")
             .setSingleChoiceItems(QUALITY_MODES,qualityChoice+1,
                 (dialog,which)->{selectDeviceQuality(which-1);dialog.dismiss();})
             .setNeutralButton("Видеочип",(dialog,which)->showDeviceCapabilities())

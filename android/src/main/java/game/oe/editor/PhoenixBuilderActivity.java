@@ -83,7 +83,13 @@ public final class PhoenixBuilderActivity extends Activity {
             }
             @Override public WebResourceResponse shouldInterceptRequest(WebView view,
                     WebResourceRequest request) {
-                return localResource(request.getUrl());
+                // Only intercept our own bundled HTTPS assets. Everything else,
+                // especially Android content:// document-provider streams from
+                // <input type=file multiple>, must be handled by WebView.
+                // Returning a 403 here made File.arrayBuffer()/FileReader
+                // fail after the system picker had already returned images.
+                return isPhoenix(request.getUrl())?
+                    localResource(request.getUrl()):null;
             }
         });
         web.setWebChromeClient(new WebChromeClient(){

@@ -41,7 +41,7 @@ struct Color {float r,g,b;};
 struct Shader {
  GLuint program=0;
  GLint locMvp=-1, locModel=-1, locColor=-1, locLight=-1;
- GLint locTexture=-1,locTextured=-1,locPaintOverride=-1,locOverlay=-1,locPaintCenter=-1,locPaintRadius=-1;
+ GLint locTexture=-1,locTextured=-1,locPaintOverride=-1,locOverlay=-1,locPaintCenter=-1,locPaintRadius=-1,locImportedLighting=-1;
 };
 struct TextureResource {
  GLuint id=0;
@@ -78,6 +78,7 @@ struct TerrainGpu {
 static TerrainGpu gTerrain;
 static int gDrawCalls=0,gTriangles=0;
 static int gQualityTier=oe::Low;
+static bool gImportedSoftLighting=true; // Default for owner GLB models; can revert in OE settings.
 static float gSubmitCpuMs=0.f;
 const oe::QualityProfile&quality(){return oe::profile(gQualityTier);}
 static std::unordered_map<std::string,Asset> gAssets;
@@ -486,6 +487,7 @@ void setupGL(){
  uniform float uOverlay;
  uniform vec2 uPaintCenter;
  uniform float uPaintRadius;
+ uniform float uImportedLighting;
  out vec4 fragColor;
  void main(){
    float sun=max(dot(normalize(vNormal),normalize(vec3(-.55,1.,.5))),0.);
@@ -497,6 +499,19 @@ void setupGL(){
    if(texel.a<(uOverlay>.5?.01:.45))discard;
    vec3 tint=mix(vColor,vec3(1.),uPaintOverride);
    vec3 color=uColor*tint*texel.rgb*(.52+.48*sun);
+   if(uImportedLighting>.5){
+     // glTF baseColor texture is sRGB, but material/vertex tint factors are
+     // linear. Apply light in linear space, then encode back to sRGB display.
+     // This affects only native GLB *rendering*, never source model bytes.
+     vec3 n=normalize(vNormal);
+     float sky=clamp(n.y*.5+.5,0.,1.);
+     vec3 ambient=vec3(.36,.39,.45)*(.75+.25*sky);
+     vec3 daylight=vec3(.71,.67,.60)*sun;
+     vec3 linearTexture=pow(clamp(texel.rgb,0.,1.),vec3(2.2));
+     vec3 linearFactor=clamp(uColor*tint,0.,1.);
+     vec3 litLinear=clamp(linearTexture*linearFactor*(ambient+daylight),0.,1.);
+     color=pow(litLinear,vec3(1.0/2.2));
+   }
    color=mix(color,vec3(.99,.72,.30),uHighlight*.30);
    fragColor=vec4(color,texel.a);
  })";
@@ -516,11 +531,13 @@ void setupGL(){
  gShader.locOverlay=glGetUniformLocation(gShader.program,"uOverlay");
  gShader.locPaintCenter=glGetUniformLocation(gShader.program,"uPaintCenter");
  gShader.locPaintRadius=glGetUniformLocation(gShader.program,"uPaintRadius");
+ gShader.locImportedLighting=glGetUniformLocation(gShader.program,"uImportedLighting");
  glUseProgram(gShader.program);
  glUniform1i(gShader.locTexture,0);
  glUniform1f(gShader.locTextured,0.f);
  glUniform1f(gShader.locPaintOverride,0.f);
  glUniform1f(gShader.locOverlay,0.f);
+ glUniform1f(gShader.locImportedLighting,0.f);
  for(int kind=0;kind<3;kind++){
   std::vector<float> d=geometry(kind);Mesh &m=gMeshes[kind];m.count=(GLsizei)(d.size()/6);
   glGenVertexArrays(1,&m.vao);glBindVertexArray(m.vao);
@@ -666,6 +683,7 @@ void bindPaint(const TextureResource*paint);
 void drawImported(const Mat4&vp,const Entity&e){
  auto it=gAssets.find(e.asset);
  if(it==gAssets.end()||it->second.gpu.count==0)return;
+ glUniform1f(gShader.locImportedLighting,gImportedSoftLighting?1.f:0.f);
  const Mat4 model=entityModelMatrix(e);
  const Mat4 mvp=mul(vp,model);
  glUniformMatrix4fv(gShader.locMvp,1,GL_FALSE,mvp.m);
@@ -712,6 +730,7 @@ void drawImported(const Mat4&vp,const Entity&e){
  }
  bindPaint(nullptr);
  glBindTexture(GL_TEXTURE_2D,0);
+ glUniform1f(gShader.locImportedLighting,0.f); // Do not alter road/terrain/gizmos.
 }
 void part(const Mat4&vp,const Entity&e,int kind,float x,float y,float z,float sx,float sy,float sz,Color color){
  const float a=e.yaw*RAD,c=std::cos(a),s=std::sin(a),k=e.size;
@@ -2035,6 +2054,10 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeRecommendQuality
 JNIEXPORT jfloat JNICALL Java_game_oe_editor_EditorActivity_nativeQualityScale(
  JNIEnv*,jclass,jint tier){
  return oe::profile(tier).resolutionScale;
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeSetImportedLighting(
+ JNIEnv*,jclass,jboolean enabled){
+ gImportedSoftLighting=(enabled==JNI_TRUE);
 }
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeSetQualityProfile(
  JNIEnv*,jclass,jint tier){

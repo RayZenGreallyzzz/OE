@@ -307,6 +307,22 @@ public final class PhoenixBuilderActivity extends Activity {
                                         "GLB не найден",Toast.LENGTH_LONG).show();
                                     return;
                                 }
+                                // OE's validated GLB import limit is 24 MiB.
+                                // Never discard a larger completed Phoenix GLB;
+                                // allow the owner to save it to their device.
+                                if(exported.length()>24L*1024*1024){
+                                    new AlertDialog.Builder(PhoenixBuilderActivity.this)
+                                        .setTitle("Дом слишком большой для импорта OE")
+                                        .setMessage("Готовый GLB занимает "+
+                                            (exported.length()/1048576)+" МБ, "+
+                                            "а текущий движок принимает GLB до 24 МБ. "+
+                                            "Сохрани дом на устройство и уменьши его "+
+                                            "перед размещением в городе.")
+                                        .setPositiveButton("📱 На устройство",
+                                            (aDialog,which)->startDeviceSave())
+                                        .setNegativeButton("Отмена",null).show();
+                                    return;
+                                }
                                 Intent result=new Intent();
                                 result.setData(Uri.fromFile(exported));
                                 setResult(RESULT_OK,result);

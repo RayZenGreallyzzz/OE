@@ -495,7 +495,8 @@ public final class PhoenixBuilderActivity extends Activity {
                     lastError="Размер резервной копии превысил 1 ГБ";
                     abortSave();return false;
                 }
-                if(staging.getUsableSpace()<bytes.length+DISK_RESERVE){
+                long available=staging.getUsableSpace();
+                if(available>0&&available<bytes.length+DISK_RESERVE){
                     lastError="Недостаточно свободного места на планшете";
                     abortSave();return false;
                 }
@@ -593,7 +594,8 @@ public final class PhoenixBuilderActivity extends Activity {
             }
             File live=projectFile();
             try{
-                if(live.getUsableSpace()<data.length*2L+DISK_RESERVE){
+                long available=live.getUsableSpace();
+                if(available>0&&available<data.length*2L+DISK_RESERVE){
                     lastError="Недостаточно памяти для двух безопасных копий";
                     return false;
                 }

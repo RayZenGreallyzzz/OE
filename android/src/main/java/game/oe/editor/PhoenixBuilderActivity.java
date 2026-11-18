@@ -28,6 +28,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.security.MessageDigest;
+import java.util.Arrays;
 import org.json.JSONObject;
 import org.json.JSONArray;
 import java.util.Date;
@@ -59,6 +61,7 @@ public final class PhoenixBuilderActivity extends Activity {
     private File pendingSave;
     private String pendingName,pendingMime;
     private boolean fileCopyInProgress=false;
+    private static final int VERIFY_BUFFER_BYTES=65536;
     private static final class ReadyFile {
         final File file;
         final String name,mime;
@@ -412,16 +415,23 @@ public final class PhoenixBuilderActivity extends Activity {
             final Uri uri=data.getData();
             fileCopyInProgress=true;
             new Thread(()->{
-                try(InputStream in=new FileInputStream(source);
-                    OutputStream out=getContentResolver().openOutputStream(uri,"w")){
-                    if(out==null)throw new IOException("Выбранная папка недоступна");
-                    byte[] buf=new byte[65536];
-                    for(int n;(n=in.read(buf))!=-1;)out.write(buf,0,n);
-                    out.flush();
+                try{
+                    try(InputStream in=new FileInputStream(source);
+                        OutputStream out=getContentResolver().openOutputStream(uri,"w")){
+                        if(out==null)throw new IOException("Выбранная папка недоступна");
+                        byte[] buf=new byte[VERIFY_BUFFER_BYTES];
+                        for(int n;(n=in.read(buf))!=-1;)out.write(buf,0,n);
+                        out.flush();
+                    }
+                    // A successful OutputStream.close() does NOT guarantee the
+                    // Android document provider wrote the whole file. Read it
+                    // back and verify the entire stream before deleting staging.
+                    verifyDocumentCopy(source,uri);
                     source.delete();
                     runOnUiThread(()->{
                         fileCopyInProgress=false;
-                        Toast.makeText(this,"✅ Файл Phoenix сохранён на устройство",
+                        Toast.makeText(this,
+                            "✅ Phoenix: файл сохранён и проверен",
                             Toast.LENGTH_LONG).show();
                         showNextSave();
                     });
@@ -442,6 +452,24 @@ public final class PhoenixBuilderActivity extends Activity {
                 }
             },"phoenix-saf-export").start();
         }
+    }
+
+    private static byte[] fileSha256(InputStream source) throws Exception {
+        MessageDigest digest=MessageDigest.getInstance("SHA-256");
+        byte[] buf=new byte[VERIFY_BUFFER_BYTES];
+        try(InputStream in=source){
+            for(int n;(n=in.read(buf))!=-1;)digest.update(buf,0,n);
+        }
+        return digest.digest();
+    }
+    private void verifyDocumentCopy(File source,Uri destination) throws Exception{
+        byte[] expected=fileSha256(new FileInputStream(source));
+        InputStream actual=getContentResolver().openInputStream(destination);
+        if(actual==null)throw new IOException(
+            "Android не разрешил прочитать сохранённый файл для проверки");
+        if(!Arrays.equals(expected,fileSha256(actual)))
+            throw new IOException("Проверка файла не совпала: копия неполная. "+
+                "Исходный файл сохранён для повторного экспорта.");
     }
 
     // The public API matches the original stable UV44 JS calls:
@@ -594,6 +622,10 @@ public final class PhoenixBuilderActivity extends Activity {
             }
             File live=projectFile();
             try{
+                // Phoenix may call both saveProject and saveManualProject
+                // for one click. Avoid rotating away good history twice.
+                String previous=readValidProject(live);
+                if(json.equals(previous))return true;
                 long available=live.getUsableSpace();
                 if(available>0&&available<data.length*2L+DISK_RESERVE){
                     lastError="Недостаточно памяти для двух безопасных копий";

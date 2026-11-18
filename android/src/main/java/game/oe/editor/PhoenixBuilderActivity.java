@@ -27,6 +27,7 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.Locale;
 
@@ -43,12 +44,70 @@ public final class PhoenixBuilderActivity extends Activity {
     private static final String ORIGIN="https://appassets.androidplatform.net";
     private static final String PREFIX="/phoenix/";
     private static final int PICK_FILE=7241,SAVE_FILE=7242;
-    private static final long MAX_EXPORT_BYTES=256L*1024*1024;
+    private static final long MAX_EXPORT_BYTES=1024L*1024*1024;
+    private static final long DISK_RESERVE=16L*1024*1024;
     private WebView web;
     private android.webkit.ValueCallback<Uri[]> fileChooser;
     private final PhoenixBridge bridge=new PhoenixBridge();
     private File pendingSave;
     private String pendingName,pendingMime;
+    private static final class ReadyFile {
+        final File file;
+        final String name,mime;
+        ReadyFile(File file,String name,String mime){
+            this.file=file;this.name=name;this.mime=mime;
+        }
+    }
+    private final ArrayDeque<ReadyFile> pendingQueue=new ArrayDeque<>();
+    private void dropPending(){
+        if(pendingSave!=null)pendingSave.delete();
+        pendingSave=null;pendingName=null;pendingMime=null;
+        showNextSave();
+    }
+    private void showNextSave(){
+        if(pendingSave!=null)return;
+        ReadyFile next=pendingQueue.poll();
+        if(next==null)return;
+        pendingSave=next.file;pendingName=next.name;pendingMime=next.mime;
+        if(next.name.toLowerCase(Locale.ROOT).endsWith(".glb")||
+           "model/gltf-binary".equals(next.mime)){
+            new AlertDialog.Builder(this)
+                .setTitle("📦 Готовый дом GLB")
+                .setMessage("Сохранить здание в город OE или на устройство?")
+                .setItems(new String[]{"🏰 В город OE","📱 На устройство"},(dialog,choice)->{
+                    if(choice!=0){startDeviceSave();return;}
+                    if(next.file.length()>24L*1024*1024){
+                        new AlertDialog.Builder(this)
+                            .setTitle("Модель больше ограничения OE")
+                            .setMessage("Файл "+(next.file.length()/1048576)+
+                                " МБ. Импорт в город пока поддерживает до 24 МБ.")
+                            .setPositiveButton("На устройство",(d,w)->startDeviceSave())
+                            .setNegativeButton("Отмена",(d,w)->dropPending()).show();
+                        return;
+                    }
+                    pendingSave=null;pendingName=null;pendingMime=null;
+                    Intent data=new Intent();
+                    data.setData(Uri.fromFile(next.file));
+                    setResult(RESULT_OK,data);
+                    finish();
+                })
+                .setOnCancelListener(d->dropPending()).show();
+        }else startDeviceSave();
+    }
+    private void startDeviceSave(){
+        Intent request=new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        request.addCategory(Intent.CATEGORY_OPENABLE);
+        request.setType(pendingMime==null?"application/octet-stream":pendingMime);
+        request.putExtra(Intent.EXTRA_TITLE,pendingName);
+        try{startActivityForResult(request,SAVE_FILE);}
+        catch(Exception error){
+            new AlertDialog.Builder(this).setTitle("Не удалось открыть папку")
+                .setMessage(error.getMessage())
+                .setPositiveButton("Повторить",(d,w)->startDeviceSave())
+                .setNegativeButton("Отмена",(d,w)->dropPending())
+                .show();
+        }
+    }
 
     @Override public void onCreate(Bundle savedState) {
         super.onCreate(savedState);
@@ -228,8 +287,10 @@ public final class PhoenixBuilderActivity extends Activity {
         }
         if(req==SAVE_FILE){
             File source=pendingSave;pendingSave=null;
+            pendingName=null;pendingMime=null;
             if(result!=RESULT_OK||data==null||data.getData()==null){
                 if(source!=null)source.delete();
+                showNextSave();
                 return;
             }
             Uri uri=data.getData();
@@ -248,7 +309,7 @@ public final class PhoenixBuilderActivity extends Activity {
                         .setTitle("Ошибка экспорта Phoenix")
                         .setMessage(error.getMessage())
                         .setPositiveButton("ОК",null).show());
-                }finally{source.delete();}
+                }finally{source.delete();runOnUiThread(PhoenixBuilderActivity.this::showNextSave);}
             },"phoenix-saf-export").start();
         }
     }
@@ -260,8 +321,21 @@ public final class PhoenixBuilderActivity extends Activity {
         private FileOutputStream stream;
         private File staging;
         private long savedBytes;
+        private String stagingName,stagingMime;
+        private String lastError="";
+        @JavascriptInterface public synchronized String getLastSaveError(){return lastError;}
+        @JavascriptInterface public synchronized boolean abortSave(){
+            if(stream!=null){try{stream.close();}catch(IOException ignored){}stream=null;}
+            if(staging!=null){staging.delete();staging=null;}
+            stagingName=null;stagingMime=null;savedBytes=0;
+            return true;
+        }
         @JavascriptInterface public synchronized boolean beginSave(String name,String type){
-            if(stream!=null||pendingSave!=null)return false;
+            // The previous JS write may have failed before finishSave().
+            // Only the incomplete staging stream is discarded, never a
+            // completed export already waiting in the Android file picker.
+            if(stream!=null)abortSave();
+            lastError="";
             String safe=name==null?"building.glb":
                 name.replaceAll("[^\\p{L}\\p{N}._-]","_");
             if(safe.isEmpty()||safe.length()>110)safe="phoenix_export.glb";
@@ -271,89 +345,51 @@ public final class PhoenixBuilderActivity extends Activity {
                 staging=File.createTempFile("phoenix-",".part",dir);
                 stream=new FileOutputStream(staging);
                 savedBytes=0;
-                pendingName=safe;
-                pendingMime=type==null||type.length()>100?
+                stagingName=safe;
+                stagingMime=type==null||type.length()>100?
                     "application/octet-stream":type;
                 return true;
             }catch(IOException error){
-                stream=null;staging=null;return false;
+                lastError="Не удалось создать файл: "+error.getMessage();
+                abortSave();return false;
             }
         }
         @JavascriptInterface public synchronized boolean appendSaveChunk(String base64){
-            if(stream==null||base64==null||base64.length()>100000)return false;
-            try {
+            if(stream==null||base64==null||base64.length()>100000){
+                lastError="Поток экспорта закрыт или некорректный фрагмент";
+                abortSave();return false;
+            }
+            try{
                 byte[] bytes=Base64.decode(base64,Base64.DEFAULT);
-                if(savedBytes+bytes.length>MAX_EXPORT_BYTES)return false;
+                if(savedBytes+bytes.length>MAX_EXPORT_BYTES){
+                    lastError="Размер резервной копии превысил 1 ГБ";
+                    abortSave();return false;
+                }
+                if(staging.getUsableSpace()<bytes.length+DISK_RESERVE){
+                    lastError="Недостаточно свободного места на планшете";
+                    abortSave();return false;
+                }
                 stream.write(bytes);savedBytes+=bytes.length;
                 return true;
-            }catch(Exception error){return false;}
+            }catch(Exception error){
+                lastError="Ошибка записи: "+error.getMessage();
+                abortSave();return false;
+            }
         }
         @JavascriptInterface public synchronized boolean finishSave(){
             if(stream==null)return false;
-            try {stream.getFD().sync();stream.close();stream=null;}
-            catch(IOException error){stream=null;return false;}
-            pendingSave=staging;staging=null;
+            try{stream.getFD().sync();stream.close();stream=null;}
+            catch(IOException error){
+                lastError="Не завершена запись: "+error.getMessage();
+                abortSave();return false;
+            }
+            final ReadyFile ready=new ReadyFile(staging,stagingName,stagingMime);
+            staging=null;stagingName=null;stagingMime=null;savedBytes=0;
             runOnUiThread(()->{
-                final boolean isGlb="model/gltf-binary".equals(pendingMime)||
-                    pendingName.toLowerCase(Locale.ROOT).endsWith(".glb");
-                if(isGlb){
-                    new AlertDialog.Builder(PhoenixBuilderActivity.this)
-                        .setTitle("📦 Готовый дом GLB")
-                        .setMessage("Куда сохранить построенное здание? "+
-                            "«В город OE» сразу вернёт тебя на карту в режим размещения. "+
-                            "«На устройство» откроет выбор папки Android.")
-                        .setItems(new String[]{"🏰 В город Orvetra Engine",
-                                               "📱 На устройство"},(d,choice)->{
-                            if(choice==0){
-                                File exported=pendingSave;
-                                if(exported==null||!exported.isFile()||
-                                    exported.length()<20){
-                                    Toast.makeText(PhoenixBuilderActivity.this,
-                                        "GLB не найден",Toast.LENGTH_LONG).show();
-                                    return;
-                                }
-                                // OE's validated GLB import limit is 24 MiB.
-                                // Never discard a larger completed Phoenix GLB;
-                                // allow the owner to save it to their device.
-                                if(exported.length()>24L*1024*1024){
-                                    new AlertDialog.Builder(PhoenixBuilderActivity.this)
-                                        .setTitle("Дом слишком большой для импорта OE")
-                                        .setMessage("Готовый GLB занимает "+
-                                            (exported.length()/1048576)+" МБ, "+
-                                            "а текущий движок принимает GLB до 24 МБ. "+
-                                            "Сохрани дом на устройство и уменьши его "+
-                                            "перед размещением в городе.")
-                                        .setPositiveButton("📱 На устройство",
-                                            (aDialog,which)->startDeviceSave())
-                                        .setNegativeButton("Отмена",null).show();
-                                    return;
-                                }
-                                pendingSave=null;
-                                Intent result=new Intent();
-                                result.setData(Uri.fromFile(exported));
-                                setResult(RESULT_OK,result);
-                                finish();
-                            }else startDeviceSave();
-                        })
-                        .setOnCancelListener(d->{
-                            if(pendingSave!=null){pendingSave.delete();pendingSave=null;}
-                        }).show();
-                }else startDeviceSave();
+                pendingQueue.offer(ready);
+                showNextSave();
             });
             return true;
-        }
-        private void startDeviceSave(){
-            Intent request=new Intent(Intent.ACTION_CREATE_DOCUMENT);
-            request.addCategory(Intent.CATEGORY_OPENABLE);
-            request.setType(pendingMime==null?"application/octet-stream":pendingMime);
-            request.putExtra(Intent.EXTRA_TITLE,pendingName);
-            try{startActivityForResult(request,SAVE_FILE);}
-            catch(Exception error){
-                new AlertDialog.Builder(PhoenixBuilderActivity.this)
-                    .setTitle("Не удалось открыть выбор папки")
-                    .setMessage(error.getMessage())
-                    .setPositiveButton("ОК",null).show();
-            }
         }
         private File projectFile(){return new File(getFilesDir(),"phoenix_uv44_project.json");}
         @JavascriptInterface public synchronized boolean saveCleanProject(String json){

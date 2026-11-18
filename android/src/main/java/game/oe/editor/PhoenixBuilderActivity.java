@@ -253,8 +253,105 @@ public final class PhoenixBuilderActivity extends Activity {
             .setMessage("Сохрани здание в Phoenix (JSON) или экспортируй GLB. " +
                 "Готовый GLB можно импортировать в городской редактор OE.")
             .setPositiveButton("В город",(dialog,which)->finish())
+            .setNeutralButton("🛟 Копии", (dialog,which)->showProjectRecovery())
             .setNegativeButton("Продолжить строительство",null)
             .show();
+    }
+
+    // Accessible from Android Back -> 🛟 Копии. A JSON snapshot stores
+    // object placements and material references, NOT the contents of IndexedDB
+    // textures/GLBs. Full portable backups are exported in Phoenix's Files tab.
+    private void showProjectRecovery(){
+        final java.util.ArrayList<File> files=new java.util.ArrayList<>();
+        final java.util.ArrayList<String> labels=new java.util.ArrayList<>();
+        File current=bridge.projectFile();
+        if(bridge.readValidProject(current)!=null){
+            files.add(current);labels.add("💾 Текущий JSON");
+        }
+        for(int i=1;i<=SAVE_HISTORY;i++){
+            File older=bridge.projectBackup(i);
+            if(bridge.readValidProject(older)==null)continue;
+            files.add(older);labels.add("⏪ Копия №"+i);
+        }
+        if(files.isEmpty()){
+            new AlertDialog.Builder(this).setTitle("Копии проекта")
+                .setMessage("Внутренних JSON-копий пока нет. "+
+                    "Сохрани проект кнопкой 💾 в Phoenix.")
+                .setPositiveButton("Хорошо",null).show();
+            return;
+        }
+        String[] items=new String[files.size()];
+        for(int i=0;i<files.size();i++){
+            File file=files.get(i);
+            String date=new SimpleDateFormat("dd.MM HH:mm",
+                Locale.getDefault()).format(new Date(file.lastModified()));
+            items[i]=labels.get(i)+" · "+date;
+        }
+        new AlertDialog.Builder(this)
+            .setTitle("🛟 Копии Phoenix")
+            .setMessage("Это JSON расположения деталей. Для переноса "+
+                "с текстурами также нужен полный проект из вкладки «Файлы».")
+            .setItems(items,(dialog,which)->{
+                File selected=files.get(which);
+                String label=labels.get(which);
+                new AlertDialog.Builder(this)
+                    .setTitle(label)
+                    .setItems(new String[]{
+                        "📱 Экспортировать JSON на устройство",
+                        "⏪ Восстановить эту версию проекта"
+                    },(d,action)->{
+                        if(action==0)exportRecoveryJson(selected);
+                        else confirmRestoreJson(selected);
+                    }).show();
+            })
+            .setNegativeButton("Закрыть",null).show();
+    }
+    private void exportRecoveryJson(File source){
+        new Thread(()->{
+            try{
+                File folder=new File(getCacheDir(),"phoenix-export");
+                if(!folder.isDirectory()&&!folder.mkdirs())
+                    throw new IOException("Нет папки для экспорта");
+                File copy=File.createTempFile("phoenix-recovery-",".json",folder);
+                Files.copy(source.toPath(),copy.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING);
+                runOnUiThread(()->{
+                    pendingQueue.add(new ReadyFile(copy,
+                        "PhoenixBuilder_Recovery.phoenix.json","application/json"));
+                    showNextSave();
+                });
+            }catch(Exception error){
+                runOnUiThread(()->Toast.makeText(this,
+                    "Не удалось экспортировать: "+error.getMessage(),
+                    Toast.LENGTH_LONG).show());
+            }
+        },"phoenix-recovery-export").start();
+    }
+    private void confirmRestoreJson(File source){
+        new AlertDialog.Builder(this)
+            .setTitle("Восстановить прежнюю постройку?")
+            .setMessage("Несохранённые изменения будут потеряны. "+
+                "Текущий файл останется в истории копий. "+
+                "Текстуры должны оставаться во внутренней библиотеке Phoenix.")
+            .setPositiveButton("Восстановить",(dialog,which)->{
+                new Thread(()->{
+                    try{
+                        String json=bridge.readValidProject(source);
+                        if(json==null||!bridge.saveCleanProject(json))
+                            throw new IOException("Копия повреждена или нет места");
+                        runOnUiThread(()->{
+                            if(web!=null)web.reload();
+                            Toast.makeText(this,"Копия восстановлена. "+
+                                "Открой проект в Phoenix.",Toast.LENGTH_LONG).show();
+                        });
+                    }catch(Exception error){
+                        runOnUiThread(()->Toast.makeText(this,
+                            "Ошибка восстановления: "+error.getMessage(),
+                            Toast.LENGTH_LONG).show());
+                    }
+                },"phoenix-recovery-restore").start();
+            })
+            .setNegativeButton("Отмена",null).show();
     }
 
     @Override public void onBackPressed(){confirmExit();}

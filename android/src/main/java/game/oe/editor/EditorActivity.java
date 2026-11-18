@@ -259,7 +259,7 @@ public class EditorActivity extends Activity {
         top.setPadding(dp(5),dp(2),dp(5),dp(2));
         top.setBackgroundColor(Color.argb(220,14,21,32));
         TextView title=new TextView(this);
-        title.setText("OE 0.7.13 / XYZ 360° SAFE TEST");
+        title.setText("OE 0.7.13 / PHOENIX BUILDER TEST");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
         title.setTextSize(12);
@@ -291,7 +291,7 @@ public class EditorActivity extends Activity {
         HorizontalScrollView categoryScroll=new HorizontalScrollView(this);
         categoryScroll.setHorizontalScrollBarEnabled(false);
         LinearLayout categoryRow=row();
-        for(String category:new String[]{"Дома","Деревья","Крепость","Декорации","Окружение",
+        for(String category:new String[]{"🏗 Здание","Дома","Деревья","Крепость","Декорации","Окружение",
                 "Детали","Декор","Рельеф","Дороги","Текстуры","Проект"}){
             Button tab=button(category,()->showPalette(category));
             LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(dp(98),dp(44));
@@ -443,7 +443,16 @@ public class EditorActivity extends Activity {
     }
     private void showPalette(String category){
         paletteItems.removeAllViews();
-        if("Дома".equals(category)||"Здания".equals(category)){
+        if("🏗 Здание".equals(category)){
+            addPaletteOption("🔥 Открыть Phoenix Builder UV44",()->{
+                cancelPlace();
+                toggleDrawer(false);
+                startActivity(new Intent(this,PhoenixBuilderActivity.class));
+            });
+            addPaletteOption("📥 Импорт готового GLB из Phoenix",this::pickGlb);
+            addPaletteOption("ℹ Редактор зданий отдельный от ландшафта и дорог",
+                ()->message("Строй здание в Phoenix, экспортируй GLB и импортируй в город"));
+        }else if("Дома".equals(category)||"Здания".equals(category)){
             addPaletteOption("+ Таверна",()->enterPlaceMode(0,null));
             addPaletteOption("+ Кузница",()->enterPlaceMode(1,null));
             addPaletteOption("+ Аукционный дом",()->enterPlaceMode(2,null));

@@ -893,7 +893,10 @@ bool importedInView(const Frustum&frustum,const Entity&e){
  const float radius=asset.radius*e.size*std::max({e.sx,e.sy,e.sz});
  const Vec3 center{e.x,e.y+asset.centerY*e.size*e.sy,e.z};
  const Vec3 delta=sub(center,cameraEye());
- const float maxDistance=quality().viewRangeMetres+radius;
+ // LOD culling for small props must not hide a 700m castle when the
+ // camera auto-frames it at ~2.6 bounding radii from its centre.
+ const float maxDistance=std::max(quality().viewRangeMetres+radius,
+     std::min(3200.f,radius*6.f));
  if(dot(delta,delta)>maxDistance*maxDistance)return false;
  return visibleSphere(frustum,center,radius);
 }

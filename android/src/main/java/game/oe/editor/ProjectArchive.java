@@ -51,7 +51,7 @@ public final class ProjectArchive {
         JSONObject json=new JSONObject(scene);
         int version=json.optInt("version",-1);
         JSONObject guide=json.optJSONObject("mapReference");
-        check(version>=1&&version<=11,"Неподдерживаемая версия сцены");
+        check(version>=1&&version<=12,"Неподдерживаемая версия сцены");
         if(version<3){
             check(!json.has("mapReference"),"Подложка требует сцену версии 3+");
             return null;
@@ -250,7 +250,9 @@ public final class ProjectArchive {
     // v10 is required only when at least one authoring site is saved.
     private static void validateEditorPlots(JSONObject doc,int version) throws Exception {
         JSONArray plots=doc.optJSONArray("editorPlots");
-        check((version>=10&&plots!=null&&plots.length()>0)||
+        check(((version==10||version==11)&&plots!=null&&plots.length()>0)||
+              (version>=12&&((plots==null&&!doc.has("editorPlots"))||
+                  (plots!=null&&plots.length()>0)))||
               (version<10&&!doc.has("editorPlots")),
               "Рамки участков доступны только в сцене v10");
         if(plots==null)return;
@@ -285,6 +287,8 @@ public final class ProjectArchive {
         if(legacy!=null)names.add(legacy);
         JSONArray plans=doc.optJSONArray("plotPlans");
         check((version==11&&plans!=null&&plans.length()>0)||
+              (version>=12&&((plans==null&&!doc.has("plotPlans"))||
+                  (plans!=null&&plans.length()>0)))||
               (version<11&&!doc.has("plotPlans")),
               "Сцена v11 должна содержать PNG-планы участков");
         if(plans==null)return names;
@@ -320,15 +324,48 @@ public final class ProjectArchive {
         }
         return names;
     }
+    private static void validateCollisionWalls(JSONObject doc,int version)
+        throws Exception {
+        JSONArray walls=doc.optJSONArray("collisionWalls");
+        check((version==12&&(walls==null||walls.length()>0))||
+              (version<12&&!doc.has("collisionWalls")),
+              "Физические коллизии доступны только в сцене v12");
+        if(walls==null)return;
+        check(walls.length()<=64,"Максимум 64 коллизионных отрезка");
+        double half=doc.getDouble("worldSize")*.5;
+        Set<Integer> ids=new HashSet<>();
+        for(int i=0;i<walls.length();i++){
+            JSONArray row=walls.getJSONArray(i);
+            check(row.length()==7,"Физическая стена требует семь параметров");
+            double idRaw=row.getDouble(0);
+            check(Double.isFinite(idRaw)&&idRaw>0&&idRaw<=1000000&&
+                  Math.rint(idRaw)==idRaw&&ids.add((int)idRaw),
+                  "Некорректный номер коллизии");
+            double ax=row.getDouble(1),az=row.getDouble(2),
+                   bx=row.getDouble(3),bz=row.getDouble(4),
+                   width=row.getDouble(5),height=row.getDouble(6);
+            check(Double.isFinite(ax)&&Double.isFinite(az)&&
+                  Double.isFinite(bx)&&Double.isFinite(bz)&&
+                  Double.isFinite(width)&&Double.isFinite(height)&&
+                  Math.abs(ax)<=half-1&&Math.abs(bx)<=half-1&&
+                  Math.abs(az)<=half-1&&Math.abs(bz)<=half-1&&
+                  Math.hypot(bx-ax,bz-az)>=1.&&
+                  Math.hypot(bx-ax,bz-az)<=512.&&
+                  width>=.3&&width<=4.&&height>=1.&&height<=30.,
+                  "Физическая коллизия вне карты или имеет неверный размер");
+        }
+    }
+
     private static Set<String> referencedModels(String scene) throws Exception {
         check(scene.getBytes(StandardCharsets.UTF_8).length<=MAX_SCENE_BYTES,"Сцена превышает безопасный лимит");
         JSONObject json=new JSONObject(scene);
         int version=json.optInt("version",-1);
-        check(version>=1&&version<=11,"Неподдерживаемая версия сцены");
+        check(version>=1&&version<=12,"Неподдерживаемая версия сцены");
         check(version==1||json.optJSONArray("roads")!=null,"Нет дорожной сети");
         validateLakes(json,version);
         validateNativeUv56(json,version);
         validateEditorPlots(json,version);
+        validateCollisionWalls(json,version);
         referenceNames(scene);
         JSONArray tileData=json.optJSONArray("paintTiles");
         if(version>=4){

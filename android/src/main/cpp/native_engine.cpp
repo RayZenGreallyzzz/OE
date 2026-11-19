@@ -42,13 +42,19 @@ struct Shader {
  GLuint program=0;
  GLint locMvp=-1, locModel=-1, locColor=-1, locLight=-1;
  GLint locTexture=-1,locTextured=-1,locPaintOverride=-1,locOverlay=-1,locPaintCenter=-1,locPaintRadius=-1,locImportedLighting=-1;
+ GLint locNormalTexture=-1,locOrmTexture=-1,locUseNormalMap=-1,locUseOrmMap=-1;
+ GLint locMetallic=-1,locRoughness=-1,locNormalScale=-1,locCameraPos=-1;
 };
 struct TextureResource {
  GLuint id=0;
  int width=0,height=0,format=0; // 0 RGBA8, 1 ETC2 RGB, 2 ETC2 RGBA
  std::vector<unsigned char> bytes; // Retained to restore an EGL context.
 };
-struct AssetBatch {int first=0,count=0,texture=-1;};
+struct AssetBatch {
+ int first=0,count=0,texture=-1;
+ int normalTexture=-1,metallicRoughnessTexture=-1;
+ float roughness=1.f,metallic=1.f,normalScale=1.f;
+};
 struct AssetLod{
  Mesh gpu;
  std::vector<float> vertices;
@@ -371,7 +377,8 @@ void buildStaticLods(Asset&asset){
    if(n<90||n%3!=0){
     const int first=static_cast<int>(lod.vertices.size()/11);
     lod.vertices.insert(lod.vertices.end(),src,src+n*11);
-    lod.batches.push_back({first,static_cast<int>(n),batch.texture});continue;
+    AssetBatch newBatch=batch;newBatch.first=first;newBatch.count=static_cast<int>(n);
+    lod.batches.push_back(newBatch);continue;
    }
    std::vector<unsigned int> remap(n),indices(n);
    const size_t unique=meshopt_generateVertexRemap(
@@ -398,7 +405,9 @@ void buildStaticLods(Asset&asset){
        welded.begin()+(index+1)*11);
     }
    }else lod.vertices.insert(lod.vertices.end(),src,src+n*11);
-   lod.batches.push_back({first,static_cast<int>(use?count:n),batch.texture});
+   AssetBatch newBatch=batch;newBatch.first=first;
+   newBatch.count=static_cast<int>(use?count:n);
+   lod.batches.push_back(newBatch);
   }
   // A tier must measurably reduce draw geometry, or it is disabled.
   const size_t limit=static_cast<size_t>(asset.vertices.size()*
@@ -474,14 +483,22 @@ void setupGL(){
    vWorldPos=(uModel*vec4(aPos,1.0)).xyz;
  })";
  const char*frag=R"(#version 300 es
- precision mediump float;
+ precision highp float;
  in vec3 vNormal;
  in vec3 vColor;
  in vec2 vUV;
  in vec3 vWorldPos;
  uniform vec3 uColor;
  uniform sampler2D uTexture;
+ uniform sampler2D uNormalTexture;
+ uniform sampler2D uOrmTexture;
  uniform float uUseTexture;
+ uniform float uUseNormalMap;
+ uniform float uUseOrmMap;
+ uniform float uMetallic;
+ uniform float uRoughness;
+ uniform float uNormalScale;
+ uniform vec3 uCameraPos;
  uniform float uHighlight;
  uniform float uPaintOverride;
  uniform float uOverlay;
@@ -500,17 +517,59 @@ void setupGL(){
    vec3 tint=mix(vColor,vec3(1.),uPaintOverride);
    vec3 color=uColor*tint*texel.rgb*(.52+.48*sun);
    if(uImportedLighting>.5){
-     // glTF baseColor texture is sRGB, but material/vertex tint factors are
-     // linear. Apply light in linear space, then encode back to sRGB display.
-     // This affects only native GLB *rendering*, never source model bytes.
-     vec3 n=normalize(vNormal);
-     float sky=clamp(n.y*.5+.5,0.,1.);
-     vec3 ambient=vec3(.36,.39,.45)*(.75+.25*sky);
-     vec3 daylight=vec3(.71,.67,.60)*sun;
-     vec3 linearTexture=pow(clamp(texel.rgb,0.,1.),vec3(2.2));
-     vec3 linearFactor=clamp(uColor*tint,0.,1.);
-     vec3 litLinear=clamp(linearTexture*linearFactor*(ambient+daylight),0.,1.);
-     color=pow(litLinear,vec3(1.0/2.2));
+     // glTF metallic-roughness PBR preview; GLB source bytes stay immutable.
+     // Vertex/material factors are linear; baseColor texture is sRGB.
+     vec3 base=pow(clamp(texel.rgb,0.,1.),vec3(2.2))*
+               clamp(uColor*tint,0.,1.);
+     float metallic=clamp(uMetallic,0.,1.);
+     float roughness=clamp(uRoughness,0.,1.);
+     if(uUseOrmMap>.5){
+       // glTF packed occlusion(R), roughness(G), metallic(B); no AO yet.
+       vec3 orm=texture(uOrmTexture,vUV).rgb;
+       roughness*=orm.g;
+       metallic*=orm.b;
+     }
+     roughness=clamp(roughness,.07,1.);
+     vec3 N=normalize(vNormal);
+     if(uUseNormalMap>.5){
+       // Derivative TBN works for static glTF UV0, including mirrored UVs,
+       // without changing the owner's original vertex format or source GLB.
+       vec3 dpdx=dFdx(vWorldPos),dpdy=dFdy(vWorldPos);
+       vec2 dtdx=dFdx(vUV),dtdy=dFdy(vUV);
+       float uvDet=dtdx.x*dtdy.y-dtdx.y*dtdy.x;
+       if(abs(uvDet)>0.0000001){
+         vec3 T=normalize((dpdx*dtdy.y-dpdy*dtdx.y)/uvDet);
+         T=normalize(T-N*dot(N,T));
+         vec3 B=normalize(cross(N,T))*sign(uvDet);
+         vec3 mapN=texture(uNormalTexture,vUV).xyz*2.-1.;
+         mapN.xy*=uNormalScale;
+         N=normalize(T*mapN.x+B*mapN.y+N*mapN.z);
+       }
+     }
+     vec3 L=normalize(vec3(-.55,1.,.5));
+     vec3 V=normalize(uCameraPos-vWorldPos);
+     vec3 H=normalize(L+V);
+     float NoL=max(dot(N,L),0.);
+     float NoV=max(dot(N,V),.001);
+     float NoH=max(dot(N,H),0.);
+     float VoH=max(dot(V,H),0.);
+     float alpha=roughness*roughness;
+     float alpha2=alpha*alpha;
+     float distribution=alpha2/
+       (3.14159265*pow(NoH*NoH*(alpha2-1.)+1.,2.)+.000001);
+     float k=pow(roughness+1.,2.)*.125;
+     float geometry=(NoV/(NoV*(1.-k)+k))*
+                    (NoL/(NoL*(1.-k)+k));
+     vec3 F0=mix(vec3(.04),base,metallic);
+     vec3 fresnel=F0+(1.-F0)*pow(1.-VoH,5.);
+     vec3 diffuse=(1.-fresnel)*(1.-metallic)*base/3.14159265;
+     vec3 specular=distribution*geometry*fresnel/
+                     max(4.*NoV*NoL,.001);
+     float sky=clamp(N.y*.5+.5,0.,1.);
+     vec3 ambient=base*(1.-metallic)*vec3(.22,.24,.28)*
+                 (.75+.25*sky)+F0*.035;
+     vec3 lit=ambient+(diffuse+specular)*vec3(2.35,2.12,1.90)*NoL;
+     color=pow(clamp(lit,0.,1.),vec3(1./2.2));
    }
    color=mix(color,vec3(.99,.72,.30),uHighlight*.30);
    fragColor=vec4(color,texel.a);
@@ -532,8 +591,20 @@ void setupGL(){
  gShader.locPaintCenter=glGetUniformLocation(gShader.program,"uPaintCenter");
  gShader.locPaintRadius=glGetUniformLocation(gShader.program,"uPaintRadius");
  gShader.locImportedLighting=glGetUniformLocation(gShader.program,"uImportedLighting");
+ gShader.locNormalTexture=glGetUniformLocation(gShader.program,"uNormalTexture");
+ gShader.locOrmTexture=glGetUniformLocation(gShader.program,"uOrmTexture");
+ gShader.locUseNormalMap=glGetUniformLocation(gShader.program,"uUseNormalMap");
+ gShader.locUseOrmMap=glGetUniformLocation(gShader.program,"uUseOrmMap");
+ gShader.locMetallic=glGetUniformLocation(gShader.program,"uMetallic");
+ gShader.locRoughness=glGetUniformLocation(gShader.program,"uRoughness");
+ gShader.locNormalScale=glGetUniformLocation(gShader.program,"uNormalScale");
+ gShader.locCameraPos=glGetUniformLocation(gShader.program,"uCameraPos");
  glUseProgram(gShader.program);
  glUniform1i(gShader.locTexture,0);
+ glUniform1i(gShader.locNormalTexture,1);
+ glUniform1i(gShader.locOrmTexture,2);
+ glUniform1f(gShader.locUseNormalMap,0.f);
+ glUniform1f(gShader.locUseOrmMap,0.f);
  glUniform1f(gShader.locTextured,0.f);
  glUniform1f(gShader.locPaintOverride,0.f);
  glUniform1f(gShader.locOverlay,0.f);
@@ -684,6 +755,8 @@ void drawImported(const Mat4&vp,const Entity&e){
  auto it=gAssets.find(e.asset);
  if(it==gAssets.end()||it->second.gpu.count==0)return;
  glUniform1f(gShader.locImportedLighting,gImportedSoftLighting?1.f:0.f);
+ const Vec3 eye=cameraEye();
+ glUniform3f(gShader.locCameraPos,eye.x,eye.y,eye.z);
  const Mat4 model=entityModelMatrix(e);
  const Mat4 mvp=mul(vp,model);
  glUniformMatrix4fv(gShader.locMvp,1,GL_FALSE,mvp.m);
@@ -717,6 +790,19 @@ void drawImported(const Mat4&vp,const Entity&e){
   glDrawArrays(GL_TRIANGLES,0,gpu->count);
   ++gDrawCalls;gTriangles+=gpu->count/3;
  }else for(const auto&batch:*batches){
+  glUniform1f(gShader.locRoughness,batch.roughness);
+  glUniform1f(gShader.locMetallic,batch.metallic);
+  glUniform1f(gShader.locNormalScale,batch.normalScale);
+  const auto bindOptional=[&](int slot,int unit,GLint flag){
+   const bool ok=slot>=0&&static_cast<size_t>(slot)<asset.textures.size()&&
+                asset.textures[slot].id!=0;
+   glActiveTexture(GL_TEXTURE0+unit);
+   glBindTexture(GL_TEXTURE_2D,ok?asset.textures[slot].id:0);
+   glUniform1f(flag,ok?1.f:0.f);
+  };
+  bindOptional(batch.normalTexture,1,gShader.locUseNormalMap);
+  bindOptional(batch.metallicRoughnessTexture,2,gShader.locUseOrmMap);
+  glActiveTexture(GL_TEXTURE0);
   if(overridePaint&&overridePaint->id){bindPaint(overridePaint);}
   else if(batch.texture>=0&&static_cast<size_t>(batch.texture)<asset.textures.size()&&
      asset.textures[batch.texture].id){
@@ -729,7 +815,11 @@ void drawImported(const Mat4&vp,const Entity&e){
   ++gDrawCalls;gTriangles+=batch.count/3;
  }
  bindPaint(nullptr);
- glBindTexture(GL_TEXTURE_2D,0);
+ glActiveTexture(GL_TEXTURE2);glBindTexture(GL_TEXTURE_2D,0);
+ glActiveTexture(GL_TEXTURE1);glBindTexture(GL_TEXTURE_2D,0);
+ glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,0);
+ glUniform1f(gShader.locUseNormalMap,0.f);
+ glUniform1f(gShader.locUseOrmMap,0.f);
  glUniform1f(gShader.locImportedLighting,0.f); // Do not alter road/terrain/gizmos.
 }
 void part(const Mat4&vp,const Entity&e,int kind,float x,float y,float z,float sx,float sy,float sz,Color color){
@@ -2458,8 +2548,10 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDiscardUnusedAss
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsset(
  JNIEnv*env,jclass,jstring key,jfloatArray vertices,jfloat centerY,jfloat radius,
  jintArray batchData,jobjectArray imageData,jintArray imageInfo,
+ jintArray pbrTexData,jfloatArray pbrFactorData,
  jboolean preserveOriginalRig){
  if(!key||!vertices||!batchData||!imageData||!imageInfo||
+    !pbrTexData||!pbrFactorData||
     !std::isfinite(centerY)||!std::isfinite(radius)||
     radius<.05f||radius>100.f||centerY<0.f||centerY>100.f)return JNI_FALSE;
  const char*raw=env->GetStringUTFChars(key,nullptr);
@@ -2480,8 +2572,11 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsse
  const jsize vertexCount=valueCount/11;
  const jsize batchLength=env->GetArrayLength(batchData);
  if(batchLength<=0||batchLength>6144||batchLength%3!=0)return JNI_FALSE;
+ const jsize batchCount=batchLength/3;
+ if(env->GetArrayLength(pbrTexData)!=batchCount*2||
+    env->GetArrayLength(pbrFactorData)!=batchCount*3)return JNI_FALSE;
  const jsize imageCount=env->GetArrayLength(imageData);
- if(imageCount<0||imageCount>8||env->GetArrayLength(imageInfo)!=imageCount*3)
+ if(imageCount<0||imageCount>16||env->GetArrayLength(imageInfo)!=imageCount*3)
   return JNI_FALSE;
  Asset prepared;
  prepared.vertexStride=11;prepared.centerY=centerY;prepared.radius=radius;
@@ -2493,12 +2588,26 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsse
  std::vector<jint> batches(static_cast<size_t>(batchLength));
  env->GetIntArrayRegion(batchData,0,batchLength,batches.data());
  if(env->ExceptionCheck())return JNI_FALSE;
+ std::vector<jint> pbrTextures(static_cast<size_t>(batchCount*2));
+ std::vector<jfloat> pbrFactors(static_cast<size_t>(batchCount*3));
+ env->GetIntArrayRegion(pbrTexData,0,batchCount*2,pbrTextures.data());
+ env->GetFloatArrayRegion(pbrFactorData,0,batchCount*3,pbrFactors.data());
+ if(env->ExceptionCheck())return JNI_FALSE;
  jint consumed=0;
  for(jsize i=0;i<batchLength;i+=3){
   const jint first=batches[i],count=batches[i+1],texture=batches[i+2];
   if(first!=consumed||count<=0||count%3!=0||
      count>vertexCount-consumed||texture< -1||texture>=imageCount)return JNI_FALSE;
-  prepared.batches.push_back({first,count,texture});
+  const jsize batch=i/3;
+  const jint normalMap=pbrTextures[batch*2],ormMap=pbrTextures[batch*2+1];
+  const float roughness=pbrFactors[batch*3],metallic=pbrFactors[batch*3+1],
+              normalScale=pbrFactors[batch*3+2];
+  if(normalMap< -1||normalMap>=imageCount||ormMap< -1||ormMap>=imageCount||
+     !std::isfinite(roughness)||roughness<0.f||roughness>1.f||
+     !std::isfinite(metallic)||metallic<0.f||metallic>1.f||
+     !std::isfinite(normalScale)||normalScale<0.f||normalScale>2.f)return JNI_FALSE;
+  prepared.batches.push_back({first,count,texture,normalMap,ormMap,
+                              roughness,metallic,normalScale});
   consumed+=count;
  }
  if(consumed!=vertexCount)return JNI_FALSE;

@@ -55,6 +55,7 @@ public class EditorActivity extends Activity {
     private static native float nativeQualityScale(int tier);
     private static native String[] nativeGetGpuCapabilities();
     private static native void nativeSetImportedLighting(boolean enabled);
+    private static native void nativeSetTextureSampling(int mode); // GPU preview only
     private static native void nativeOrbit(float dx, float dy, float zoom);
     private static native void nativePan(float dx, float dy);
     private static native void nativeFocusLocation(int index);
@@ -165,6 +166,7 @@ public class EditorActivity extends Activity {
     private volatile float moveStep=.001f,turnStep=5f,scaleStep=1.05f;
     private volatile int textureLimit=1024; // GPU preview ONLY; original saved GLB bytes are never changed.
     private volatile boolean glbSoftLighting=true; // Imported GLB shading, not source data.
+    private volatile int textureSamplingMode=2; // 0 bilinear, 1 trilinear, 2 x4 anisotropic if supported
     private volatile int deviceRamMiB=4096;
     private volatile int qualityChoice=-1; // -1=conservative automatic recommendation
     private volatile int qualityActive=1;
@@ -243,6 +245,8 @@ public class EditorActivity extends Activity {
         textureLimit=getPreferences(MODE_PRIVATE).getInt("oe_glb_preview_texture_limit",1024);
         if(textureLimit!=1024&&textureLimit!=2048)textureLimit=1024;
         glbSoftLighting=getPreferences(MODE_PRIVATE).getBoolean("oe_glb_soft_lighting",true);
+        textureSamplingMode=getPreferences(MODE_PRIVATE).getInt("oe_glb_texture_sampling",2);
+        if(textureSamplingMode<0||textureSamplingMode>2)textureSamplingMode=2;
         ActivityManager manager=(ActivityManager)getSystemService(ACTIVITY_SERVICE);
         if(manager!=null){
             ActivityManager.MemoryInfo mem=new ActivityManager.MemoryInfo();
@@ -784,6 +788,8 @@ public class EditorActivity extends Activity {
         final String[] sections={
             "🖼 Разрешение изображения · "+selected,
             "🧱 Детализация текстур GLB на экране · "+textureLimit+" px",
+            "🔍 Чёткость текстур под углом · "+
+                (textureSamplingMode==0?"Базовая":textureSamplingMode==1?"Сглаженная":"Высокая"),
             "✨ Материалы GLB · "+(glbSoftLighting?"PBR":"Классика"),
             "🖥 Видеочип и возможности"
         };
@@ -792,7 +798,8 @@ public class EditorActivity extends Activity {
             .setItems(sections,(dialog,which)->{
                 if(which==0)chooseDeviceProfile();
                 else if(which==1)chooseTextureLimit();
-                else if(which==2)chooseGlbLighting();
+                else if(which==2)chooseTextureSampling();
+                else if(which==3)chooseGlbLighting();
                 else showDeviceCapabilities();
             })
             .setNegativeButton("Закрыть",null)
@@ -852,6 +859,28 @@ public class EditorActivity extends Activity {
                 message(glbSoftLighting?
                     "PBR освещение включено · исходный GLB не меняется":
                     "Восстановлено классическое освещение OE");
+                dialog.dismiss();
+            })
+            .setNegativeButton("Отмена",null).show();
+    }
+    private void chooseTextureSampling(){
+        final String[] choices={
+            "Базовая · минимум видеопамяти, без дополнительных уровней",
+            "Сглаженная · плавные текстуры вдали (mipmaps)",
+            "Высокая · улучшенная чёткость под углом (до 4× на совместимых GPU)"};
+        new AlertDialog.Builder(this)
+            .setTitle("🔍 Чёткость текстур GLB · только GPU")
+            .setSingleChoiceItems(choices,textureSamplingMode,(dialog,which)->{
+                textureSamplingMode=which;
+                getPreferences(MODE_PRIVATE).edit()
+                    .putInt("oe_glb_texture_sampling",which).apply();
+                if(surface!=null)surface.queueEvent(()->{
+                    nativeSetTextureSampling(which);
+                    surface.requestRender();
+                });
+                message(which==0?"Базовая фильтрация текстур":
+                    which==1?"Плавная фильтрация mipmaps":
+                    "Высокая детализация там, где GPU поддерживает анизотропию");
                 dialog.dismiss();
             })
             .setNegativeButton("Отмена",null).show();
@@ -2047,6 +2076,7 @@ public class EditorActivity extends Activity {
                                                         javax.microedition.khronos.egl.EGLConfig config) {
                     nativeInit();
                     nativeSetImportedLighting(glbSoftLighting);
+                    nativeSetTextureSampling(textureSamplingMode);
                     gpuCapabilities=nativeGetGpuCapabilities();
                     // Stable native geometry/detail profile is chosen for the
                     // tablet independently of the screen-resolution setting.

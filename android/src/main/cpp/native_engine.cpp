@@ -13,6 +13,7 @@
 #include "water/lake_surface.h"
 #include "terrainpaint/paint_tiles.h"
 #include "terrainpaint/material_layers.h"
+#include "terrain/uv56_landscape_core.h"
 #include "vendor/basisu/transcoder/basisu_transcoder.h"
 #include <GLES3/gl3.h>
 #include <android/log.h>
@@ -124,6 +125,7 @@ static std::vector<TerrainPaint> gTerrainPaint;
 static constexpr size_t MAX_TERRAIN_PAINT=48;
 static std::vector<TerrainBrush> gBrushes;
 static int gTerrainRevision=0;
+static oe::uv56::Terrain gUv56Terrain; // real native OE scene, not a second app
 // R4 composited paint tiles: GPU cache is disposable; authoring bytes are portable.
 static oe::terrainpaint::Canvas gPaintTiles;
 static oe::terrainpaint::MaterialCanvas gMaterialCanvas;
@@ -194,7 +196,7 @@ struct LakeGpu {
 static LakeGpu gLakeGpu;
 
 float terrainHeightAt(float x,float z){
- float h=0;
+ float h=gUv56Terrain.heightAt(x,z);
  for(const auto&b:gBrushes){
   const float dx=x-b.x,dz=z-b.z,d2=dx*dx+dz*dz;
   if(d2>=b.radius*b.radius)continue;
@@ -218,17 +220,19 @@ struct SceneSnapshot {
  oe::terrainpaint::MaterialCanvas materialPaint;
  std::vector<oe::water::Lake> lakes;
  int selectedLake=-1;
+ oe::uv56::Terrain uv56; // preserve sculpted hills across city Undo/Redo
 };
 static std::vector<SceneSnapshot> gUndo,gRedo;
 static bool gSuspendHistory=false;
 static constexpr size_t HISTORY_LIMIT=12; // bounded undo when 2x paint canvases are present
 SceneSnapshot captureScene(){return {gEntities,gNextId,gSelected,gWorldSize,gDemoRoads,
-    gTarget,gDistance,gBrushes,gTerrainPaint,gRoads.all(),gSelectedRoad,gPaintTiles,gMaterialCanvas,gLakes,gSelectedLake};}
+    gTarget,gDistance,gBrushes,gTerrainPaint,gRoads.all(),gSelectedRoad,gPaintTiles,gMaterialCanvas,gLakes,gSelectedLake,gUv56Terrain};}
 void restoreScene(const SceneSnapshot&s){
  gWalkPreview.clear(); // Undo/Redo invalidates derived physical surfaces.
  gEntities=s.entities;gNextId=s.nextId;gSelected=s.selected;gWorldSize=s.worldSize;
  gDemoRoads=s.demoRoads;gTarget=s.target;gDistance=s.cameraDistance;
- gBrushes=s.terrain;gTerrainPaint=s.paints;gTerrainRevision++;gSceneInitialized=true;
+ gBrushes=s.terrain;gTerrainPaint=s.paints;gUv56Terrain=s.uv56;
+ gTerrainRevision++;gSceneInitialized=true;
  gLakes=s.lakes;gSelectedLake=s.selectedLake;++gLakeRevision;
  gRoads.replaceAll(s.roads);gSelectedRoad=s.selectedRoad;
  gRoadPending=false;gActiveRoad=0;gSelectedRoadPoint=-1;++gRoadRevision;
@@ -959,7 +963,9 @@ void updateTerrain(){
     const float dx=b.x-closestX,dz=b.z-closestZ;
     if(dx*dx+dz*dz<b.radius*b.radius){detail=true;break;}
   }
-  const int divisions=detail?8:1;
+  // One-metre UV56 geometry only where the native brush changed the land.
+  // Existing R5.7 roads, paint layers and untouched low-LOD ground stay intact.
+  const int divisions=gUv56Terrain.affectsTile(tx,tz)?64:(detail?8:1);
   const float step=WORLD_TILE/divisions;
   for(int iz=0;iz<divisions;iz++)for(int ix=0;ix<divisions;ix++){
     const float x0=loX+ix*step,x1=x0+step,z0=loZ+iz*step,z1=z0+step;
@@ -1630,7 +1636,8 @@ void reset(bool demo){
  recordEdit(); // demo generation is a single undoable change
  const bool wasMuted=gSuspendHistory;
  gSuspendHistory=true;
- gEntities.clear();gBrushes.clear();gTerrainPaint.clear();gTerrainRevision++;gNextId=1;gSelected=0;
+ gEntities.clear();gBrushes.clear();gTerrainPaint.clear();
+ gUv56Terrain=oe::uv56::Terrain();gTerrainRevision++;gNextId=1;gSelected=0;
  gLakes.clear();gSelectedLake=-1;++gLakeRevision;
  gRoads.clear();gSelectedRoad=0;gActiveRoad=0;gSelectedRoadPoint=-1;gRoadPending=false;++gRoadRevision;
  gPaintTiles.clear();gMaterialCanvas.clear();
@@ -3043,6 +3050,33 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeApplyTerrainBrus
  gTarget.y=terrainHeightAt(gTarget.x,gTarget.z)+1.2f;
  return static_cast<jint>(gBrushes.size());
 }
+// UV56 sculpt operates directly on the R5.7 GLES city terrain.
+// One tap = one reversible native scene change; no WebView and no UV56
+// building scripts. Both the road/bridge walker and city sampler use
+// terrainHeightAt, so their ground geometry agrees.
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeUv56SculptAtScreen(
+ JNIEnv*,jclass,jint tool,jfloat px,jfloat py,jfloat radius,jfloat power){
+ if(tool<1||tool>5||!std::isfinite(radius)||!std::isfinite(power)||
+    radius<.5f||radius>24.f||power<.1f||power>8.f)return JNI_FALSE;
+ float x=0,z=0;
+ if(!groundPoint(px,py,x,z))return JNI_FALSE;
+ oe::uv56::Terrain proposal=gUv56Terrain;
+ if(!proposal.active()){
+  const int area=std::min(2000000,static_cast<int>(
+      static_cast<long long>(gWorldSize)*gWorldSize));
+  if(!proposal.create(area))return JNI_FALSE;
+ }
+ if(!proposal.valid(x,z))return JNI_FALSE;
+ proposal.beginStroke(x,z);
+ if(!proposal.brushAt(x,z,static_cast<oe::uv56::Tool>(tool),radius,power))
+  return JNI_FALSE;
+ proposal.endStroke();
+ recordEdit();
+ gUv56Terrain=std::move(proposal);
+ ++gTerrainRevision;++gRoadRevision;
+ gTarget.y=terrainHeightAt(gTarget.x,gTarget.z)+1.2f;
+ return JNI_TRUE;
+}
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeTerrainBrushCount(JNIEnv*,jclass){
  return static_cast<jint>(gBrushes.size());
 }
@@ -3095,7 +3129,17 @@ JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSceneSnapshot
   const auto&paint=gTerrainPaint[i];if(i)out<<",";
   out<<"["<<paint.x<<","<<paint.z<<","<<paint.radius<<",\""<<paint.texture<<"\"]";
  }
- out<<"],\"roads\":[";
+ if(gUv56Terrain.active()&&gUv56Terrain.nodeCount()){
+  out<<"],\"uv56Terrain\":{\"version\":1,\"unit\":\"m\",\"step\":1,";
+  out<<"\"areaSqM\":"<<gUv56Terrain.areaSqM()<<",\"nodes\":[";
+  const auto nodes=gUv56Terrain.snapshot();
+  for(size_t i=0;i<nodes.size();++i){
+   if(i)out<<",";
+   out<<"["<<nodes[i][0]<<","<<nodes[i][1]<<","<<nodes[i][2]<<","<<nodes[i][3]<<"]";
+  }
+  out<<"]";
+  out<<"},\"roads\":[";
+ }else out<<"],\"roads\":[";
  for(size_t i=0;i<gRoads.all().size();i++){
   const auto& road=gRoads.all()[i];
   if(i)out<<",";
@@ -3292,10 +3336,10 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  jobjectArray roadNames,jobjectArray roadMaterials,jdoubleArray roadWidths,
  jdoubleArray roadTileMetres,jobjectArray roadPoints,jintArray tileCoords,jobjectArray tileData,
  jintArray layerCoords,jobjectArray layerKeys,jobjectArray layerMasks,
- jfloatArray lakeData){
+ jfloatArray lakeData,jint uv56Area,jintArray uv56NodeData){
  if(!allowedWorldSize(size)||!kinds||!transforms||!modelKeys||!terrainData||
     !objectPaintKeys||!painting||!terrainPaintKeys||!roadIds||!roadNames||
-    !roadMaterials||!roadWidths||!roadTileMetres||!roadPoints||!tileCoords||!tileData||!layerCoords||!layerKeys||!layerMasks||!lakeData)
+    !roadMaterials||!roadWidths||!roadTileMetres||!roadPoints||!tileCoords||!tileData||!layerCoords||!layerKeys||!layerMasks||!lakeData||!uv56NodeData)
     return JNI_FALSE;
  const jsize n=env->GetArrayLength(kinds);
  if(n<0||n>MAX_ENTITIES||env->GetArrayLength(transforms)!=n*8||
@@ -3530,9 +3574,35 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  for(auto& entry:stagedLayerTiles)loadedLayers.push_back(std::move(entry.second));
  oe::terrainpaint::MaterialCanvas nextLayerCanvas;
  if(!nextLayerCanvas.replaceAll(std::move(loadedLayers),size))return JNI_FALSE;
+ // Restore the optional v9 UV56 land before swapping the R5.7 city.
+ // Every height node validates before any source object/road/lake changes.
+ const jsize uv56Ints=env->GetArrayLength(uv56NodeData);
+ if(uv56Ints<0||uv56Ints%4!=0||
+    uv56Ints>static_cast<jsize>(oe::uv56::Terrain::kNodeLimit*4))
+     return JNI_FALSE;
+ std::vector<std::array<int,4>> uv56Nodes;
+ uv56Nodes.reserve(static_cast<size_t>(uv56Ints/4));
+ if(uv56Ints){
+  std::vector<jint> raw(static_cast<size_t>(uv56Ints));
+  env->GetIntArrayRegion(uv56NodeData,0,uv56Ints,raw.data());
+  if(env->ExceptionCheck())return JNI_FALSE;
+  for(jsize i=0;i<uv56Ints;i+=4){
+   for(jsize j=0;j<4;j++)
+    if(raw[i+j]<std::numeric_limits<int>::min()||
+       raw[i+j]>std::numeric_limits<int>::max())return JNI_FALSE;
+   uv56Nodes.push_back({raw[i],raw[i+1],raw[i+2],raw[i+3]});
+  }
+ }
+ oe::uv56::Terrain stagedUv56;
+ if(uv56Area){
+  if(!stagedUv56.restore(uv56Area,uv56Nodes)||
+     std::sqrt(static_cast<double>(uv56Area))>static_cast<double>(size)+.01)
+     return JNI_FALSE;
+ }else if(uv56Ints!=0)return JNI_FALSE;
  // Commit: no validation or allocation failures below this point.
  gWalkPreview.clear();
  gEntities.swap(staged);gBrushes.swap(stagedBrushes);
+ gUv56Terrain=std::move(stagedUv56);
  gLakes.swap(stagedLakes);gSelectedLake=-1;++gLakeRevision;
  gTerrainPaint.swap(stagedPaint);gTerrainRevision++;
  gRoads=std::move(nextRoads);gSelectedRoad=0;gActiveRoad=0;gRoadPending=false;

@@ -51,7 +51,7 @@ public final class ProjectArchive {
         JSONObject json=new JSONObject(scene);
         int version=json.optInt("version",-1);
         JSONObject guide=json.optJSONObject("mapReference");
-        check(version>=1&&version<=10,"Неподдерживаемая версия сцены");
+        check(version>=1&&version<=11,"Неподдерживаемая версия сцены");
         if(version<3){
             check(!json.has("mapReference"),"Подложка требует сцену версии 3+");
             return null;
@@ -250,7 +250,7 @@ public final class ProjectArchive {
     // v10 is required only when at least one authoring site is saved.
     private static void validateEditorPlots(JSONObject doc,int version) throws Exception {
         JSONArray plots=doc.optJSONArray("editorPlots");
-        check((version==10&&plots!=null&&plots.length()>0)||
+        check((version>=10&&plots!=null&&plots.length()>0)||
               (version<10&&!doc.has("editorPlots")),
               "Рамки участков доступны только в сцене v10");
         if(plots==null)return;
@@ -274,16 +274,62 @@ public final class ProjectArchive {
                   "Участок выходит за пределы мира");
         }
     }
+    // Stage 7: one active PNG on screen, but each editor plot retains its
+    // own independent original file in the portable .oezip archive.
+    // No picture is included in gameplay collision or runtime entities.
+    private static Set<String> referenceNames(String scene) throws Exception {
+        JSONObject doc=new JSONObject(scene);
+        int version=doc.optInt("version",-1);
+        Set<String> names=new HashSet<>();
+        String legacy=referenceName(scene);
+        if(legacy!=null)names.add(legacy);
+        JSONArray plans=doc.optJSONArray("plotPlans");
+        check((version==11&&plans!=null&&plans.length()>0)||
+              (version<11&&!doc.has("plotPlans")),
+              "Сцена v11 должна содержать PNG-планы участков");
+        if(plans==null)return names;
+        check(plans.length()<=8,"В первой версии доступно не больше 8 PNG-планов");
+        JSONArray plots=doc.getJSONArray("editorPlots");
+        Set<Integer> usedPlotIds=new HashSet<>();
+        int world=doc.getInt("worldSize");
+        for(int i=0;i<plans.length();i++){
+            JSONObject ref=plans.getJSONObject(i);
+            int id=ref.getInt("plotId");
+            check(usedPlotIds.add(id),"Участок имеет повторяющийся PNG-план");
+            JSONObject target=null;
+            for(int k=0;k<plots.length();k++){
+                JSONObject plot=plots.getJSONObject(k);
+                if(plot.getInt("id")==id){target=plot;break;}
+            }
+            check(target!=null,"PNG-план без участка");
+            String key=ref.getString("key");
+            check(validReference(key),"Некорректное имя PNG-плана участка");
+            double x=ref.getDouble("centerX"),z=ref.getDouble("centerZ"),
+                width=ref.getDouble("widthMetres"),opacity=ref.getDouble("opacity");
+            ref.getBoolean("visible");
+            double size=target.getDouble("size");
+            double px=target.getDouble("x"),pz=target.getDouble("z");
+            check(Double.isFinite(x)&&Double.isFinite(z)&&
+                  Double.isFinite(width)&&Double.isFinite(opacity)&&
+                  width>=8&&width<=size&&opacity>=.05&&opacity<=.95&&
+                  Math.abs(x-px)+width*.5<=size*.5&&
+                  Math.abs(z-pz)<=size*.5&&
+                  Math.abs(x)+width*.5<=world*.5,
+                  "PNG-план выходит за пределы участка");
+            names.add(key);
+        }
+        return names;
+    }
     private static Set<String> referencedModels(String scene) throws Exception {
         check(scene.getBytes(StandardCharsets.UTF_8).length<=MAX_SCENE_BYTES,"Сцена превышает безопасный лимит");
         JSONObject json=new JSONObject(scene);
         int version=json.optInt("version",-1);
-        check(version>=1&&version<=10,"Неподдерживаемая версия сцены");
+        check(version>=1&&version<=11,"Неподдерживаемая версия сцены");
         check(version==1||json.optJSONArray("roads")!=null,"Нет дорожной сети");
         validateLakes(json,version);
         validateNativeUv56(json,version);
         validateEditorPlots(json,version);
-        referenceName(scene);
+        referenceNames(scene);
         JSONArray tileData=json.optJSONArray("paintTiles");
         if(version>=4){
             check((version!=4||tileData!=null)&&
@@ -337,7 +383,7 @@ public final class ProjectArchive {
              File originalFolder,File referenceFolder,OutputStream output) throws Exception{
         Set<String> names=referencedModels(scene);
         Set<String> textures=referencedTextures(scene);
-        String reference=referenceName(scene);
+        Set<String> references=referenceNames(scene);
         long budget=scene.getBytes(StandardCharsets.UTF_8).length;
         // Do all preflight validation before emitting an archive.
         for(String name:names){
@@ -357,14 +403,14 @@ public final class ProjectArchive {
             budget+=image.length();
             check(budget<=MAX_UNPACKED_BYTES,"Проект слишком большой");
         }
-        if(reference!=null){
+        for(String reference:references){
             File png=new File(referenceFolder,reference);
             check(png.isFile()&&png.length()>0&&
                   png.length()<=MAX_REFERENCE_BYTES,"PNG-подложка отсутствует");
             check(reference.equals(calculatedReferenceName(png))&&pngSignature(png),
                   "Повреждённая PNG-подложка");
             budget+=png.length();
-            check(budget<=MAX_UNPACKED_BYTES,"Слишком большая карта-подложка");
+            check(budget<=MAX_UNPACKED_BYTES,"Слишком много PNG-планов");
         }
         Set<String> sources=new HashSet<>();
         for(String model:names){
@@ -403,7 +449,7 @@ public final class ProjectArchive {
                 zip.closeEntry();
             }
             // PNG city plan remains an editor-only source; Runtime never sees it.
-            if(reference!=null){
+            for(String reference:references){
                 zip.putNextEntry(new ZipEntry("references/"+reference));
                 try(InputStream in=new BufferedInputStream(
                     new FileInputStream(new File(referenceFolder,reference)))){
@@ -464,7 +510,7 @@ public final class ProjectArchive {
                     check(scene||model||texture||original||reference,"Запрещён файл в архиве: "+name);
                     check(seen.add(name),"Повторяющийся файл: "+name);
                     entries++;
-                    check(entries<=MAX_MODELS*3+MAX_TEXTURES+2,
+                    check(entries<=MAX_MODELS*3+MAX_TEXTURES+12,
                           "Слишком много файлов");
                     File target=scene?staged.sceneFile:(model?
                         new File(staged.modelDir,name.substring("models/".length())):
@@ -492,11 +538,11 @@ public final class ProjectArchive {
             check(staged.sceneFile.isFile(),"В проекте отсутствует scene.json");
             String json=new String(Files.readAllBytes(staged.sceneFile.toPath()),StandardCharsets.UTF_8);
             Set<String> required=referencedModels(json);
-            String reference=referenceName(json);
+            Set<String> references=referenceNames(json);
             File[] referenceFiles=staged.referenceDir.listFiles();
-            check(referenceFiles!=null&&referenceFiles.length==(reference==null?0:1),
-                "Неправильный состав PNG-подложки");
-            if(reference!=null){
+            check(referenceFiles!=null&&referenceFiles.length==references.size(),
+                "Неправильный состав PNG-подложек");
+            for(String reference:references){
                 File png=new File(staged.referenceDir,reference);
                 check(png.isFile()&&png.length()>0&&
                       png.length()<=MAX_REFERENCE_BYTES&&

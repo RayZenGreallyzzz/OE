@@ -193,7 +193,7 @@ public class EditorActivity extends Activity {
     private static native void nativeMapClear();
     private static native void nativeMapTopView();
     private static native void nativeMapPerspective();
-    private static final int PICK_GLB = 702, PICK_PROJECT=703, SAVE_PROJECT=704, PICK_PAINT=705, PICK_MAP=706;
+    private static final int PICK_GLB = 702, PICK_PROJECT=703, SAVE_PROJECT=704, PICK_PAINT=705, PICK_MAP=706, PICK_PLOT_PNG=707;
     private static final int MAX_ASSETS = 12;
 
     private EditorSurface surface;
@@ -269,6 +269,15 @@ public class EditorActivity extends Activity {
     private volatile boolean roadMoveMode=false;
     private volatile boolean mapTopViewActive=false;
     private volatile MapGuide mapGuide=null;
+    // Saved authoring plans are separate from the pre-existing global road PNG.
+    // Only ONE plan is rendered through the native R5.7 guide at a time.
+    private final java.util.concurrent.ConcurrentHashMap<Integer,MapGuide>
+        plotPlans=new java.util.concurrent.ConcurrentHashMap<>();
+    private volatile int activePlotPlanId=0,pendingPlotPngId=0;
+    // Tracks frame origins so a PNG follows its site across undo and redo.
+    private final java.util.concurrent.ConcurrentHashMap<Integer,double[]>
+        plotPlanSiteCenters=new java.util.concurrent.ConcurrentHashMap<>();
+    private static final int MAX_PLOT_PNGS=8;
     private volatile double selectedRoadWidth=6.0;
     private volatile float paintRadius=16f;
     private volatile long statsUpdatedAt=0;
@@ -629,6 +638,9 @@ public class EditorActivity extends Activity {
             addPaletteOption("🏙 Создать участок города 1000×1000 м",
                 ()->newEditorPlot(1000));
             addPaletteOption("📋 Список / изменить / переместить",this::chooseEditorPlot);
+            addPaletteOption("🗺 PNG-план для выбранного участка",this::choosePlotForPlan);
+            addPaletteOption("🎥 Режим карты: план выбранного участка",
+                this::choosePlotForPlan);
             addPaletteOption(editorPlotsVisible?"👁 Скрыть рамки":"👁 Показать рамки",
                 this::toggleEditorPlotGuides);
             addPaletteOption("ℹ Рамки — только в редакторе",()->
@@ -651,6 +663,8 @@ public class EditorActivity extends Activity {
             addPaletteOption("✕ Завершить работу с водой",this::cancelPlace);
         }else if("Дороги".equals(category)){
             addPaletteOption("🗺 Загрузить PNG-план города",this::pickMapReference);
+            addPaletteOption("🗺 Активировать общий PNG-план",
+                this::showGlobalMapReference);
             addPaletteOption("📍 Положение и масштаб плана",this::configureMapReference);
             addPaletteOption("👁 Показать / скрыть план",this::toggleMapReference);
             addPaletteOption("⬇ Вид сверху на карту",this::showMapTopView);
@@ -1031,7 +1045,8 @@ public class EditorActivity extends Activity {
                         .trim().replace(',','.'));
                     surface.queueEvent(()->{
                         boolean ok=nativePlotEdit(id,newName,cx,cz,previousSize);
-                        if(ok){surface.requestRender();message("Участок обновлён · ↶ отменить");}
+                        if(ok){syncPlotPlanCentres();surface.requestRender();
+                            message("Участок обновлён · PNG следует за рамкой · ↶ отменить");}
                         else message("Границы участка выходят за пределы мира");
                     });
                 }catch(NumberFormatException ex){message("Введи числа для X/Z");}
@@ -1041,12 +1056,334 @@ public class EditorActivity extends Activity {
                     .setMessage("Земля, дома, дороги и коллизии останутся без изменений.")
                     .setPositiveButton("Удалить рамку",(d,w)->
                         surface.queueEvent(()->{
-                            if(nativePlotDelete(id)){surface.requestRender();
-                                message("Рамка удалена · ↶ отменить");}
+                            if(nativePlotDelete(id)){
+                                if(activePlotPlanId==id){
+                                    nativeMapClear();activePlotPlanId=0;
+                                }
+                                surface.requestRender();
+                                message("Рамка удалена · PNG сохранён для ↶");
+                            }
                         }))
                     .setNegativeButton("Отмена",null).show()).show();
     }
 
+    // One R5.7 native PNG overlay is visible at a time to protect tablet VRAM.
+    // Each plot's PNG remains independently saved and selectable in .oezip.
+    // Called only on the GLES thread. Site frames and PNG drawings move
+    // together; undo/redo of the frame repositions its editor-only plan.
+    private void syncPlotPlanCentres(){
+        String[] records=nativePlotList();
+        for(String row:records){
+            String[] rec=row.split("\\|",5);
+            if(rec.length!=5)continue;
+            try{
+                int id=Integer.parseInt(rec[0]);
+                MapGuide plan=plotPlans.get(id);
+                if(plan==null)continue;
+                double cx=Double.parseDouble(rec[2]),cz=Double.parseDouble(rec[3]);
+                double[] old=plotPlanSiteCenters.get(id);
+                if(old==null){plotPlanSiteCenters.put(id,new double[]{cx,cz});continue;}
+                if(Math.abs(cx-old[0])<.0001&&Math.abs(cz-old[1])<.0001)continue;
+                MapGuide moved=plan.aligned(plan.centerX+(cx-old[0]),
+                    plan.centerZ+(cz-old[1]),plan.widthMetres,plan.opacity,plan.visible);
+                if(activePlotPlanId==id&&
+                   !nativeMapConfigure(moved.centerX,moved.centerZ,
+                       moved.widthMetres,moved.opacity,moved.visible))
+                    continue;
+                plotPlans.put(id,moved);
+                plotPlanSiteCenters.put(id,new double[]{cx,cz});
+            }catch(NumberFormatException ignored){}
+        }
+    }
+
+    private void choosePlotForPlan(){
+        if(importing)return;
+        surface.queueEvent(()->{
+            final String[] records=nativePlotList();
+            ui(()->{
+                if(records==null||records.length==0){
+                    message("Сначала создай участок села или города");
+                    return;
+                }
+                String[] labels=new String[records.length];
+                for(int i=0;i<records.length;i++){
+                    String[] p=records[i].split("\\|",5);
+                    if(p.length!=5){labels[i]="Участок "+(i+1);continue;}
+                    int id;
+                    try{id=Integer.parseInt(p[0]);}
+                    catch(NumberFormatException ex){labels[i]="Участок "+(i+1);continue;}
+                    labels[i]=p[4]+" · "+p[1]+"×"+p[1]+" м "+
+                        (plotPlans.containsKey(id)?"📍 PNG прикреплён":"Без PNG");
+                }
+                new AlertDialog.Builder(this)
+                    .setTitle("🗺 Чертежи для участков")
+                    .setMessage("У каждого участка свой PNG. Одновременно "+
+                        "отображается один выбранный план, остальные сохранены.")
+                    .setItems(labels,(dialog,index)->showPlotPlanActions(records[index]))
+                    .setNegativeButton("Закрыть",null).show();
+            });
+        });
+    }
+    private void showPlotPlanActions(String record){
+        final String[] rec=record.split("\\|",5);
+        if(rec.length!=5){message("Некорректный участок");return;}
+        final int id;
+        try{id=Integer.parseInt(rec[0]);}
+        catch(NumberFormatException ex){message("Некорректный номер участка");return;}
+        final MapGuide current=plotPlans.get(id);
+        final String[] choices=current==null?
+            new String[]{"📂 Загрузить прозрачный PNG","🔎 Перейти к участку"}:
+            new String[]{"👁 Показать PNG на земле","📂 Заменить PNG",
+                "📏 Положение / масштаб / прозрачность",
+                current.visible?"🙈 Скрыть PNG":"👁 Сделать PNG видимым",
+                "🗑 Отвязать PNG, не трогая постройки",
+                "🔎 Перейти к участку"};
+        new AlertDialog.Builder(this)
+            .setTitle("🗺 "+rec[4])
+            .setItems(choices,(d,index)->{
+                if(current==null){
+                    if(index==0)pickPlotPng(id);
+                    else focusPlotId(id);
+                }else{
+                    switch(index){
+                        case 0: showPlotPlan(id);break;
+                        case 1: pickPlotPng(id);break;
+                        case 2: configurePlotPlan(record);break;
+                        case 3: togglePlotPlanVisibility(id);break;
+                        case 4: removePlotPlan(id);break;
+                        default:focusPlotId(id);
+                    }
+                }
+            }).setNegativeButton("Закрыть",null).show();
+    }
+    private void focusPlotId(int id){
+        surface.queueEvent(()->{
+            if(nativePlotFocus(id)){
+                surface.requestRender();
+                message("Камера наведена на участок · PNG не меняет землю");
+            }else message("Участок не найден");
+        });
+    }
+    private void pickPlotPng(int id){
+        if(importing)return;
+        if(!plotPlans.containsKey(id)&&plotPlans.size()>=MAX_PLOT_PNGS){
+            message("Этап 7: до 8 PNG-планов одновременно в одном проекте");
+            return;
+        }
+        pendingPlotPngId=id;
+        Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("image/png");
+        try{startActivityForResult(intent,PICK_PLOT_PNG);}
+        catch(Exception e){pendingPlotPngId=0;message("Не открыть PNG: "+e.getMessage());}
+    }
+    private void importPlotPlan(int id,Uri uri){
+        if(importing||id<1)return;
+        importing=true;
+        surface.queueEvent(()->{
+            String[] records=nativePlotList();
+            String[] chosen=null;
+            for(String record:records){
+                String[] p=record.split("\\|",5);
+                if(p.length==5&&p[0].equals(String.valueOf(id))){
+                    chosen=p;break;
+                }
+            }
+            if(chosen==null){importing=false;message("Участок удалён");return;}
+            final String[] site=chosen;
+            new Thread(()->{
+                try{
+                    byte[] source=limitedTextureRead(
+                        getContentResolver().openInputStream(uri));
+                    if(!"image/png".equals(textureType(source)))
+                        throw new Exception("Нужен настоящий PNG с прозрачностью");
+                    final String key=mapKey(source);
+                    // At most 1024 px GPU resolution for tablet VRAM.
+                    final TextureReader.Image img=TextureReader.decode(source,"image/png",1024);
+                    final double size=Double.parseDouble(site[1]);
+                    final double cx=Double.parseDouble(site[2]);
+                    final double cz=Double.parseDouble(site[3]);
+                    double width=Math.min(size*.90,
+                        size*.90*img.width/Math.max(1,img.height));
+                    if(width<8||width*img.height/img.width>size)
+                        throw new Exception("PNG слишком вытянут для выбранного участка");
+                    File saved=new File(referenceDir(),key);
+                    if(saved.isFile()){
+                        if(!key.equals(mapKey(Files.readAllBytes(saved.toPath()))))
+                            throw new Exception("Ранее сохранённый PNG повреждён");
+                    }else{
+                        File part=new File(referenceDir(),key+".part");
+                        try{
+                            Files.write(part.toPath(),source);
+                            Files.move(part.toPath(),saved.toPath(),
+                                StandardCopyOption.REPLACE_EXISTING);
+                        }finally{Files.deleteIfExists(part.toPath());}
+                    }
+                    final MapGuide plan=new MapGuide(key,img.width,img.height,
+                        cx,cz,width,.55f,true);
+                    surface.queueEvent(()->{
+                        try{
+                            if(!nativeMapStage(img.bytes,img.width,img.height)||
+                               !nativeMapCommit(plan.centerX,plan.centerZ,
+                                   plan.widthMetres,plan.opacity,true))
+                                throw new Exception("Нельзя показать PNG поверх участка");
+                            plotPlans.put(id,plan);
+                            plotPlanSiteCenters.put(id,new double[]{cx,cz});
+                            activePlotPlanId=id;
+                            nativePlotFocus(id);
+                            surface.requestRender();
+                            message("✓ PNG привязан к участку · настрой размер и прозрачность");
+                        }catch(Exception e){
+                            nativeMapAbort();
+                            message("Ошибка плана: "+e.getMessage());
+                        }finally{importing=false;}
+                    });
+                }catch(Exception e){
+                    importing=false;
+                    message("PNG не загружен: "+e.getMessage());
+                }
+            },"oe-site-png-import").start();
+        });
+    }
+    private void showPlotPlan(int id){
+        MapGuide plan=plotPlans.get(id);
+        if(plan==null||importing){message("У участка нет PNG-плана");return;}
+        displayEditorGuide(plan,id);
+    }
+    private void showGlobalMapReference(){
+        if(importing)return;
+        MapGuide plan=mapGuide;
+        if(plan==null){
+            surface.queueEvent(()->{
+                nativeMapClear();
+                activePlotPlanId=0;
+                surface.requestRender();
+                message("У общей карты нет PNG. Планы участков сохранены.");
+            });
+        }else displayEditorGuide(plan,0);
+    }
+    private void displayEditorGuide(MapGuide plan,int plotId){
+        if(importing)return;
+        importing=true;
+        new Thread(()->{
+            try{
+                File file=new File(referenceDir(),plan.key);
+                byte[] png=limitedTextureRead(new java.io.FileInputStream(file));
+                if(!"image/png".equals(textureType(png))||
+                   !plan.key.equals(mapKey(png)))
+                    throw new Exception("PNG повреждён или отсутствует");
+                TextureReader.Image img=TextureReader.decode(png,"image/png",1024);
+                surface.queueEvent(()->{
+                    try{
+                        if(!nativeMapStage(img.bytes,img.width,img.height)||
+                           !nativeMapCommit(plan.centerX,plan.centerZ,
+                               plan.widthMetres,plan.opacity,plan.visible))
+                            throw new Exception("PNG не помещается в общую карту");
+                        activePlotPlanId=plotId;
+                        if(plotId>0)nativePlotFocus(plotId);
+                        surface.requestRender();
+                        message(plotId>0?
+                            "План участка открыт · один PNG в редакторе":
+                            "Общий PNG-план дорог активирован");
+                    }catch(Exception ex){
+                        nativeMapAbort();
+                        message("Ошибка отображения PNG: "+ex.getMessage());
+                    }finally{importing=false;}
+                });
+            }catch(Exception ex){
+                importing=false;
+                message("Не открыть PNG: "+ex.getMessage());
+            }
+        },"oe-show-plot-guide").start();
+    }
+    private void configurePlotPlan(String record){
+        String[] rec=record.split("\\|",5);
+        if(rec.length!=5)return;
+        final int id=Integer.parseInt(rec[0]);
+        MapGuide plan=plotPlans.get(id);
+        if(plan==null){message("Сначала загрузи PNG для участка");return;}
+        LinearLayout fields=new LinearLayout(this);
+        fields.setOrientation(LinearLayout.VERTICAL);
+        fields.setPadding(dp(18),dp(6),dp(18),dp(6));
+        EditText[] inputs=new EditText[4];
+        String[] hints={"Центр PNG: X, метры","Центр PNG: Z, метры",
+                        "Ширина PNG, метры","Непрозрачность, %"};
+        double[] values={plan.centerX,plan.centerZ,plan.widthMetres,plan.opacity*100.};
+        for(int i=0;i<4;i++){
+            EditText field=new EditText(this);
+            field.setSingleLine(true);
+            field.setHint(hints[i]);
+            field.setText(String.format(Locale.US,"%.2f",values[i]));
+            field.setInputType(InputType.TYPE_CLASS_NUMBER|
+                InputType.TYPE_NUMBER_FLAG_DECIMAL|InputType.TYPE_NUMBER_FLAG_SIGNED);
+            fields.addView(field);inputs[i]=field;
+        }
+        new AlertDialog.Builder(this).setTitle("Привязка PNG · "+rec[4])
+            .setMessage("Размер в метрах, исходные пропорции сохраняются. "+
+                "План должен целиком помещаться внутри рамки участка.")
+            .setView(fields)
+            .setPositiveButton("Применить",(dialog,which)->{
+                try{
+                    double x=Double.parseDouble(inputs[0].getText().toString().trim().replace(',','.'));
+                    double z=Double.parseDouble(inputs[1].getText().toString().trim().replace(',','.'));
+                    double width=Double.parseDouble(inputs[2].getText().toString().trim().replace(',','.'));
+                    double percent=Double.parseDouble(inputs[3].getText().toString().trim().replace(',','.'));
+                    double size=Double.parseDouble(rec[1]);
+                    double siteX=Double.parseDouble(rec[2]),siteZ=Double.parseDouble(rec[3]);
+                    double height=width*plan.heightPx/plan.widthPx;
+                    if(!Double.isFinite(x)||!Double.isFinite(z)||!Double.isFinite(width)||
+                       !Double.isFinite(percent)||width<8||height<8||percent<5||percent>95||
+                       Math.abs(x-siteX)+width*.5>size*.5||
+                       Math.abs(z-siteZ)+height*.5>size*.5)
+                        throw new Exception("План выходит за границу участка");
+                    final MapGuide adjusted=plan.aligned(x,z,width,(float)(percent/100),plan.visible);
+                    surface.queueEvent(()->{
+                        if(activePlotPlanId!=id||
+                           nativeMapConfigure(x,z,width,adjusted.opacity,adjusted.visible)){
+                            plotPlans.put(id,adjusted);
+                            surface.requestRender();
+                            message("План участка обновлён · PNG и земля не изменены");
+                        }else message("Не удалось изменить положение PNG");
+                    });
+                }catch(Exception ex){
+                    message("Проверь координаты, ширину и прозрачность от 5 до 95%");
+                }
+            }).setNegativeButton("Отмена",null).show();
+    }
+    private void togglePlotPlanVisibility(int id){
+        MapGuide plan=plotPlans.get(id);
+        if(plan==null)return;
+        MapGuide changed=plan.aligned(plan.centerX,plan.centerZ,
+                                      plan.widthMetres,plan.opacity,!plan.visible);
+        surface.queueEvent(()->{
+            if(activePlotPlanId==id&&
+               !nativeMapConfigure(changed.centerX,changed.centerZ,
+                                   changed.widthMetres,changed.opacity,changed.visible)){
+                message("Не удалось переключить отображение PNG");
+                return;
+            }
+            plotPlans.put(id,changed);
+            surface.requestRender();
+            message(changed.visible?"PNG-план показан":"PNG-план скрыт в редакторе");
+        });
+    }
+    private void removePlotPlan(int id){
+        if(!plotPlans.containsKey(id))return;
+        new AlertDialog.Builder(this).setTitle("Отвязать PNG-план?")
+            .setMessage("Рамка, дороги, дома и рельеф останутся без изменений. "+
+                "Сам PNG-файл останется в библиотеке проекта.")
+            .setPositiveButton("Отвязать",(dialog,which)->
+                surface.queueEvent(()->{
+                    plotPlans.remove(id);
+                    if(activePlotPlanId==id){
+                        nativeMapClear();
+                        activePlotPlanId=0;
+                    }
+                    surface.requestRender();
+                    message("PNG отвязан · участок не изменён");
+                }))
+            .setNegativeButton("Отмена",null).show();
+    }
     private void showUv56LandscapePanel(){
         final File[] textures;
         try{
@@ -1668,6 +2005,7 @@ public class EditorActivity extends Activity {
         }finally{stream.end();}
     }
     private String snapshotWithGuide() throws Exception{
+        syncPlotPlanCentres();
         final JSONObject json=new JSONObject(nativeSceneSnapshot());
         final MapGuide guide=mapGuide;
         if(guide!=null){
@@ -1750,6 +2088,23 @@ public class EditorActivity extends Activity {
             if(plots==null||plots.length()<1||plots.length()>32)
                 throw new Exception("Повреждены границы участков");
             json.put("version",10);
+            JSONArray plans=new JSONArray();
+            for(int i=0;i<plots.length();i++){
+                int id=plots.getJSONObject(i).getInt("id");
+                MapGuide plan=plotPlans.get(id);
+                if(plan==null)continue;
+                if(!new File(referenceDir(),plan.key).isFile())
+                    throw new Exception("PNG-план участка отсутствует: "+id);
+                JSONObject entry=plan.toJson();
+                entry.put("plotId",id);
+                plans.put(entry);
+            }
+            if(plans.length()>0){
+                if(plans.length()>MAX_PLOT_PNGS)
+                    throw new Exception("В этом этапе максимум 8 PNG-планов");
+                json.put("plotPlans",plans);
+                json.put("version",11);
+            }
         }
         String result=json.toString();
         if(result.getBytes(StandardCharsets.UTF_8).length>ProjectArchive.MAX_SCENE_BYTES)
@@ -1812,6 +2167,7 @@ public class EditorActivity extends Activity {
                                 throw new Exception("GPU не смог загрузить PNG-карту");
                             mapGuide=new MapGuide(key,image.width,image.height,
                                                   centerX,centerZ,metres,.5f,true);
+                            activePlotPlanId=0;
                             nativeMapTopView();mapTopViewActive=true;
                             surface.requestRender();
                             message("PNG-карта поверх земли · вид сверху · отрегулируй размер");
@@ -1828,6 +2184,10 @@ public class EditorActivity extends Activity {
         });
     }
     private void configureMapReference(){
+        if(activePlotPlanId!=0){
+            message("Сначала нажми «Активировать общий PNG-план» в разделе «Дороги»");
+            return;
+        }
         MapGuide current=mapGuide;
         if(importing||current==null){message("Сначала загрузи PNG-карту");return;}
         LinearLayout fields=new LinearLayout(this);
@@ -1871,6 +2231,10 @@ public class EditorActivity extends Activity {
             }).setNegativeButton("Отмена",null).show();
     }
     private void toggleMapReference(){
+        if(activePlotPlanId!=0){
+            message("Сначала активируй общий PNG-план в разделе «Дороги»");
+            return;
+        }
         MapGuide current=mapGuide;
         if(importing||current==null){message("PNG-карта ещё не загружена");return;}
         edit(()->{
@@ -1892,6 +2256,10 @@ public class EditorActivity extends Activity {
         edit(EditorActivity::nativeMapPerspective);
     }
     private void askRemoveMapReference(){
+        if(activePlotPlanId!=0){
+            message("Сначала активируй общий PNG-план в разделе «Дороги»");
+            return;
+        }
         if(importing||mapGuide==null){message("Нет PNG-карты");return;}
         new AlertDialog.Builder(this).setTitle("Убрать PNG-карту из проекта?")
             .setMessage("Созданные дороги сохранятся. Исходный PNG останется в памяти приложения.")
@@ -2226,14 +2594,14 @@ public class EditorActivity extends Activity {
     private void undoAction() {
         if(importing){message("Дождись завершения загрузки сцены");return;}
         edit(() -> {
-            if(nativeUndo())message("Изменение отменено");
+            if(nativeUndo()){syncPlotPlanCentres();message("Изменение отменено");}
             else message("История отмены пуста");
         });
     }
     private void redoAction() {
         if(importing){message("Дождись завершения загрузки сцены");return;}
         edit(() -> {
-            if(nativeRedo())message("Изменение повторено");
+            if(nativeRedo()){syncPlotPlanCentres();message("Изменение повторено");}
             else message("История повтора пуста");
         });
     }
@@ -2686,6 +3054,13 @@ public class EditorActivity extends Activity {
                 importMapReference(intent.getData());
             return;
         }
+        if(requestCode==PICK_PLOT_PNG){
+            int plotId=pendingPlotPngId;
+            pendingPlotPngId=0;
+            if(resultCode==RESULT_OK&&intent!=null&&intent.getData()!=null)
+                importPlotPlan(plotId,intent.getData());
+            return;
+        }
         if(requestCode==PICK_PAINT){
             if(resultCode==RESULT_OK&&intent!=null){
                 java.util.LinkedHashSet<Uri> selected=new java.util.LinkedHashSet<>();
@@ -2821,8 +3196,8 @@ public class EditorActivity extends Activity {
             }
             JSONObject document=new JSONObject(new String(jsonBytes.toByteArray(),StandardCharsets.UTF_8));
             final int sceneVersion=document.optInt("version",-1);
-            if(sceneVersion<1||sceneVersion>10)
-                throw new Exception("Неверная версия сцены (нужна 1–10)");
+            if(sceneVersion<1||sceneVersion>11)
+                throw new Exception("Неверная версия сцены (нужна 1–11)");
             final boolean demoRoads=document.optBoolean("demoRoads",false);
             final int worldSize=document.optInt("worldSize",1024);
             if(worldSize!=1024&&worldSize!=2048&&worldSize!=4096&&worldSize!=8192&&worldSize!=16384)
@@ -2869,7 +3244,7 @@ public class EditorActivity extends Activity {
             // Stage v10 editor guides alongside the scene, then hand all
             // validated coordinates to the native transactional replacement.
             JSONArray plotsJson=document.optJSONArray("editorPlots");
-            if((sceneVersion==10&&(plotsJson==null||plotsJson.length()==0))||
+            if((sceneVersion>=10&&(plotsJson==null||plotsJson.length()==0))||
                (sceneVersion<10&&document.has("editorPlots"))||
                (document.has("editorPlots")&&plotsJson==null))
                 throw new Exception("Сцена v10 требует границы участков");
@@ -2958,6 +3333,69 @@ public class EditorActivity extends Activity {
                 parsedGuide=null;
                 parsedMapImage=null;
             }
+            // Stage 7 v11 plot references. Validate ALL PNG files and fit
+            // before changing any part of the existing native R5.7 city.
+            final java.util.Map<Integer,MapGuide> parsedPlotPlans=new java.util.HashMap<>();
+            final java.util.Map<Integer,TextureReader.Image> parsedPlotImages=
+                new java.util.HashMap<>();
+            JSONArray plotPlanRecords=document.optJSONArray("plotPlans");
+            if((sceneVersion==11&&(plotPlanRecords==null||plotPlanRecords.length()==0))||
+               (sceneVersion<11&&document.has("plotPlans"))||
+               (document.has("plotPlans")&&plotPlanRecords==null))
+                throw new Exception("Сцена v11 требует PNG-планы участков");
+            final int plotPlanCount=plotPlanRecords==null?0:plotPlanRecords.length();
+            if(plotPlanCount>MAX_PLOT_PNGS)throw new Exception("Максимум 8 PNG-планов");
+            for(int i=0;i<plotPlanCount;i++){
+                JSONObject jsonPlan=plotPlanRecords.getJSONObject(i);
+                int id=jsonPlan.getInt("plotId");
+                int siteIndex=-1;
+                for(int k=0;k<plotIds.length;k++)if(plotIds[k]==id)siteIndex=k;
+                if(siteIndex<0||parsedPlotPlans.containsKey(id))
+                    throw new Exception("PNG относится к отсутствующему участку");
+                String key=jsonPlan.getString("key");
+                if(!key.matches("ref_[0-9a-f]{24}\\.png"))
+                    throw new Exception("Неверное имя PNG-плана");
+                double px=jsonPlan.getDouble("centerX"),
+                       pz=jsonPlan.getDouble("centerZ"),
+                       width=jsonPlan.getDouble("widthMetres");
+                float opacity=(float)jsonPlan.getDouble("opacity");
+                boolean visible=jsonPlan.getBoolean("visible");
+                File png=new File(sourceReferences==null?referenceDir():sourceReferences,key);
+                if(!png.isFile()||png.length()<1||
+                    png.length()>ProjectArchive.MAX_REFERENCE_BYTES)
+                    throw new Exception("PNG-план не найден: "+key);
+                byte[] original=Files.readAllBytes(png.toPath());
+                if(!"image/png".equals(textureType(original))||
+                   !key.equals(mapKey(original)))
+                    throw new Exception("Повреждён PNG-план участка "+id);
+                TextureReader.Image image=TextureReader.decode(original,"image/png",1024);
+                double h=width*image.height/image.width;
+                double siteX=plotValues[siteIndex*3],
+                       siteZ=plotValues[siteIndex*3+1],
+                       siteSize=plotValues[siteIndex*3+2];
+                if(!Double.isFinite(px)||!Double.isFinite(pz)||
+                   !Double.isFinite(width)||!Float.isFinite(opacity)||
+                   width<8||h<8||opacity<.05f||opacity>.95f||
+                   Math.abs(px-siteX)+width/2>siteSize/2||
+                   Math.abs(pz-siteZ)+h/2>siteSize/2)
+                    throw new Exception("PNG-план выходит за участок "+id);
+                parsedPlotPlans.put(id,new MapGuide(key,image.width,image.height,
+                    px,pz,width,opacity,visible));
+                parsedPlotImages.put(id,image);
+            }
+            // First visible plan is shown; all others are persisted but
+            // unloaded from GLES, not copied into multiple 16 MB textures.
+            int selectedPlanId=0;
+            for(int id:plotIds){
+                MapGuide plan=parsedPlotPlans.get(id);
+                if(plan!=null&&plan.visible){selectedPlanId=id;break;}
+            }
+            final int firstPlotPlanId=selectedPlanId;
+            final MapGuide previewGuide=selectedPlanId==0?
+                parsedGuide:parsedPlotPlans.get(selectedPlanId);
+            final TextureReader.Image previewImage=selectedPlanId==0?
+                parsedMapImage:parsedPlotImages.get(selectedPlanId);
+
             // R4 tiles are independently compressed; reject corruption before GLES swap.
             JSONArray paintTilesJson=document.optJSONArray("paintTiles");
             if((sceneVersion==4&&paintTilesJson==null)||
@@ -3262,28 +3700,33 @@ public class EditorActivity extends Activity {
                     }
                 }
             }
-            if(sourceReferences!=null&&parsedGuide!=null){
-                File destination=new File(referenceDir(),parsedGuide.key);
-                if(destination.exists()){
-                    if(!parsedGuide.key.equals(mapKey(Files.readAllBytes(destination.toPath()))))
-                        throw new Exception("Повреждён локальный PNG-план города");
-                }else{
-                    File partial=new File(referenceDir(),parsedGuide.key+".part");
-                    try{
-                        Files.copy(new File(sourceReferences,parsedGuide.key).toPath(),
-                            partial.toPath(),StandardCopyOption.REPLACE_EXISTING);
-                        Files.move(partial.toPath(),destination.toPath(),
-                            StandardCopyOption.REPLACE_EXISTING);
-                    }finally{Files.deleteIfExists(partial.toPath());}
+            if(sourceReferences!=null){
+                HashSet<String> requiredPlans=new HashSet<>();
+                if(parsedGuide!=null)requiredPlans.add(parsedGuide.key);
+                for(MapGuide plan:parsedPlotPlans.values())requiredPlans.add(plan.key);
+                for(String key:requiredPlans){
+                    File destination=new File(referenceDir(),key);
+                    if(destination.exists()){
+                        if(!key.equals(mapKey(Files.readAllBytes(destination.toPath()))))
+                            throw new Exception("Повреждён локальный PNG-план: "+key);
+                    }else{
+                        File partial=new File(referenceDir(),key+".part");
+                        try{
+                            Files.copy(new File(sourceReferences,key).toPath(),
+                                partial.toPath(),StandardCopyOption.REPLACE_EXISTING);
+                            Files.move(partial.toPath(),destination.toPath(),
+                                StandardCopyOption.REPLACE_EXISTING);
+                        }finally{Files.deleteIfExists(partial.toPath());}
+                    }
                 }
             }
             surface.queueEvent(() -> {
                 ArrayList<String> uploaded=new ArrayList<>();
                 boolean committed=false;
                 try {
-                    if(parsedGuide!=null&&!nativeMapStage(parsedMapImage.bytes,
-                            parsedMapImage.width,parsedMapImage.height))
-                        throw new Exception("Нельзя загрузить PNG-подложку в видеопамять");
+                    if(previewGuide!=null&&!nativeMapStage(previewImage.bytes,
+                            previewImage.width,previewImage.height))
+                        throw new Exception("Нельзя загрузить PNG-план в видеопамять");
                     for(Map.Entry<String,TextureReader.Image> entry:paintImages.entrySet()){
                         TextureReader.Image img=entry.getValue();
                         if(!nativeRegisterPaintTexture(entry.getKey(),img.bytes,img.width,img.height))
@@ -3307,12 +3750,19 @@ public class EditorActivity extends Activity {
                             uv56Area,uv56Nodes,
                             plotIds,plotNames,plotValues))
                         throw new Exception("Сцена не прошла полную проверку в движке");
-                    if(parsedGuide!=null){
-                        if(!nativeMapCommit(parsedGuide.centerX,parsedGuide.centerZ,
-                                parsedGuide.widthMetres,parsedGuide.opacity,parsedGuide.visible))
-                            throw new Exception("PNG-подложка не подошла к новому размеру мира");
+                    if(previewGuide!=null){
+                        if(!nativeMapCommit(previewGuide.centerX,previewGuide.centerZ,
+                                previewGuide.widthMetres,previewGuide.opacity,previewGuide.visible))
+                            throw new Exception("PNG не подошёл к размерам мира");
                     }else nativeMapClear();
                     mapGuide=parsedGuide;
+                    plotPlans.clear();plotPlans.putAll(parsedPlotPlans);
+                    plotPlanSiteCenters.clear();
+                    for(int k=0;k<plotIds.length;k++)
+                        if(parsedPlotPlans.containsKey(plotIds[k]))
+                            plotPlanSiteCenters.put(plotIds[k],new double[]{
+                                plotValues[3*k],plotValues[3*k+1]});
+                    activePlotPlanId=firstPlotPlanId;
                     mapTopViewActive=false;
                     editorPlotsVisible=true;
                     committed=true;
@@ -3352,6 +3802,8 @@ public class EditorActivity extends Activity {
                         edit(()->{
                             nativeReset(demo);nativeMapClear();
                             mapGuide=null;mapTopViewActive=false;
+                            plotPlans.clear();plotPlanSiteCenters.clear();
+                            activePlotPlanId=0;
                         });
                         message(demo?"Демонстрационный квартал восстановлен":"Пустая карта: все объекты удалены");
                     })

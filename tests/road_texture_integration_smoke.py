@@ -25,13 +25,13 @@ for needle in (
     'private void chooseRoadTexture()', 'private void chooseRoadTextureSize()',
     'private void useRoadTexture(String key)', 'private void applyActiveRoadTexture()',
     'this::pickPaintTexture', 'this::chooseRoadTexture',
-    'json.put("version",8)', 'sceneVersion>10',
+    'json.put("version",8)', 'sceneVersion>11',
     'roadTileMetres[i]=tiling', 'referencedPaint.add(material)',
     'roadIds,roadNames,roadMaterials,roadWidths,roadTileMetres,roadPaths',
 ):
     assert needle in editor,("Java editor",needle)
 for needle in (
-    'version>=1&&version<=10','JSONArray roads=document.optJSONArray("roads")',
+    'version>=1&&version<=11','JSONArray roads=document.optJSONArray("roads")',
     'if(custom)keys.add(material)', 'sceneVersion>=8',
     'version>=8&&(!json.has("lakes")',
 ):

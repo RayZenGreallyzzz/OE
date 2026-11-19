@@ -71,6 +71,28 @@ int main(){
  assert(walker.spawn(-3.,3.));
  assert(walker.advance(1.,0.,false,140));
  assert(walker.state().feet.x>4.);
+ // Stage10: editing one selected physical segment updates the SAME
+ // 60Hz controller. Translation exposes a path, restoring endpoints
+ // (Undo snapshot) blocks it again; no additional collision solver.
+ WalkBarrier edited=wall;
+ edited.ax+=8.;edited.bx+=8.; // move whole segment 8m east
+ assert(validWalkBarrier(edited,512.));
+ assert(walker.configure(empty,terrain,512.,{edited}));
+ assert(walker.spawn(-2.,0.));
+ assert(walker.advance(1.,0.,false,90));
+ assert(walker.state().feet.x>.5);
+ // Move just endpoint A — should remain a valid physical segment.
+ WalkBarrier reshaped=wall;
+ reshaped.ax=6.;reshaped.az=-15.;
+ assert(validWalkBarrier(reshaped,512.));
+ assert(walker.configure(empty,terrain,512.,{reshaped}));
+ assert(walker.spawn(-2.,-10.));
+ assert(walker.advance(1.,0.,false,90));
+ assert(walker.state().feet.x>.5);
+ assert(walker.configure(empty,terrain,512.,{wall}));
+ assert(walker.spawn(-2.,0.));
+ assert(walker.advance(1.,0.,false,90));
+ assert(walker.state().feet.x<-.70); // Undo brings the wall back
  walker.clear();assert(walker.barrierCount()==0);
  std::cout<<"OE_STAGE8_REAL_WALK_COLLISIONS_OK\n";
 }

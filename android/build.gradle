@@ -5,11 +5,11 @@ android {
     namespace 'game.oe.editor'
     compileSdk 35
     defaultConfig {
-        applicationId 'game.oe.editor.r57plots'
+        applicationId 'game.oe.editor.r57blueprints'
         minSdk 26
         targetSdk 34
-        versionCode 41
-        versionName '0.8.11-r57-editor-plots-test'
+        versionCode 42
+        versionName '0.8.12-r57-site-blueprints-test'
         ndk { abiFilters 'arm64-v8a' }
         externalNativeBuild {
             cmake { cppFlags '-std=c++17 -O2 -Wall -Wextra' }

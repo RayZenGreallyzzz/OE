@@ -113,6 +113,7 @@ public class EditorActivity extends Activity {
             float radius,float power); // stage 1 compatibility
     private static native int nativeUv56Area();
     private static native boolean nativeUv56ConfigureArea(int areaSqM);
+    private static native int nativeUv56LastStrokeError();
     private static native boolean nativeUv56StrokeStart(int tool,float x,float y,
             float radius,float power);
     private static native boolean nativeUv56StrokeMove(int tool,float x,float y,
@@ -196,6 +197,7 @@ public class EditorActivity extends Activity {
     private volatile int uv56SculptTool=0; // 1 raise,2 lower,3 ridge,4 smooth,5 flatten
     private volatile float uv56SculptRadius=4f,uv56SculptPower=2f;
     private volatile int uv56LandscapeMode=0,uv56BrushCm=400;
+    private static final int MAX_TILE_LIBRARY=32; // imported files, not automatic GPU uploads
     private volatile String activePaletteCategory="Здания";
     private NativeLandscapePanel activeLandscapePanel;
     private boolean walkJumpQueued=false,walkAirborne=false;
@@ -2137,8 +2139,93 @@ public class EditorActivity extends Activity {
         Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("image/*");
+        // Android's standard Files picker can choose 10/20/32 tiles at once.
+        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE,true);
         try{startActivityForResult(intent,PICK_PAINT);}
         catch(Exception e){message("Не открыть галерею: "+e.getMessage());}
+    }
+    private String safeTileLabel(Uri uri){
+        String raw=uri.getLastPathSegment();
+        try(android.database.Cursor cursor=getContentResolver().query(uri,
+                new String[]{android.provider.OpenableColumns.DISPLAY_NAME},
+                null,null,null)){
+            if(cursor!=null&&cursor.moveToFirst()&&!cursor.isNull(0))
+                raw=cursor.getString(0);
+        }catch(Exception ignored){}
+        if(raw==null)return "Мой тайл";
+        raw=raw.replaceAll("[\\p{Cntrl}\\r\\n]"," ").trim();
+        return raw.length()>34?raw.substring(0,34):raw;
+    }
+    private void importPaintTextures(ArrayList<Uri> batch){
+        if(importing){message("Сначала дождись завершения загрузки");return;}
+        if(batch==null||batch.isEmpty())return;
+        if(batch.size()>MAX_TILE_LIBRARY){
+            message("Выбери до "+MAX_TILE_LIBRARY+" тайлов за один раз");
+            return;
+        }
+        importing=true;
+        new Thread(()->{
+            int added=0,existing=0,errors=0;
+            String firstKey=null;
+            try{
+                File dir=textureDir();
+                File[] all=dir.listFiles((folder,name)->validTexture(name));
+                int count=all==null?0:all.length;
+                for(Uri uri:batch){
+                    try{
+                        byte[] original=limitedTextureRead(
+                            getContentResolver().openInputStream(uri));
+                        String mime=textureType(original);
+                        String key=textureKey(original,mime);
+                        File destination=new File(dir,key);
+                        // Validate that these bytes really decode as a tile,
+                        // without keeping all selected images in tablet RAM.
+                        TextureReader.Image decoded=TextureReader.decode(original,mime,1024);
+                        if(decoded.width<=0||decoded.height<=0)
+                            throw new Exception("Не открыть PNG/JPG");
+                        if(destination.exists()){
+                            if(!key.equals(textureKey(
+                                Files.readAllBytes(destination.toPath()),
+                                textureType(Files.readAllBytes(destination.toPath())))))
+                                throw new Exception("Существующий тайл повреждён");
+                            ++existing;
+                        }else{
+                            if(count>=MAX_TILE_LIBRARY)
+                                throw new Exception("Лимит библиотеки: "+
+                                    MAX_TILE_LIBRARY+" тайла");
+                            File partial=new File(dir,key+".part");
+                            try{
+                                Files.write(partial.toPath(),original);
+                                Files.move(partial.toPath(),destination.toPath(),
+                                    StandardCopyOption.ATOMIC_MOVE,
+                                    StandardCopyOption.REPLACE_EXISTING);
+                            }finally{Files.deleteIfExists(partial.toPath());}
+                            ++count;++added;
+                        }
+                        getPreferences(MODE_PRIVATE).edit()
+                            .putString("tile_title_"+key,safeTileLabel(uri)).apply();
+                        if(firstKey==null)firstKey=key;
+                    }catch(Exception bad){
+                        ++errors;
+                        android.util.Log.w("OE-Tiles","Tile import skipped",bad);
+                    }
+                }
+            }catch(Exception ex){
+                ++errors;
+                message("Тайлы: "+ex.getMessage());
+            }finally{
+                importing=false;
+                final String selected=firstKey;
+                final int good=added,duplicates=existing,failed=errors;
+                ui(()->{
+                    message("Тайлы: добавлено "+good+", уже были "+
+                        duplicates+", ошибок "+failed);
+                    if(drawerOpen&&"Рельеф".equals(activePaletteCategory))
+                        showPalette("Рельеф");
+                    if(selected!=null)usePaintTexture(selected,true);
+                });
+            }
+        },"oe-bulk-tiles").start();
     }
     private void importPaintTexture(Uri uri){
         if(importing)return;
@@ -2176,7 +2263,7 @@ public class EditorActivity extends Activity {
                                 showPalette("Рельеф");
                             }
                         });
-                    }else message("Лимит текстур/памяти GPU. Максимум 8 изображений.");
+                    }else message("Лимит видеопамяти. Можно хранить до 32 тайлов, GPU загружается по запросу.");
                 });
             }catch(Exception err){
                 importing=false;message("Текстура не добавлена: "+err.getMessage());
@@ -2391,8 +2478,17 @@ public class EditorActivity extends Activity {
             return;
         }
         if(requestCode==PICK_PAINT){
-            if(resultCode==RESULT_OK&&intent!=null&&intent.getData()!=null)
-                importPaintTexture(intent.getData());
+            if(resultCode==RESULT_OK&&intent!=null){
+                java.util.LinkedHashSet<Uri> selected=new java.util.LinkedHashSet<>();
+                if(intent.getClipData()!=null){
+                    for(int i=0;i<intent.getClipData().getItemCount();i++){
+                        Uri uri=intent.getClipData().getItemAt(i).getUri();
+                        if(uri!=null)selected.add(uri);
+                    }
+                }
+                if(intent.getData()!=null)selected.add(intent.getData());
+                importPaintTextures(new ArrayList<>(selected));
+            }
             return;
         }
         if(requestCode==SAVE_PROJECT||requestCode==PICK_PROJECT){
@@ -3121,7 +3217,16 @@ public class EditorActivity extends Activity {
                     final float radius=uv56SculptRadius,power=uv56SculptPower;
                     queueEvent(()->{
                         uv56GestureStarted=nativeUv56StrokeStart(tool,px,py,radius,power);
-                        if(uv56GestureStarted)requestRender();
+                        if(!uv56GestureStarted){
+                            final int reason=nativeUv56LastStrokeError();
+                            if(reason==2)message("Кисть не попала на землю. "+
+                                "Попробуй ближе к центру экрана или ниже горизонта");
+                            else if(reason==3)message("Точка за границей территории. "+
+                                "Выбери большую площадь или вернись к её центру");
+                            else if(reason==4)message("Рельеф не изменился: "+
+                                "проверь силу кисти или лимит узлов");
+                            else message("Кисть не запущена · попробуй ещё раз");
+                        }else requestRender();
                     });
                     return true;
                 }

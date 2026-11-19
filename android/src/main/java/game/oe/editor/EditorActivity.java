@@ -875,6 +875,12 @@ public class EditorActivity extends Activity {
             message("Нет доступа к библиотеке текстур: "+ex.getMessage());
             return;
         }
+        Map<String,String> titles=new HashMap<>();
+        for(File file:textures){
+            String title=getPreferences(MODE_PRIVATE)
+                .getString("tile_title_"+file.getName(),null);
+            if(title!=null)titles.put(file.getName(),title);
+        }
         NativeLandscapePanel panel=new NativeLandscapePanel(this,
             new NativeLandscapePanel.Host(){
                 @Override public void tool(int tool){openUv56Mode(tool);}
@@ -897,7 +903,7 @@ public class EditorActivity extends Activity {
                 }
                 @Override public void close(){openUv56Mode(0);toggleDrawer(false);}
             },uv56LandscapeMode,uv56BrushCm,uv56SculptPower,textures,
-               activePaintKey);
+               activePaintKey,titles);
         activeLandscapePanel=panel;
         paletteItems.addView(panel,new LinearLayout.LayoutParams(-1,-2));
         surface.queueEvent(()->{
@@ -2184,9 +2190,8 @@ public class EditorActivity extends Activity {
                         if(decoded.width<=0||decoded.height<=0)
                             throw new Exception("Не открыть PNG/JPG");
                         if(destination.exists()){
-                            if(!key.equals(textureKey(
-                                Files.readAllBytes(destination.toPath()),
-                                textureType(Files.readAllBytes(destination.toPath())))))
+                            byte[] previous=Files.readAllBytes(destination.toPath());
+                            if(!key.equals(textureKey(previous,textureType(previous))))
                                 throw new Exception("Существующий тайл повреждён");
                             ++existing;
                         }else{

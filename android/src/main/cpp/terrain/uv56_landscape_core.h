@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstddef>
 #include <map>
+#include <limits>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -29,6 +30,16 @@ public:
  int areaSqM()const{return area_;}
  bool active()const{return area_!=0;}
  std::size_t nodeCount()const{return points_.size();}
+ // Fast lookup for 64m GLES city terrain chunks, including shared edges.
+ bool affectsTile(int tx,int tz,int tileMetres=64)const{
+  const int lx=tx*tileMetres-1,hx=(tx+1)*tileMetres+1;
+  const int lz=tz*tileMetres-1,hz=(tz+1)*tileMetres+1;
+  for(auto it=points_.lower_bound({lx,std::numeric_limits<int>::min()});
+      it!=points_.end()&&it->first.first<=hx;++it)
+   if(it->first.second>=lz&&it->first.second<=hz)return true;
+  return false;
+ }
+
  const std::map<Point,Node>& nodes()const{return points_;}
  bool valid(float x,float z)const{
   if(!active()||!std::isfinite(x)||!std::isfinite(z))return false;

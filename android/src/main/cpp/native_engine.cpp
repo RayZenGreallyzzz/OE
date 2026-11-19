@@ -8,6 +8,7 @@
 #include "roads/road_junction_geometry.h"
 #include "roads/road_pedestrian_geometry.h"
 #include "gizmo_rotation.h"
+#include "phoenix_terrain.h"
 #include <GLES3/gl3.h>
 #include <android/log.h>
 #include <algorithm>
@@ -160,8 +161,9 @@ static constexpr size_t MAX_TERRAIN_PAINT=48;
 static std::vector<TerrainBrush> gBrushes;
 static int gTerrainRevision=0;
 static constexpr size_t MAX_TERRAIN_BRUSHES=64;
+static oe::phoenix::Field gPhoenixTerrain; // native 1m preview, no source downsample
 float terrainHeightAt(float x,float z){
- float h=0;
+ float h=gPhoenixTerrain.heightAt(x,z);
  for(const auto&b:gBrushes){
   const float dx=x-b.x,dz=z-b.z,d2=dx*dx+dz*dz;
   if(d2>=b.radius*b.radius)continue;
@@ -182,6 +184,7 @@ struct SceneSnapshot {
  std::vector<oe::roads::Road> roads;
  int nextRoadId=1, selectedRoad=0;
  bool roadSidewalks=true,roadCrosswalks=true;
+ oe::phoenix::Field phoenix; // undo the entire UV56 height import in one step
 };
 static std::vector<SceneSnapshot> gUndo,gRedo;
 static bool gSuspendHistory=false;
@@ -189,12 +192,12 @@ static constexpr size_t HISTORY_LIMIT=40;
 SceneSnapshot captureScene(){
  return {gEntities,gNextId,gSelected,gWorldSize,gDemoRoads,gTarget,gDistance,
          gBrushes,gTerrainPaint,gRoads,gNextRoadId,gSelectedRoad,
-         gRoadSidewalks,gRoadCrosswalks};
+         gRoadSidewalks,gRoadCrosswalks,gPhoenixTerrain};
 }
 void restoreScene(const SceneSnapshot&s){
  gEntities=s.entities;gNextId=s.nextId;gSelected=s.selected;gWorldSize=s.worldSize;
  gDemoRoads=s.demoRoads;gTarget=s.target;gDistance=s.cameraDistance;
- gBrushes=s.terrain;gTerrainPaint=s.paints;gTerrainRevision++;
+ gBrushes=s.terrain;gTerrainPaint=s.paints;gPhoenixTerrain=s.phoenix;gTerrainRevision++;
  gRoads=s.roads;gNextRoadId=s.nextRoadId;gSelectedRoad=s.selectedRoad;
  gRoadSidewalks=s.roadSidewalks;gRoadCrosswalks=s.roadCrosswalks;
  gRoadRevision++;gRoadDragId=0;gRoadDragPoint=-1;gSceneInitialized=true;
@@ -1186,7 +1189,12 @@ void updateTerrain(){
     const float dx=b.x-closestX,dz=b.z-closestZ;
     if(dx*dx+dz*dz<b.radius*b.radius){detail=true;break;}
   }
-  const int divisions=detail?8:1;
+  const bool phoenixDetailed=gPhoenixTerrain.affectsChunk(tx,tz);
+  // Preserve 1m heights around the camera; bounded 4m LOD farther away.
+  // No source nodes are deleted/downsampled by this GPU preview.
+  const int divisions=phoenixDetailed?
+      ((std::abs(tx-gx)<=1&&std::abs(tz-gz)<=1)?64:16):
+      (detail?8:1);
   const float step=WORLD_TILE/divisions;
   for(int iz=0;iz<divisions;iz++)for(int ix=0;ix<divisions;ix++){
     const float x0=loX+ix*step,x1=x0+step,z0=loZ+iz*step,z1=z0+step;
@@ -1650,7 +1658,8 @@ void reset(bool demo){
  recordEdit(); // demo generation is a single undoable change
  const bool wasMuted=gSuspendHistory;
  gSuspendHistory=true;
- gEntities.clear();gBrushes.clear();gTerrainPaint.clear();gTerrainRevision++;
+ gEntities.clear();gBrushes.clear();gTerrainPaint.clear();
+ gPhoenixTerrain.clear();gTerrainRevision++;
  gRoads.clear();gNextRoadId=1;gSelectedRoad=0;
  gRoadSidewalks=true;gRoadCrosswalks=true;gRoadRevision++;
  gRoadDragId=0;gRoadDragPoint=-1;gNextId=1;gSelected=0;
@@ -2478,6 +2487,8 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeSetWorldSize
  for(const auto&e:gEntities)if(std::abs(e.x)>half-1.f||std::abs(e.z)>half-1.f)return JNI_FALSE;
  for(const auto&road:gRoads)for(const auto&point:road.points)
   if(std::abs(point.x)>half-1.f||std::abs(point.z)>half-1.f)return JNI_FALSE;
+ if(!gPhoenixTerrain.empty()&&
+    std::sqrt(static_cast<float>(gPhoenixTerrain.areaSqM))>newSize)return JNI_FALSE;
  if(gWorldSize==newSize)return JNI_TRUE;
  recordEdit();
  gWorldSize=newSize;
@@ -2656,6 +2667,27 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeApplyTerrainBrus
  gTarget.y=terrainHeightAt(gTarget.x,gTarget.z)+1.2f;
  return static_cast<jint>(gBrushes.size());
 }
+// Explicit, non-destructive UV56 heightfield import. Existing native
+// brushes, roads and objects remain intact. All input validates before commit.
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeImportPhoenixTerrain(
+ JNIEnv*env,jclass,jint area,jintArray source){
+ if(!source)return JNI_FALSE;
+ const jsize count=env->GetArrayLength(source);
+ if(count<0||count%4!=0||
+    count>static_cast<jsize>(oe::phoenix::kMaxNodes*4))return JNI_FALSE;
+ std::vector<jint> jintData(static_cast<size_t>(count));
+ if(count)env->GetIntArrayRegion(source,0,count,jintData.data());
+ if(env->ExceptionCheck())return JNI_FALSE;
+ std::vector<int> raw(jintData.begin(),jintData.end());
+ oe::phoenix::Field staged;
+ if(!oe::phoenix::Field::prepare(area,gWorldSize,raw,staged))
+  return JNI_FALSE;
+ recordEdit();
+ gPhoenixTerrain=std::move(staged);
+ ++gTerrainRevision; ++gRoadRevision; // roads follow the imported ground
+ gTarget.y=terrainHeightAt(gTarget.x,gTarget.z)+1.2f;
+ return JNI_TRUE;
+}
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeTerrainBrushCount(JNIEnv*,jclass){
  return static_cast<jint>(gBrushes.size());
 }
@@ -2773,7 +2805,17 @@ JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSceneSnapshot
   const auto&paint=gTerrainPaint[i];if(i)out<<",";
   out<<"["<<paint.x<<","<<paint.z<<","<<paint.radius<<",\""<<paint.texture<<"\"]";
  }
- out<<"],\"roads\":[";
+ out<<"],\"phoenixTerrain\":";
+ if(gPhoenixTerrain.empty())out<<"null";
+ else{
+  out<<"{\"version\":1,\"areaSqM\":"<<gPhoenixTerrain.areaSqM<<",\"nodes\":[";
+  for(size_t i=0;i<gPhoenixTerrain.nodes.size();++i){
+   const auto&n=gPhoenixTerrain.nodes[i];if(i)out<<",";
+   out<<"["<<n.x<<","<<n.z<<","<<n.h<<","<<n.p<<"]";
+  }
+  out<<"]}";
+ }
+ out<<",\"roads\":[";
  bool firstRoad=true;
  for(const auto&road:gRoads){
   // An unfinished one-point stroke is intentionally excluded from saved scenes.
@@ -3032,7 +3074,8 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsse
 // Validate everything before atomic swap on the GLES thread.
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene(
  JNIEnv*env,jclass,jint size,jboolean demo,jintArray kinds,jfloatArray transforms,
- jobjectArray modelKeys,jfloatArray terrainData,jobjectArray objectPaintKeys,
+ jobjectArray modelKeys,jfloatArray terrainData,jint phoenixArea,jintArray phoenixNodeData,
+ jobjectArray objectPaintKeys,
  jintArray styleCountData,jintArray styleIdData,jfloatArray styleColorData,
  jobjectArray styleTextureData,
  jfloatArray painting,jobjectArray terrainPaintKeys,
@@ -3040,6 +3083,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  jintArray roadCounts,jintArray roadMaterials,jfloatArray roadCoordinates,
  jboolean roadSidewalks,jboolean roadCrosswalks){
  if(!allowedWorldSize(size)||!kinds||!transforms||!modelKeys||!terrainData||
+    !phoenixNodeData||
     !objectPaintKeys||!styleCountData||!styleIdData||!styleColorData||
     !styleTextureData||!painting||!terrainPaintKeys||
     !roadIds||!roadWidths||!roadMarkings||!roadCounts||!roadMaterials||
@@ -3087,6 +3131,19 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
   env->GetFloatArrayRegion(terrainData,0,brushFloats,brushRaw.data());
   if(env->ExceptionCheck())return JNI_FALSE;
  }
+ // Full UV56 heightfield staging; rejecting a corrupt scene cannot erase
+ // houses or the previously open city's terrain.
+ const jsize pn=env->GetArrayLength(phoenixNodeData);
+ if(pn<0||pn%4!=0||pn>static_cast<jsize>(oe::phoenix::kMaxNodes*4))return JNI_FALSE;
+ std::vector<jint> phoenixRaw(static_cast<size_t>(pn));
+ if(pn)env->GetIntArrayRegion(phoenixNodeData,0,pn,phoenixRaw.data());
+ if(env->ExceptionCheck())return JNI_FALSE;
+ oe::phoenix::Field stagedPhoenix;
+ if(phoenixArea!=0){
+  std::vector<int> raw(phoenixRaw.begin(),phoenixRaw.end());
+  if(!oe::phoenix::Field::prepare(phoenixArea,size,raw,stagedPhoenix))
+   return JNI_FALSE;
+ }else if(pn!=0)return JNI_FALSE;
  const float half=static_cast<float>(size)*.5f;
  std::vector<TerrainBrush> stagedBrushes;
  stagedBrushes.reserve(static_cast<size_t>(brushFloats/4));
@@ -3238,6 +3295,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  if(offset!=static_cast<std::size_t>(coordinateCount))return JNI_FALSE;
  // Commit: no validation or allocation failures below this point.
  gEntities.swap(staged);gBrushes.swap(stagedBrushes);
+ gPhoenixTerrain=std::move(stagedPhoenix);
  gTerrainPaint.swap(stagedPaint);gTerrainRevision++;
  gRoads.swap(stagedRoads);gNextRoadId=nextRoadId;gSelectedRoad=0;
  gRoadSidewalks=roadSidewalks==JNI_TRUE;

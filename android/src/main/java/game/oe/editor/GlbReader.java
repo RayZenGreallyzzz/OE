@@ -29,7 +29,7 @@ import java.util.Set;
  */
 public final class GlbReader {
     public static final int MAX_BYTES = 64 * 1024 * 1024;
-    public static final int MAX_TRIANGLES = 90000;
+    public static final int MAX_TRIANGLES = 240000;
     public static final int MAX_NODES = 1024;
     private static final int MAX_DECODED_VIEW = 32 * 1024 * 1024;
     private static final int MAX_DECODED_TOTAL = 48 * 1024 * 1024;
@@ -444,7 +444,7 @@ public final class GlbReader {
                 int count=indices==null?positions.count:indices.count;
                 int triangles=count/3;
                 if(triangles==0)continue;
-                require((long)st.triangles+triangles<=MAX_TRIANGLES,"Модель больше 90 000 треугольников");
+                require((long)st.triangles+triangles<=MAX_TRIANGLES,"Слишком сложная единая модель (свыше 240 000 треугольников): нужен потоковый импорт");
                 Job j=new Job();j.positions=positions;j.indices=indices;j.uv=uv;
                 j.colors=colors;j.normals=normals;
                 j.triangles=triangles;j.matrix=matrix;j.color=color(st,p);
@@ -614,7 +614,7 @@ public final class GlbReader {
         for(Map.Entry<Integer,Integer> item:usedTextures.entrySet()){
             TextureReader.Image image=readTexture(st,item.getKey(),textureLimit);
             memoryUsed+=image.bytes.length;
-            require(memoryUsed<=32*1024*1024,"Слишком много памяти для текстур GLB");
+            require(memoryUsed<=64*1024*1024,"Текстуры GLB требуют больше 64 МиБ видеопамяти: нужны потоковые материалы");
             decoded[item.getValue()]=image;
         }
         byte[][] dataOut=new byte[decoded.length][];

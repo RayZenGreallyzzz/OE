@@ -1,103 +1,115 @@
-# OE 0.7.13: UV44 + UV56 in ONE owner app (experimental mode integration)
+# OE 0.7.13 v39 — единая стройка + ландшафт UV56, оригинал UV44 сохранён
 
-**User requirements (2026-11-19)**
+## Решение владельца (19 ноября 2026)
 
-1. **🏗 Стройка** uses the *entire original stable UV44 bundle*, unchanged byte-for-byte.
-2. **🌿 Ландшафт** exposes all UV56 landscape controls: raise/lower, ridge,
-   smooth, flatten, precision brush in cm, terrain tile import/paint, road
-   editing/marking, undo/redo, project save, GLB export, large-project behavior.
-3. One Android OE package and one user-facing mode menu, **not two separately
-   installed Phoenix APKs**. Preserve the original work and safe backups.
-4. Do not touch the public/main/stable builder code, Phoenix GLBs/purchased
-   assets, Android signing keys, or the separate ORVETHRA game repository.
+* Старый, раздельный Builder, ранее добавленный в OE, заменить.
+* **Одно приложение Orvetra Engine OE**, не два автономных Phoenix APK.
+* Дома и ландшафт в **одной рабочей сцене Three.js** с полным набором UV56:
+  изменение высот, кисти, сглаживание, дороги, покрытия и экспорт.
+* **Оригинальный Phoenix UV44 сохранить побайтово** для контроля и восстановления,
+  не менять его исходные модели/материалы/скрипты и не публиковать их в GitHub.
+* Без потери существующих проектов, без подмены сертификата и без merge в main.
 
-## Implemented in this isolated source branch
+## Реализованная архитектура в этой ветке
 
-* City OE now offers **🏗 Стройка UV44** and **🌿 Ландшафт UV56** entries.
-* Both open **the same PhoenixBuilderActivity within the same OE package**
-  `game.oe.editor.phoenix013fix1`. It offers an always-accessible **OE ▾**
-  mode selector without editing UV44's HTML/JS.
-* Build mode serves `assets/phoenix/assets/**` (pristine original UV44).
-* Landscape mode serves `assets/phoenix-uv56-overlay/assets/**` for exactly
-  seven altered/new files from UV56 and falls back to **the same original
-  UV44 bytes** for everything else. In landscape mode UV56's original
-  `clean-app.js` runs its landscape tools **in one Three.js scene with its
-  building objects**. No building GLB, library or geometry is patched.
-* Both mode URLs use the same HTTPS origin, maintaining WebView IndexedDB
-  storage for imported textures and private GLB references.
-* Before a mode switch, a native confirmation calls the existing
-  `NativeBridge.saveCleanProject` atomic snapshot machinery. On save failure
-  switching is CANCELLED; do not discard current work.
-* The UV44 JSON writer does not know `terrain`. The bridge preserves the
-  previous landscape field when a UV44-originating building save omitted it,
-  so a normal mode switch does not silently erase terrain. Landscape mode
-  writes the complete terrain field normally.
-* The first saved project is auto-loaded on entering each WebView mode.
-* No APK, licensed private files or keystore are committed here.
+Android package `game.oe.editor.phoenix013fix1`, versionCode **39**.
 
-## Package the *owner's* APK contents privately
+| Режим OE | Реализация | Состояние сцены |
+| --- | --- | --- |
+| 🏗 Стройка | UV56 `CleanBuilder`, вкладка `modeBuild` | ТА ЖЕ Three.js сцена |
+| 🌿 Ландшафт/дороги | UV56 `CleanBuilder`, вкладка `modeLandscape` | ТА ЖЕ Three.js сцена |
+| 🛟 Исходный UV44 | Оригинальный UV44 `index.html`/JS, только контроль/восстановление | Отдельная резервная страница |
+| 🏙 Город OE | Существующий нативный GLES редактор / сохранение OE | **Пока отдельная GLES-сцена**, не общий GPU canvas |
 
-This repo deliberately does **not** ship the original owner assets.
+* Кнопки **Стройка** и **Ландшафт** в OE входят в **одну Activity** и
+  загружают UV56-представление. После старта переключение вкладок вызывает
+  `#modeBuild.click()` / `#modeLandscape.click()` **без перезапуска страницы
+  и без потери зданий из памяти**. Здесь используется уже реализованная
+  навигация и ландшафтная сцена UV56, не новая переписанная механика.
+* Внутри WebView HTML/CSS/7 отличающихся JS-файлов происходят из UV56 APK.
+  **1904 общих веб-файла** (включая GLB, модели, скрипты строительных
+  инструментов, текстуры) берутся из исходного UV44 APK без изменения байтов.
+  В числе семи дельта-файлов есть изменённый `clean-app.js`, так что нельзя
+  считать строительное поведение UV56 буквально побайтово равным UV44.
+* Полностью оригинальный UV44 расположен отдельно в
+  `assets/phoenix/assets/**` и доступен через **OE ▾ → Оригинал UV44**.
+  Это безопасный резерв, **не прежний встроенный Builder**.
+* Две страницы используют один `https://appassets.androidplatform.net`
+  origin, поэтому IndexedDB для моделей/текстур общий.
+* При переходе к резервному UV44 и выходе в город применяется
+  `NativeBridge.saveCleanProject(JSON.stringify(PhoenixClean.project()))`
+  и прежняя история из 3 атомарных JSON-снапшотов. Если сохранение не
+  подтвердилось, переход **отменяется**, а текущая сцена остаётся открытой.
+* Когда резервный UV44 сохраняет JSON без `terrain`, Android-bridge сохраняет
+  последний корректный `terrain` из общего файла, не затирая его.
+* Готовый экспорт GLB может быть отправлен в существующий нативный импортёр OE,
+  если укладывается в безопасные пределы декодера. Слишком большой GLB можно
+  сохранить на устройство без изменения байтов.
+
+## Безопасная замена старой встроенной копии в сборочном каталоге
+
+Использовать **только приватно**, на машине владельца/изолированном runner.
 
 ```bash
 python3 tools/stage_uv44_uv56_private.py \
-  --uv44 "/path/to/Phoenix_Builder_UV44_Install.apk" \
-  --uv56 "/path/to/UV56_Landscape_Export_Performance_TEST.apk"
-# The first run only verifies identities and changes; it writes no files.
+ --uv44 "/private/Phoenix_Builder_UV44_Install.apk" \
+ --uv56 "/private/UV56_Landscape_Export_Performance_TEST.apk"
 
+# После проверки: собрать приватные web assets для одного OE APK
 python3 tools/stage_uv44_uv56_private.py \
-  --uv44 "/path/to/Phoenix_Builder_UV44_Install.apk" \
-  --uv56 "/path/to/UV56_Landscape_Export_Performance_TEST.apk" \
-  --assets-root android/src/main/assets
+ --uv44 "/private/Phoenix_Builder_UV44_Install.apk" \
+ --uv56 "/private/UV56_Landscape_Export_Performance_TEST.apk" \
+ --assets-root android/src/main/assets
 ```
 
-The packer rejects any other changed UV44 resources in UV56, before writing.
-Staged directories `android/src/main/assets/phoenix/` and
-`android/src/main/assets/phoenix-uv56-overlay/` are gitignored.
-No private GLB, paid packs, project files, keys, or owner material goes into
-GitHub Actions. The public CI APK is code only and cannot exercise the full
-private builder without owner-provided staged assets.
+Упаковщик:
+1. Проверяет ожидаемые 7 изменений и `modeBuild` / `modeLandscape` /
+   `CleanBuilder.bindLandscape` в реальном UV56 APK.
+2. Создаёт две **новые** директории во временной сборочной папке, проверяет
+   SHA-256 каждого скопированного файла.
+3. Заменяет **старые временные встроенные assets** атомарно и возвращает их
+   при сбое — не трогает установленный APK и пользовательские проекты.
+4. Не трогает `android/src/main/assets/medieval/` и другие независимые пакеты.
+5. `phoenix/**`, `phoenix-uv56-overlay/**`, ключи и лицензированные
+   файлы не допускаются в публичный GitHub. CI собирает только кодовую часть.
 
-## Limitations — DO NOT misrepresent
+## Честные ограничения
 
-* This is **ONE APK and shared project storage**, with two HTML scene variants
-  inside one WebView Activity. Switching modes saves/reopens a 3D scene.
-  It does **NOT** yet make native GLES3 city and Phoenix WebGL one GPU renderer
-  or one continuously live canvas. A real cross-renderer city/landscape data
-  adapter will be a separate milestone requiring device QA.
-* The original UV44's *portable* backup/export does **not** know about UV56
-  terrain. Export the full portable Phoenix JSON **from Landscape UV56 mode**
-  to include the terrain data; original building-only mode saves terrain
-  safely in native project snapshots but cannot guarantee terrain in its
-  own portable export.
-* Replacing the entire project using UV44 without matching terrain metadata
-  can be ambiguous. First export a full portable backup from Landscape mode.
-  No destructive new-project/reset workflow has yet passed device tests.
-* This branch does not solve any existing UV56 landscape regression or
-  guarantee that imported landscape GLB and the OE native terrain match.
-* No evidence of on-device FPS, saved-project compatibility, export/import
-  round-trip, pixel-perfect materials or signing compatibility is asserted.
-* **Never uninstall or overwrite the owner's current app to test**.
-  In-place update requires the matching owner's permanent PKCS#12
-  certificate (fingerprint documented in PR #36); it is not present here.
+* **Город OE и WebGL рабочее пространство пока не один непрерывный
+  GLES/Three.js холст.** Интеграция означает одно приложение, единый
+  строительный и ландшафтный Canvas **в режиме Phoenix**, и экспорт GLB в
+  существующий городской редактор. Прямая редактура UV56-рельефа внутри
+  нативного города потребует отдельного отображения/сериализации.
+* UV56 сохраняет свою отмеченную владельцем небольшую регрессию ландшафта.
+  Изменение её алгоритмов **не** входит в замену старого Builder.
+* Снапшот JSON содержит идентификаторы внешних текстур/GLB. Полный
+  переносимый Phoenix JSON со встроенными изображениями и моделями нужно
+  отдельно экспортировать из UV56. При маленьком свободном месте Android
+  сохранение может быть отклонено — тогда нельзя выходить с несохранённым.
+* Не объявлять совпадение рендера GLES города и Three.js/PBR. На планшете
+  нужны тесты реальной геометрии/покраски, сохранения, производительности.
+* Для обновления установленной v35–v37 нужна прежняя **постоянная ключевая
+  пара владельца**. Без оригинального `PKCS#12` и пароля нельзя выпускать
+  совместимое обновление. Никогда не просить удалить установленное OE ради
+  теста неподходящего APK.
 
-## Mandatory device acceptance criteria (before any release/merge)
+## Проверка на планшете перед релизом
 
-1. Launch OE, enter UV44 and build/edit the existing house **without changes
-   to tools, snapping, materials, or gizmo**.
-2. Save, switch in the same app to UV56 and load the same house. Verify
-   landscape tools work and building objects remain in that scene.
-3. Draw height, precision 1cm brush marks, uploaded terrain tiles, painted
-   masks, and roads/curbs. Undo/redo and repeat many strokes.
-4. Switch to UV44 and back. Confirm exact building coordinates and terrain,
-   including tiles; verify native JSON snapshot history does not silently lose
-   prior work. Try interrupted Android picker and low-storage cases.
-5. Export a full portable JSON while in **UV56 landscape** and import it
-   into a clean isolated test profile; compare included images/GLBs.
-6. Export combined GLB and load in native OE city; inspect slope, terrain
-   textures, road boundaries, house scale, source textures, graphics and FPS.
-7. Check old OE native terrain/road tools are unaffected. Keep PR #36 draft,
-   keep `main` untouched, and never ship with an unmatched signing cert.
+1. В одном OE открыть **Стройку**, создать/редактировать прежний дом.
+2. Не выходя из сцены, нажать **Ландшафт**, создать рельеф, дороги, покрыть
+   участок своими текстурами, проверить точность кисти, undo/redo.
+3. Снова нажать **Стройка**: дом и ландшафт остаются в прежней общей сцене.
+4. Сохранить, закрыть OE, открыть заново, проверить дом, высоты, маски и дороги.
+5. Экспортировать полный Phoenix JSON и GLB. Готовый GLB проверить в городе OE;
+   убедиться, что изображения и размеры сохранены.
+6. Проверить отдельный **Оригинал UV44** только на тестовой копии проекта,
+   без правок исходного UV44 APK.
+7. Проверить прерванный системный выбор файла и отказ в записи: исходные байты
+   и сохранения остаются, UI показывает ошибку и разрешает повтор.
+8. Сравнить с оригиналом UV44 и UV56 на настоящем планшете: FPS, детали
+   материалов, кисти, положение домов, экспорт/импорт; не выпускать релиз,
+   если регрессии нарастают.
 
-**Current state:** source staged for CI; device QA and full native-city
-integration still outstanding.
+База/откат до v39:
+`backup/oe-v38-before-unified-studio-2026-11-19`.
+Продолжаем работу в черновике PR #37, `main` и PR #36 не сливать.

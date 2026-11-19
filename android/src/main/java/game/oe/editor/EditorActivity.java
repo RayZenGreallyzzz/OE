@@ -112,7 +112,9 @@ public class EditorActivity extends Activity {
     private static native int nativeTrimUnusedAssets();
     private static native boolean nativeReplaceScene(int size, boolean demoRoads,
             int[] kinds, float[] transforms, String[] modelKeys, float[] terrain,
-            String[] objectPaintKeys, float[] painting, String[] terrainPaintKeys,
+            String[] objectPaintKeys, int[] styleCounts,int[] styleIds,
+            float[] styleColors,String[] styleTextures,
+            float[] painting, String[] terrainPaintKeys,
             int[] roadIds, float[] roadWidths, boolean[] roadMarkings,
             int[] roadCounts, int[] roadMaterials, float[] roadCoordinates,
             boolean roadSidewalks, boolean roadCrosswalks);
@@ -1390,7 +1392,7 @@ public class EditorActivity extends Activity {
                         activePaintKey=key;
                         message("Текстура добавлена · теперь нанеси её на деталь или землю");
                         surface.requestRender();
-                    }else message("Лимит текстур/памяти GPU. Максимум 8 изображений.");
+                    }else message("Лимит памяти GPU или 32 разных текстуры.");
                 });
             }catch(Exception err){
                 importing=false;message("Текстура не добавлена: "+err.getMessage());
@@ -1905,6 +1907,10 @@ public class EditorActivity extends Activity {
             }
             String[] modelKeys=new String[arr.length()];
             String[] objectPaintKeys=new String[arr.length()];
+            final int[] styleCounts=new int[arr.length()];
+            final java.util.ArrayList<Integer> styleIdList=new java.util.ArrayList<>();
+            final java.util.ArrayList<Float> styleColorList=new java.util.ArrayList<>();
+            final java.util.ArrayList<String> styleTextureList=new java.util.ArrayList<>();
             HashSet<String> referencedPaint=new HashSet<>();
             JSONArray paintJson=document.optJSONArray("terrainPaint");
             int paintCount=paintJson==null?0:paintJson.length();
@@ -1961,6 +1967,35 @@ public class EditorActivity extends Activity {
                     referencedPaint.add(e.paint);
                 }
                 objectPaintKeys[i]=e.paint;
+                JSONArray styles=object.optJSONArray("materialStyles");
+                if(object.has("materialStyles")&&styles==null)
+                    throw new Exception("Неверные варианты материалов "+i);
+                if(styles!=null){
+                    if(e.type!=6||styles.length()>64)
+                        throw new Exception("Слишком много материалов у объекта "+i);
+                    styleCounts[i]=styles.length();
+                    final HashSet<Integer> seenStyleIds=new HashSet<>();
+                    for(int st=0;st<styles.length();st++){
+                        JSONArray style=styles.getJSONArray(st);
+                        if(style.length()!=5)throw new Exception("Неверная запись материала");
+                        int matId=style.getInt(0);
+                        if(matId<-1||matId>511||!seenStyleIds.add(matId))
+                            throw new Exception("Недопустимый или повторный материал "+matId);
+                        styleIdList.add(matId);
+                        for(int ch=1;ch<=3;ch++){
+                            double value=style.getDouble(ch);
+                            if(!Double.isFinite(value)||value<0||value>2)
+                                throw new Exception("Недопустимый цвет материала");
+                            styleColorList.add((float)value);
+                        }
+                        String tex=style.getString(4);
+                        if(!tex.isEmpty()){
+                            if(!validTexture(tex))throw new Exception("Неверная текстура материала");
+                            referencedPaint.add(tex);
+                        }
+                        styleTextureList.add(tex);
+                    }
+                }
                 if(e.type==6){
                     e.asset=object.getString("asset");
                     if(!validAsset(e.asset))throw new Exception("Неверная ссылка модели");
@@ -1982,8 +2017,13 @@ public class EditorActivity extends Activity {
                 transforms[i*12+11]=e.qw;
                 modelKeys[i]=e.asset;
             }
+            final int[] styleIds=new int[styleIdList.size()];
+            final float[] styleColors=new float[styleColorList.size()];
+            final String[] styleTextures=styleTextureList.toArray(new String[0]);
+            for(int i=0;i<styleIds.length;i++)styleIds[i]=styleIdList.get(i);
+            for(int i=0;i<styleColors.length;i++)styleColors[i]=styleColorList.get(i);
             if(assets.size()>MAX_ASSETS)throw new Exception("Слишком много разных GLB-моделей");
-            if(referencedPaint.size()>8)throw new Exception("Слишком много текстур (макс. 8)");
+            if(referencedPaint.size()>32)throw new Exception("Слишком много разных текстур (макс. 32)");
             Map<String,TextureReader.Image> paintImages=new LinkedHashMap<>();
             for(String key:referencedPaint){
                 File texture=new File(sourceTextures==null?textureDir():sourceTextures,key);
@@ -2093,7 +2133,8 @@ public class EditorActivity extends Activity {
                         uploaded.add(entry.getKey());
                     }
                     if(!nativeReplaceScene(worldSize,demoRoads,kinds,transforms,modelKeys,
-                            terrainBrushes,objectPaintKeys,paintBrushes,paintBrushKeys,
+                            terrainBrushes,objectPaintKeys,styleCounts,styleIds,
+                            styleColors,styleTextures,paintBrushes,paintBrushKeys,
                             roadIds,roadWidths,roadMarkings,roadCounts,roadMaterials,roadCoordinates,
                             roadSidewalks,roadCrosswalks))
                         throw new Exception("Сцена не прошла полную проверку в движке");

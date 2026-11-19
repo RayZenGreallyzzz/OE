@@ -111,6 +111,7 @@ public class EditorActivity extends Activity {
     private static native int nativeTerrainBrushCount();
     private static native boolean nativeUv56SculptAtScreen(int tool,float x,float y,
             float radius,float power); // stage 1 compatibility
+    private static native boolean nativeGroundHitAtScreen(float x,float y);
     private static native void nativeSetNeutralLandPreview(boolean on);
     private static native int nativeUv56Area();
     private static native boolean nativeUv56ConfigureArea(int areaSqM);
@@ -201,6 +202,7 @@ public class EditorActivity extends Activity {
     // First open must select a working brush, not the passive camera mode.
     private volatile int uv56LandscapeMode=1,uv56BrushCm=400;
     private volatile boolean uv56NeutralCanvas=true; // editor view, not saved game data
+    private volatile boolean uv56ReverseOrbit=true; // owner can toggle direction
     private static final int MAX_TILE_LIBRARY=32; // imported files, not automatic GPU uploads
     private volatile String activePaletteCategory="Здания";
     private NativeLandscapePanel activeLandscapePanel;
@@ -925,6 +927,13 @@ public class EditorActivity extends Activity {
                 @Override public void neutralPreview(boolean neutral){
                     setUv56NeutralPreview(neutral);
                 }
+                @Override public void reverseCamera(boolean reverse){
+                    uv56ReverseOrbit=reverse;
+                    message(reverse?"Камера: обратное направление пальца":
+                        "Камера: стандартное направление пальца");
+                    if("Рельеф".equals(activePaletteCategory)&&drawerOpen)
+                        showPalette("Рельеф");
+                }
                 @Override public void uploadTexture(){pickPaintTexture();}
                 @Override public void chooseTexture(String key){
                     uv56LandscapeMode=6;
@@ -936,7 +945,7 @@ public class EditorActivity extends Activity {
                     toggleDrawer(false);
                 }
             },uv56LandscapeMode,uv56BrushCm,uv56SculptPower,textures,
-               activePaintKey,titles,uv56NeutralCanvas);
+               activePaintKey,titles,uv56NeutralCanvas,uv56ReverseOrbit);
         activeLandscapePanel=panel;
         paletteItems.addView(panel,new LinearLayout.LayoutParams(-1,-2));
         surface.queueEvent(()->{
@@ -3169,6 +3178,7 @@ public class EditorActivity extends Activity {
         private boolean gizmoEditStarted=false; // GL thread only.
         private volatile boolean paintStrokeFailed=false;
         private boolean uv56GestureStarted=false; // GL thread only
+        private boolean paintDragCamera=false; // GL thread only: sky pan never paints
         private float precisionScreenY(float y){
             return surfaceY(Math.max(0.f,y-dp(70))); // visible cursor ABOVE the finger
         }
@@ -3275,11 +3285,17 @@ public class EditorActivity extends Activity {
                     final boolean eraser=precisionPaintErase;
                     final float rad=precisionPaintRadius, strength=precisionPaintOpacity;
                     queueEvent(()->{
-                        nativePaintCursor(px,cy,rad);
-                        final boolean ok=materialPaintMode?
-                            nativeLayerStrokeStart(px,cy,rad,strength,paintKey,eraser):
-                            nativePaintStrokeBegin(px,cy,rad,strength,paintKey,eraser);
-                        if(!ok)paintStrokeFailed=true;
+                        paintDragCamera=!nativeGroundHitAtScreen(px,cy);
+                        if(paintDragCamera){
+                            // Start in dark background = navigate, never start a brush.
+                            nativePaintStrokeEnd();nativeLayerStrokeEnd();
+                        }else{
+                            nativePaintCursor(px,cy,rad);
+                            final boolean ok=materialPaintMode?
+                                nativeLayerStrokeStart(px,cy,rad,strength,paintKey,eraser):
+                                nativePaintStrokeBegin(px,cy,rad,strength,paintKey,eraser);
+                            if(!ok)paintStrokeFailed=true;
+                        }
                         requestRender();
                     });
                     return true;
@@ -3319,10 +3335,17 @@ public class EditorActivity extends Activity {
                     float x=e.getX(),y=e.getY();
                     if(precisionPaintMode){
                         final float px=surfaceX(x),py=precisionScreenY(y);
+                        final float ox=surfaceX(x-lastX),oy=surfaceY(y-lastY);
+                        final boolean reverse=uv56ReverseOrbit;
                         queueEvent(()->{
-                            if(!(materialPaintMode?nativeLayerStrokeMove(px,py):
-                                  nativePaintStrokeMove(px,py)))
+                            if(paintDragCamera){
+                                // A gesture that started outside visible land is
+                                // camera-only for its entire lifetime.
+                                nativeOrbit(reverse?-ox:ox,reverse?-oy:oy,1f);
+                            }else if(!(materialPaintMode?nativeLayerStrokeMove(px,py):
+                                  nativePaintStrokeMove(px,py))){
                                 paintStrokeFailed=true;
+                            }
                             interactiveRender();
                         });
                         lastX=x;lastY=y;
@@ -3343,6 +3366,7 @@ public class EditorActivity extends Activity {
                     final float dx=x-lastX,dy=y-lastY;
                     if(dx!=0||dy!=0){
                         final float sx=surfaceX(dx),sy=surfaceY(dy);
+                        final boolean reverse=uv56ReverseOrbit;
                         final boolean movedEnough=Math.hypot(x-downX,y-downY)>dp(5);
                         // All input decisions happen on the GLES event queue:
                         // axis hit-test on DOWN is guaranteed to run before MOVE.
@@ -3353,7 +3377,7 @@ public class EditorActivity extends Activity {
                                     gizmoEditStarted=nativeGizmoBegin(axis);
                                 if(gizmoEditStarted)nativeGizmoDrag(axis,sx,sy);
                             }else if(mapTopViewActive)nativePan(dx,dy);
-                            else nativeOrbit(dx,dy,1);
+                            else nativeOrbit(reverse?-sx:sx,reverse?-sy:sy,1);
                             interactiveRender();
                         });
                     }
@@ -3390,10 +3414,16 @@ public class EditorActivity extends Activity {
                     final float px=surfaceX(e.getX()),py=precisionScreenY(e.getY());
                     final boolean wasMultiTouch=multiTouch;
                     queueEvent(()->{
-                        if(!wasMultiTouch&&!(materialPaintMode?nativeLayerStrokeMove(px,py):
-                                  nativePaintStrokeMove(px,py)))paintStrokeFailed=true;
-                        nativePaintStrokeEnd();nativeLayerStrokeEnd();requestRender();
-                        if(paintStrokeFailed)message("Рисование остановлено: лимит участков/материалов, граница или текстура");
+                        if(!paintDragCamera&&!wasMultiTouch&&
+                           !(materialPaintMode?nativeLayerStrokeMove(px,py):
+                             nativePaintStrokeMove(px,py)))
+                            paintStrokeFailed=true;
+                        nativePaintStrokeEnd();nativeLayerStrokeEnd();
+                        final boolean cameraOnly=paintDragCamera;
+                        paintDragCamera=false;
+                        requestRender();
+                        if(!cameraOnly&&paintStrokeFailed)
+                            message("Рисование остановлено: лимит участков/материалов, граница или текстура");
                     });
                     multiTouch=false;
                     return true;
@@ -3484,6 +3514,7 @@ public class EditorActivity extends Activity {
                 queueEvent(()->{nativeGizmoEnd();gizmoEditStarted=false;
                     if(uv56GestureStarted)nativeUv56StrokeEnd();
                     uv56GestureStarted=false;
+                    paintDragCamera=false;
                     nativePaintStrokeEnd();nativeLayerStrokeEnd();requestRender();});
                 return true;
             }

@@ -24,6 +24,6 @@ for needle in (
 ):
     assert needle in java,needle
 assert "roads/traversal_graph.cpp" in cmake
-assert "OE R5.7 BEIGE+SCULPT TEST" in manifest
+assert "OE R5.7 SNOW GL FIX TEST" in manifest
 assert "android:allowBackup=\"false\"" in manifest
 print("OE_BRIDGE_EDITOR_INTEGRATION_OK: compiler wiring, yaw units, UI and undo")

@@ -38,6 +38,7 @@ final class NativeLandscapePanel extends LinearLayout {
         void uploadTexture();
         void chooseTexture(String key);
         void neutralPreview(boolean neutral);
+        void reverseCamera(boolean reverse);
         void close();
     }
     private static final int[] AREAS={1000,2500,5000,10000,50000,250000,1000000,2000000};
@@ -71,7 +72,8 @@ final class NativeLandscapePanel extends LinearLayout {
 
     NativeLandscapePanel(Context ctx,Host host,int activeMode,int brushCm,
                          float strength,File[] userTiles,String selectedKey,
-                         Map<String,String> tileTitles,boolean neutralPreview){
+                         Map<String,String> tileTitles,boolean neutralPreview,
+                         boolean reverseCamera){
         super(ctx);
         this.ctx=ctx;this.host=host;
         setOrientation(VERTICAL);
@@ -98,6 +100,11 @@ final class NativeLandscapePanel extends LinearLayout {
         modes.addView(beige,new LayoutParams(0,px(46),1));
         modes.addView(textured,new LayoutParams(0,px(46),1));
         addView(modes,new LayoutParams(-1,px(48)));
+        addView(button(reverseCamera?
+            "🎥 Камера: обратное направление ✓":
+            "🎥 Камера: стандартное направление ✓",
+            ()->host.reverseCamera(!reverseCamera)),
+            new LayoutParams(-1,px(44)));
         addView(button("🖼 Загрузить сразу 10–32 PNG/JPG",host::uploadTexture),
             new LayoutParams(-1,px(46)));
 

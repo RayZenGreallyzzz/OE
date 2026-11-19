@@ -2246,6 +2246,12 @@ public class EditorActivity extends Activity {
                 json.put("version",11);
             }
         }
+        if(json.has("collisionWalls")){
+            JSONArray walls=json.optJSONArray("collisionWalls");
+            if(walls==null||walls.length()==0||walls.length()>64)
+                throw new Exception("Сцена содержит неверные физические преграды");
+            json.put("version",12);
+        }
         String result=json.toString();
         if(result.getBytes(StandardCharsets.UTF_8).length>ProjectArchive.MAX_SCENE_BYTES)
             throw new Exception("Рисунок R4 превысил безопасный размер проекта");
@@ -3336,8 +3342,8 @@ public class EditorActivity extends Activity {
             }
             JSONObject document=new JSONObject(new String(jsonBytes.toByteArray(),StandardCharsets.UTF_8));
             final int sceneVersion=document.optInt("version",-1);
-            if(sceneVersion<1||sceneVersion>11)
-                throw new Exception("Неверная версия сцены (нужна 1–11)");
+            if(sceneVersion<1||sceneVersion>12)
+                throw new Exception("Неверная версия сцены (нужна 1–12)");
             final boolean demoRoads=document.optBoolean("demoRoads",false);
             final int worldSize=document.optInt("worldSize",1024);
             if(worldSize!=1024&&worldSize!=2048&&worldSize!=4096&&worldSize!=8192&&worldSize!=16384)
@@ -3384,7 +3390,7 @@ public class EditorActivity extends Activity {
             // Stage v10 editor guides alongside the scene, then hand all
             // validated coordinates to the native transactional replacement.
             JSONArray plotsJson=document.optJSONArray("editorPlots");
-            if((sceneVersion>=10&&(plotsJson==null||plotsJson.length()==0))||
+            if(((sceneVersion==10||sceneVersion==11)&&(plotsJson==null||plotsJson.length()==0))||
                (sceneVersion<10&&document.has("editorPlots"))||
                (document.has("editorPlots")&&plotsJson==null))
                 throw new Exception("Сцена v10 требует границы участков");
@@ -3409,6 +3415,41 @@ public class EditorActivity extends Activity {
                 plotIds[p]=id;plotNames[p]=label;
                 plotValues[3*p]=(float)x;plotValues[3*p+1]=(float)z;
                 plotValues[3*p+2]=size;
+            }
+
+            // Transactional physical wall preflight (a corrupt wall NEVER
+            // wipes the already opened city, terrain or editor blueprints).
+            JSONArray wallsJson=document.optJSONArray("collisionWalls");
+            if((sceneVersion<12&&document.has("collisionWalls"))||
+               (document.has("collisionWalls")&&wallsJson==null))
+                throw new Exception("Коллизии требуют сцену версии v12");
+            final int barrierCount=wallsJson==null?0:wallsJson.length();
+            if(barrierCount>64)throw new Exception("Максимум 64 коллизии");
+            final double[] wallRecords=new double[barrierCount*7];
+            HashSet<Integer> wallIds=new HashSet<>();
+            for(int i=0;i<barrierCount;i++){
+                JSONArray row=wallsJson.getJSONArray(i);
+                if(row.length()!=7)throw new Exception("Неверные данные коллизии");
+                for(int j=0;j<7;j++){
+                    double value=row.getDouble(j);
+                    if(!Double.isFinite(value))
+                        throw new Exception("Некорректные координаты стены");
+                    wallRecords[i*7+j]=value;
+                }
+                double idRaw=wallRecords[i*7];
+                int id=(int)idRaw;
+                if(id<1||id>1000000||idRaw!=id||!wallIds.add(id)||
+                   Math.abs(wallRecords[i*7+1])>worldSize*.5-1||
+                   Math.abs(wallRecords[i*7+2])>worldSize*.5-1||
+                   Math.abs(wallRecords[i*7+3])>worldSize*.5-1||
+                   Math.abs(wallRecords[i*7+4])>worldSize*.5-1||
+                   Math.hypot(wallRecords[i*7+3]-wallRecords[i*7+1],
+                              wallRecords[i*7+4]-wallRecords[i*7+2])<1.||
+                   Math.hypot(wallRecords[i*7+3]-wallRecords[i*7+1],
+                              wallRecords[i*7+4]-wallRecords[i*7+2])>512.||
+                   wallRecords[i*7+5]<.3||wallRecords[i*7+5]>4.||
+                   wallRecords[i*7+6]<1.||wallRecords[i*7+6]>30.)
+                    throw new Exception("Коллизия за пределами карты");
             }
 
             JSONArray savedLakes=document.optJSONArray("lakes");
@@ -3888,7 +3929,7 @@ public class EditorActivity extends Activity {
                             preciseTileCoords,preciseTileBytes,
                             materialCoords,materialKeys,materialWeights,lakeData,
                             uv56Area,uv56Nodes,
-                            plotIds,plotNames,plotValues))
+                            plotIds,plotNames,plotValues,wallRecords))
                         throw new Exception("Сцена не прошла полную проверку в движке");
                     if(previewGuide!=null){
                         if(!nativeMapCommit(previewGuide.centerX,previewGuide.centerZ,
@@ -3905,6 +3946,7 @@ public class EditorActivity extends Activity {
                     activePlotPlanId=firstPlotPlanId;
                     mapTopViewActive=false;
                     editorPlotsVisible=true;
+                    barriersVisible=true;barrierCutId=0;
                     committed=true;
                     roadMode=false;roadMoveMode=false;precisionPaintMode=false;materialPaintMode=false;lakeMode=false;
                     surface.requestRender();

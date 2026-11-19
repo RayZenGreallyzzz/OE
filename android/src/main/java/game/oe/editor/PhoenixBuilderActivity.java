@@ -85,13 +85,20 @@ public final class PhoenixBuilderActivity extends Activity {
                 .setTitle("📦 Готовый дом GLB")
                 .setMessage("Готовый GLB сохранён во временной папке. Выбери действие:")
                 .setPositiveButton("🏰 В город OE",(dialog,choice)->{
-                    if(next.file.length()>24L*1024*1024){
+                    // The OE city validates actual GLB geometry/texture memory.
+                    // Never reject 26+ MiB finished houses at the old 24 MiB
+                    // UI-only ceiling. Files beyond current in-memory decode
+                    // capacity can still be exported unchanged to Android.
+                    if(next.file.length()>GlbReader.MAX_BYTES){
                         new AlertDialog.Builder(this)
-                            .setTitle("Модель больше ограничения OE")
+                            .setTitle("Большой оригинальный GLB")
                             .setMessage("Файл "+(next.file.length()/1048576)+
-                                " МБ. Импорт в город пока поддерживает до 24 МБ.")
-                            .setPositiveButton("На устройство",(d,w)->startDeviceSave())
-                            .setNegativeButton("Отмена",(d,w)->dropPending()).show();
+                                " МиБ. Город пока может загрузить за один раз до "+
+                                (GlbReader.MAX_BYTES/(1024*1024))+
+                                " МиБ. Большие замки потребуют потоковой загрузки. "+
+                                "Оригинальный дом не изменён: сохрани GLB на устройство.")
+                            .setPositiveButton("📱 Сохранить GLB",(d,w)->startDeviceSave())
+                            .setNegativeButton("Остаться в стройке",(d,w)->dropPending()).show();
                         return;
                     }
                     pendingSave=null;pendingName=null;pendingMime=null;

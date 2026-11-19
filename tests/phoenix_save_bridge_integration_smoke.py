@@ -88,7 +88,10 @@ assert 'glUniform1f(gShader.locImportedLighting,0.f); // Do not alter road/terra
 assert 'JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeSetImportedLighting(' in cpp
 assert 'uniform float uImportedLighting;' in cpp
 assert 'if(uImportedLighting>.5)' in cpp
-assert 'vec3 base=pow(clamp(texel.rgb,0.,1.),vec3(2.2))*' in cpp
+assert 'vec3 base=srgbToLinear(texel.rgb)*' in cpp
+assert 'color=linearToSrgb(lit);' in cpp
+assert 'step(vec3(.04045),v)' in cpp
+assert 'step(vec3(.0031308),v)' in cpp
 assert 'vec3 fresnel=F0+(1.-F0)*pow(1.-VoH,5.);' in cpp
 assert 'roughness*=orm.g;' in cpp
 assert 'metallic*=orm.b;' in cpp

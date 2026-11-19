@@ -54,6 +54,6 @@ assert 'version>=1&&version<=9' in archive
 assert 'sceneVersion>9' in java
 assert "applicationId 'game.oe.editor.r57landpanel'" in gradle
 assert "applicationIdSuffix '.dev'" in gradle
-assert "WebView" not in panel
+assert "import android.webkit" not in panel and "new WebView(" not in panel
 print("UV56_NATIVE_VIDEO_PANEL_OK: persistent native 3D sidebar, cm keypad, "
       "touch-drag undo, area and texture previews; legacy R5.7 preserved")

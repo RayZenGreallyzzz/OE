@@ -16,6 +16,8 @@ jobs:
       - run: node --test tests/engine.test.cjs
       - name: Guard Phoenix save/recovery bridge against regressions
         run: python3 tests/phoenix_save_bridge_integration_smoke.py
+      - name: Verify stable UV44 assets and UV56 landscape delta staging
+        run: python3 -m unittest discover -s tests -p 'test_uv44_uv56_staging.py' -v
       - name: Verify real Phoenix export SHA-256 with byte-accurate JVM tests
         run: |
           mkdir -p /tmp/oe-phoenix-save-tests

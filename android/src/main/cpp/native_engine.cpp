@@ -134,6 +134,8 @@ static bool gEditorPlotsVisible=true;
 static std::vector<oe::runtime::WalkBarrier> gWalkBarriers;
 static int gNextWalkBarrierId=1;
 static bool gWalkBarriersVisible=true; // only magenta rendering is editor-only
+static bool gBarrierDraftPointVisible=false; // unsaved two-tap preview
+static float gBarrierDraftX=0.f,gBarrierDraftZ=0.f;
 static constexpr size_t MAX_EDITOR_PLOTS=32;
 static bool gNeutralLandPreview=false; // editor-only; not serialized
 static bool gUv56StrokeActive=false; // one touch gesture = one Undo action
@@ -252,6 +254,7 @@ void restoreScene(const SceneSnapshot&s){
  gBrushes=s.terrain;gTerrainPaint=s.paints;gUv56Terrain=s.uv56;
  gEditorPlots=s.editorPlots;gNextEditorPlotId=s.nextEditorPlotId;
  gWalkBarriers=s.barriers;gNextWalkBarrierId=s.nextBarrierId;
+ gBarrierDraftPointVisible=false;
  gEditorPlotsVisible=true;
  gTerrainRevision++;gSceneInitialized=true;
  gLakes=s.lakes;gSelectedLake=s.selectedLake;++gLakeRevision;
@@ -1318,7 +1321,8 @@ void drawEditorPlots(const Mat4&vp){
 // Visual guides for authored physical barriers; no renderer geometry is
 // ever used in the collision solver. Hidden in the actual game export.
 void drawCollisionBarrierGuides(const Mat4&vp){
- if(!gWalkBarriersVisible||gWalkBarriers.empty()||!gPaintMesh.vao)return;
+ if(!gPaintMesh.vao||(!gWalkBarriersVisible&&!gBarrierDraftPointVisible)||
+    (gWalkBarriers.empty()&&!gBarrierDraftPointVisible))return;
  glUniform1f(gShader.locMaterialLayer,0.f);
  glUniform1f(gShader.locTextured,0.f);
  glUniform1f(gShader.locGuide,0.f);
@@ -1331,7 +1335,7 @@ void drawCollisionBarrierGuides(const Mat4&vp){
  glUniform3f(gShader.locColor,1.f,1.f,1.f);
  glUniform1f(gShader.locLight,0.f);
  std::vector<float> vertices;
- for(const auto&w:gWalkBarriers){
+ if(gWalkBarriersVisible)for(const auto&w:gWalkBarriers){
   const float ax=static_cast<float>(w.ax),az=static_cast<float>(w.az),
               bx=static_cast<float>(w.bx),bz=static_cast<float>(w.bz);
   const float len=std::hypot(bx-ax,bz-az);
@@ -1359,6 +1363,24 @@ void drawCollisionBarrierGuides(const Mat4&vp){
      vertices.data(),GL_DYNAMIC_DRAW);
   glDrawArrays(GL_TRIANGLES,0,static_cast<GLsizei>(vertices.size()/11));
   ++gDrawCalls;gTriangles+=static_cast<int>(vertices.size()/33);
+ }
+ // One small amber editor-only marker at the first tap. Never exported,
+ // never turned into a wall, and no continuous render loop.
+ if(gBarrierDraftPointVisible){
+  vertices.clear();
+  auto mark=[&](float x,float z){
+   vertices.insert(vertices.end(),{x,terrainHeightAt(x,z)+.4f,z,
+       0.f,1.f,0.f,1.f,.73f,.12f,0.f,0.f});
+  };
+  const float x=gBarrierDraftX,z=gBarrierDraftZ,r=.8f;
+  mark(x-r,z-r);mark(x+r,z-r);mark(x+r,z+r);
+  mark(x-r,z-r);mark(x+r,z+r);mark(x-r,z+r);
+  glBindVertexArray(gPaintMesh.vao);
+  glBindBuffer(GL_ARRAY_BUFFER,gPaintMesh.buffer);
+  glBufferData(GL_ARRAY_BUFFER,static_cast<GLsizeiptr>(vertices.size()*sizeof(float)),
+     vertices.data(),GL_DYNAMIC_DRAW);
+  glDrawArrays(GL_TRIANGLES,0,6);
+  ++gDrawCalls;gTriangles+=2;
  }
  glBindVertexArray(0);
 }
@@ -1791,6 +1813,7 @@ void reset(bool demo){
  gUv56Terrain=oe::uv56::Terrain();gTerrainRevision++;gNextId=1;gSelected=0;
  gEditorPlots.clear();gNextEditorPlotId=1;gEditorPlotsVisible=true;
  gWalkBarriers.clear();gNextWalkBarrierId=1;gWalkBarriersVisible=true;
+ gBarrierDraftPointVisible=false;
  gLakes.clear();gSelectedLake=-1;++gLakeRevision;
  gRoads.clear();gSelectedRoad=0;gActiveRoad=0;gSelectedRoadPoint=-1;gRoadPending=false;++gRoadRevision;
  gPaintTiles.clear();gMaterialCanvas.clear();
@@ -3511,6 +3534,44 @@ JNIEXPORT jobjectArray JNICALL Java_game_oe_editor_EditorActivity_nativePlotList
  }
  return result;
 }
+// Dedicated GL-thread wall touch: the same terrain raycast as other editor
+// tools, with no new Android listeners, worker thread or scene mutation.
+JNIEXPORT jdoubleArray JNICALL Java_game_oe_editor_EditorActivity_nativeBarrierPointAtScreen(
+ JNIEnv*env,jclass,jfloat px,jfloat py){
+ float x=0.f,z=0.f;
+ if(!std::isfinite(px)||!std::isfinite(py)||!groundPoint(px,py,x,z)||
+    std::abs(x)>worldHalf()-1.f||std::abs(z)>worldHalf()-1.f)
+   return nullptr;
+ jdoubleArray result=env->NewDoubleArray(2);
+ if(!result)return nullptr;
+ const jdouble values[]={x,z};
+ env->SetDoubleArrayRegion(result,0,2,values);
+ return result;
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeBarrierDraftPoint(
+ JNIEnv*,jclass,jboolean visible,jfloat x,jfloat z){
+ gBarrierDraftPointVisible=visible==JNI_TRUE&&std::isfinite(x)&&
+   std::isfinite(z)&&std::abs(x)<worldHalf()-1.f&&
+   std::abs(z)<worldHalf()-1.f;
+ if(gBarrierDraftPointVisible){
+  gBarrierDraftX=x;gBarrierDraftZ=z;
+ }
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeBarrierEdit(
+ JNIEnv*,jclass,jint id,jdouble ax,jdouble az,jdouble bx,jdouble bz,
+ jdouble thickness,jdouble height){
+ if(id<=0)return JNI_FALSE;
+ oe::runtime::WalkBarrier edited{static_cast<std::uint64_t>(id),
+   ax,az,bx,bz,thickness,height};
+ if(!oe::runtime::validWalkBarrier(edited,worldHalf()))return JNI_FALSE;
+ for(auto&wall:gWalkBarriers)if(wall.id==edited.id){
+  if(wall.ax==ax&&wall.az==az&&wall.bx==bx&&wall.bz==bz&&
+     wall.thickness==thickness&&wall.height==height)return JNI_TRUE;
+  recordEdit(); // one Undo restores old endpoints, thickness and height
+  wall=edited;return JNI_TRUE;
+ }
+ return JNI_FALSE;
+}
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeBarrierAdd(
  JNIEnv*,jclass,jdouble ax,jdouble az,jdouble bx,jdouble bz,
  jdouble thickness,jdouble height){
@@ -4154,6 +4215,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  gUv56Terrain=std::move(stagedUv56);
  gEditorPlots=std::move(stagedPlots);gNextEditorPlotId=nextPlotId;
  gWalkBarriers=std::move(stagedWalls);gNextWalkBarrierId=nextWallId;
+ gBarrierDraftPointVisible=false;
  gWalkBarriersVisible=true;
  gEditorPlotsVisible=true;
  gLakes.swap(stagedLakes);gSelectedLake=-1;++gLakeRevision;

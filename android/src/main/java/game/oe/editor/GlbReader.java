@@ -39,6 +39,8 @@ public final class GlbReader {
     public static final class Result {
         public final float[] vertices; // [pos.xyz, normal.xyz, color.rgb, uv.xy] per vertex
         public final int[] draws; // [firstVertex, vertexCount, baseColorTextureSlot] per batch
+        public final int[] materialIds; // glTF material index per batch; shared across all copies
+        public final String[] materialNames; // source material labels, never rewritten
         public final int[] pbrTextures; // [normalSlot, metallicRoughnessSlot] per batch
         public final float[] pbrFactors; // [roughness, metallic, normalScale] per batch
         public final byte[][] imageData; // RGBA8 or ETC2, indexed by textureSlot
@@ -52,7 +54,8 @@ public final class GlbReader {
         public final boolean previewOmitsTextures, previewOmitsRig;
         Result(float[] vertices, int triangles, float boundCenterY, float boundRadius,
                boolean previewOmitsTextures, boolean previewOmitsRig,
-               int[] draws,int[] pbrTextures,float[] pbrFactors,
+               int[] draws,int[] materialIds,String[] materialNames,
+               int[] pbrTextures,float[] pbrFactors,
                byte[][] imageData,int[] imageInfo) {
             this.vertices = vertices;
             this.triangles = triangles;
@@ -61,6 +64,8 @@ public final class GlbReader {
             this.previewOmitsTextures=previewOmitsTextures;
             this.previewOmitsRig=previewOmitsRig;
             this.draws=draws;
+            this.materialIds=materialIds;
+            this.materialNames=materialNames;
             this.pbrTextures=pbrTextures;
             this.pbrFactors=pbrFactors;
             this.imageData=imageData;
@@ -75,7 +80,7 @@ public final class GlbReader {
     }
     private static final class Job {
         Access positions, indices, uv, colors, normals;
-        int triangles, textureIndex=-1, normalTextureIndex=-1,
+        int triangles, materialId=-1, textureIndex=-1, normalTextureIndex=-1,
             metallicRoughnessTextureIndex=-1;
         float roughness=1.f,metallic=1.f,normalScale=1.f;
         float[] matrix, color;
@@ -450,6 +455,10 @@ public final class GlbReader {
                 j.triangles=triangles;j.matrix=matrix;j.color=color(st,p);
                 int materialIndex=p.optInt("material",-1);
                 JSONArray materials=st.gltf.optJSONArray("materials");
+                require(materialIndex==-1||(materials!=null&&
+                        materialIndex>=0&&materialIndex<materials.length()),
+                    "GLB: неправильный индекс материала");
+                j.materialId=materialIndex;
                 if(materialIndex>=0&&materials!=null&&materialIndex<materials.length()){
                     JSONObject mat=materials.getJSONObject(materialIndex);
                     JSONObject pbr=mat.optJSONObject("pbrMetallicRoughness");
@@ -527,6 +536,14 @@ public final class GlbReader {
         require(st.triangles>0,"В GLB нет доступной треугольной геометрии");
         float[] verts=new float[st.triangles*33];
         int[] draws=new int[st.jobs.size()*3];
+        int[] materialIds=new int[st.jobs.size()];
+        JSONArray gltfMaterials=gltf.optJSONArray("materials");
+        String[] materialNames=new String[gltfMaterials==null?0:gltfMaterials.length()];
+        for(int mi=0;mi<materialNames.length;mi++){
+            String label=gltfMaterials.getJSONObject(mi).optString("name","").trim();
+            materialNames[mi]=label.isEmpty()?"Материал "+(mi+1):
+                label.substring(0,Math.min(label.length(),90));
+        }
         int[] pbrTextures=new int[st.jobs.size()*2];
         float[] pbrFactors=new float[st.jobs.size()*3];
         Map<Integer,Integer> usedTextures=new LinkedHashMap<>();
@@ -538,6 +555,7 @@ public final class GlbReader {
             int normalMap=slot(usedTextures,j.normalTextureIndex);
             int metalMap=slot(usedTextures,j.metallicRoughnessTextureIndex);
             final int batch=drawIndex/3;
+            materialIds[batch]=j.materialId;
             draws[drawIndex++]=out/11;
             draws[drawIndex++]=j.triangles*3;
             draws[drawIndex++]=base;
@@ -628,6 +646,6 @@ public final class GlbReader {
         }
         boolean omitted=(images!=null&&images.length()>0&&usedTextures.isEmpty());
         return new Result(verts,st.triangles,dy*.5f,sphere+.05f,omitted,rigged,
-            draws,pbrTextures,pbrFactors,dataOut,imageInfo);
+            draws,materialIds,materialNames,pbrTextures,pbrFactors,dataOut,imageInfo);
     }
 }

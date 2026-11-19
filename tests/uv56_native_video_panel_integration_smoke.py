@@ -21,7 +21,7 @@ for needle in (
     "Диаметр кисти", "Радиус кисти",
     "−1 см", "+1 см", "⌗ Ввести см",
     "setOnSeekBarChangeListener", "Сила кисти",
-    "Покрытие / загруженный тайл", "Добавить сразу 10–32 тайла PNG / JPG",
+    "Покрытие / загруженный тайл", "Загрузить сразу 10–32 PNG/JPG",
     "smallPreview", "inJustDecodeBounds", "inSampleSize",
     "host.chooseTexture(key)", "host.createArea(",
 ):
@@ -52,7 +52,7 @@ assert 'chooseTerrainBrush' not in terrain_section
 assert 'enterTerrainMode' not in terrain_section
 assert 'version>=1&&version<=9' in archive
 assert 'sceneVersion>9' in java
-assert "applicationId 'game.oe.editor.r57tilefix'" in gradle
+assert "applicationId 'game.oe.editor.r57beigefix'" in gradle
 assert "applicationIdSuffix '.dev'" in gradle
 assert "import android.webkit" not in panel and "new WebView(" not in panel
 print("UV56_NATIVE_VIDEO_PANEL_OK: persistent native 3D sidebar, cm keypad, "

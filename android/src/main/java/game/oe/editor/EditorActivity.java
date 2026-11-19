@@ -93,6 +93,9 @@ public class EditorActivity extends Activity {
     private static native boolean nativeBarrierEdit(int id,double ax,double az,
         double bx,double bz,double thickness,double height);
     private static native boolean nativeBarrierDelete(int id);
+    private static native int nativeBarrierPickAtScreen(float px,float py);
+    private static native int nativeBarrierMoveAtScreen(int id,int mode,float px,float py);
+    private static native void nativeBarrierSelect(int id);
     private static native int nativeBarrierCutAtScreen(int id,float px,float py,
         float radius);
     private static native String[] nativeBarrierList();
@@ -231,6 +234,8 @@ public class EditorActivity extends Activity {
     private volatile int barrierCutId=0;
     private volatile float barrierCutRadius=4f;
     private volatile boolean barrierDrawMode=false;
+    private volatile boolean barrierPickMode=false;
+    private volatile int barrierMoveId=0,barrierMoveAction=0;
     private volatile int barrierDrawGeneration=0;
     private double[] barrierDraftStart=null; // GL thread only; never saved
     private NativeLandscapePanel activeLandscapePanel;
@@ -590,7 +595,7 @@ public class EditorActivity extends Activity {
     }
     private void showPalette(String category){
         // Entering another tool must never leave a hidden wall touch handler.
-        if(!"Коллизии".equals(category)&&(barrierDrawMode||barrierCutId>0))
+        if(!"Коллизии".equals(category)&&(barrierDrawMode||barrierCutId>0||barrierPickMode||barrierMoveId>0))
             cancelPlace();
         paletteItems.removeAllViews();
         activeLandscapePanel=null;
@@ -679,6 +684,8 @@ public class EditorActivity extends Activity {
                 ()->createCollisionBarrier(30));
             addPaletteOption("🧱 Поставить преграду 100 м",
                 ()->createCollisionBarrier(100));
+            addPaletteOption("👉 Выбрать отрезок касанием земли",
+                this::startBarrierPick);
             addPaletteOption("🧱 Список / изменить коллизии",this::chooseCollisionBarrier);
             addPaletteOption(barriersVisible?"👁 Скрыть розовую разметку":
                 "👁 Показать розовую разметку",this::toggleCollisionBarriers);
@@ -830,10 +837,11 @@ public class EditorActivity extends Activity {
     private void cancelPlace() {
         barrierCutId=0;
         barrierDrawMode=false;
+        barrierPickMode=false;barrierMoveId=0;
         ++barrierDrawGeneration;
         barrierDraftStart=null; // actual GL state is cleared on its queue below
         if(surface!=null)surface.queueEvent(()->
-            nativeBarrierDraftPoint(false,0f,0f));
+            {nativeBarrierDraftPoint(false,0f,0f);nativeBarrierSelect(0);} );
         uv56SculptTool=0;
         if(surface!=null)surface.queueEvent(EditorActivity::nativeUv56StrokeEnd);
         paintTerrainMode=false;roadMode=false;roadMoveMode=false;precisionPaintMode=false;
@@ -997,6 +1005,44 @@ public class EditorActivity extends Activity {
             "продолжает стену. Границы не влияют на грунт.");
         toggleDrawer(false);
     }
+    private void startBarrierPick(){
+        if(importing)return;
+        if(walkControlsActive)finishWalkControls();
+        cancelPlace();
+        barrierPickMode=true;
+        ++barrierDrawGeneration;
+        if(!barriersVisible){
+            barriersVisible=true;
+            surface.queueEvent(()->nativeBarrierShow(true));
+        }
+        statusText.setText("👉 ВЫБОР СТЕНЫ: коснись розового отрезка · "+
+            "два пальца — камера · ✕ отменить");
+        message("Нажми на нужный розовый отрезок. "+
+            "Выделенная стена станет жёлтой: начало зелёное, конец голубой.");
+        toggleDrawer(false);
+    }
+    private void startBarrierMove(int id,int mode){
+        if(importing||id<1||mode<0||mode>2)return;
+        if(walkControlsActive)finishWalkControls();
+        cancelPlace();
+        barrierMoveId=id;barrierMoveAction=mode;
+        ++barrierDrawGeneration;
+        if(!barriersVisible){
+            barriersVisible=true;
+            surface.queueEvent(()->nativeBarrierShow(true));
+        }
+        surface.queueEvent(()->{
+            nativeBarrierSelect(id);
+            surface.requestRender();
+        });
+        statusText.setText(mode==0?"✏ Коснись НОВОГО НАЧАЛА стены · ✕ отменить":
+            mode==1?"✏ Коснись НОВОГО КОНЦА стены · ✕ отменить":
+                     "✏ Коснись нового ЦЕНТРА всей стены · ✕ отменить");
+        message(mode==0?"Новая первая точка (зелёная)":
+            mode==1?"Новая последняя точка (голубая)":
+                "Перенос всего отрезка без изменения длины");
+        toggleDrawer(false);
+    }
     private void editCollisionBarrier(String row){
         if(importing)return;
         final String[] parts=row.split("\\|",7);
@@ -1106,7 +1152,7 @@ public class EditorActivity extends Activity {
     }
     private void chooseCollisionBarrier(){
         if(importing)return;
-        if(barrierDrawMode)cancelPlace();
+        if(barrierDrawMode||barrierPickMode||barrierMoveId>0)cancelPlace();
         if(walkControlsActive)finishWalkControls();
         surface.queueEvent(()->{
             String[] raw=nativeBarrierList();
@@ -1134,11 +1180,17 @@ public class EditorActivity extends Activity {
         final int id;
         try{id=Integer.parseInt(parts[0]);}
         catch(NumberFormatException e){return;}
+        surface.queueEvent(()->{
+            nativeBarrierSelect(id);surface.requestRender();
+        });
         final String[] options={
             "✂ Вырезать проход 8 м касанием",
             "✂ Вырезать проход 16 м касанием",
+            "🟢 Перенести начало стены касанием",
+            "🔵 Перенести конец стены касанием",
+            "↔ Переместить весь отрезок касанием",
             "✏ Изменить X/Z, толщину и высоту",
-            "🗑 Удалить всю преграду",
+            "🗑 Удалить только этот отрезок",
             "🧍 Пройти сквозь стену путником"
         };
         new AlertDialog.Builder(this).setTitle("Коллизия #"+id)
@@ -1152,12 +1204,15 @@ public class EditorActivity extends Activity {
                     message("Коснись нужного места на розовой линии "+
                         "одним пальцем. Камера пока зафиксирована.");
                     toggleDrawer(false);
-                }else if(k==2){
+                }else if(k>=2&&k<=4){
+                    startBarrierMove(id,k-2);
+                }else if(k==5){
                     editCollisionBarrier(row);
-                }else if(k==3){
+                }else if(k==6){
                     new AlertDialog.Builder(this)
-                        .setTitle("Удалить всю физическую преграду?")
-                        .setMessage("Дороги, горы и здания сохраняются.")
+                        .setTitle("Удалить только отрезок #"+id+"?")
+                        .setMessage("Остальные физические стены цепочки, "+
+                            "дороги, горы и здания сохраняются.")
                         .setPositiveButton("Удалить",(d2,k2)->
                             surface.queueEvent(()->{
                                 if(nativeBarrierDelete(id)){

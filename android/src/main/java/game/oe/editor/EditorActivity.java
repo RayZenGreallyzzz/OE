@@ -707,6 +707,7 @@ public class EditorActivity extends Activity {
             .setNegativeButton("Отмена",null).show();
     }
     private void enterPlaceMode(int kind, String asset) {
+        uv56SculptTool=0; // exclusive tools; preserve R5.7 inputs
         if(importing) { message("Сначала дождись завершения импорта"); return; }
         terrainMode=0;lakeMode=false;paintTerrainMode=false;roadMode=false;roadMoveMode=false;precisionPaintMode=false;materialPaintMode=false;
         materialPaintMode=false;
@@ -816,6 +817,7 @@ public class EditorActivity extends Activity {
             }).show();
     }
     private void enterTerrainMode(int direction){
+        uv56SculptTool=0; // exclusive tools; preserve R5.7 inputs
         if(importing){message("Дождись завершения операции");return;}
         placingKind=-1;placingGlb=null;paintTerrainMode=false;roadMode=false;roadMoveMode=false;lakeMode=false;
         precisionPaintMode=false;materialPaintMode=false;
@@ -847,6 +849,7 @@ public class EditorActivity extends Activity {
     }
 
     private void beginNewRoad(){
+        uv56SculptTool=0; // exclusive tools; preserve R5.7 inputs
         if(importing){message("Дождись завершения импорта");return;}
         placingKind=-1;placingGlb=null;terrainMode=0;lakeMode=false;paintTerrainMode=false;precisionPaintMode=false;materialPaintMode=false;roadMoveMode=false;roadMode=true;
         surface.queueEvent(()->{nativeRoadBegin();surface.requestRender();});
@@ -860,6 +863,7 @@ public class EditorActivity extends Activity {
         statusText.setText("Дорога завершена · выбери другую или отредактируй ширину.");
     }
     private void continueExistingRoad(){
+        uv56SculptTool=0; // exclusive tools; preserve R5.7 inputs
         if(importing)return;
         surface.queueEvent(()->{
             if(nativeRoadContinue()){
@@ -931,6 +935,7 @@ public class EditorActivity extends Activity {
         });
     }
     private void onRoadPointChosen(int index,double oldX,double oldZ,boolean byTap){
+        uv56SculptTool=0; // exclusive tools; preserve R5.7 inputs
         if(byTap){
             roadMode=false;roadMoveMode=true;
             placingKind=-1;placingGlb=null;paintTerrainMode=false;
@@ -2119,6 +2124,7 @@ public class EditorActivity extends Activity {
         });
     }
     private void activateTerrainPainting(){
+        uv56SculptTool=0; // exclusive tools; preserve R5.7 inputs
         if(activePaintKey.isEmpty()){
             message("Сначала загрузи и выбери PNG/JPG");return;
         }
@@ -2130,6 +2136,7 @@ public class EditorActivity extends Activity {
     }
 
     private void activatePrecisionPaint(boolean erase){
+        uv56SculptTool=0; // exclusive tools; preserve R5.7 inputs
         if(importing){message("Дождись окончания загрузки");return;}
         if(!erase&&activePaintKey.isEmpty()){
             message("Сначала загрузи и выбери текстуру PNG/JPG");return;
@@ -2144,6 +2151,7 @@ public class EditorActivity extends Activity {
     }
 
     private void activateMaterialPaint(boolean erase){
+        uv56SculptTool=0; // exclusive tools; preserve R5.7 inputs
         if(importing){message("Дождись окончания импорта");return;}
         if(activePaintKey.isEmpty()){
             message("Сначала выбери материал PNG/JPG в библиотеке текстур");return;

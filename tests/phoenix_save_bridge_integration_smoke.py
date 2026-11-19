@@ -253,3 +253,15 @@ assert "gAssets.size()" in cpp
 assert 'Button builderMode=button("🏗 Стройка",this::openBuilderMode);' in editor
 assert 'startActivityForResult(new Intent(this,PhoenixBuilderActivity.class),PHOENIX_BUILDER)' in editor
 print("OK: per-instance roof/wall material variants reuse GPU assets and hashed textures across city save/reload")
+
+# v37: neighbourhood tools create only Entity clones, not duplicated GLB images.
+assert 'nativeDuplicateSelectedGrid(int columns,int rows)' in editor
+assert 'addControl(neighbourhoodRow,"🏘 Ряд ×10"' in editor
+assert 'addControl(neighbourhoodRow,"🏙 Квартал ×50"' in editor
+assert 'JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeDuplicateSelectedGrid(' in cpp
+assert 'gEntities.size()+static_cast<size_t>(columns*rows-1)>MAX_ENTITIES' in cpp
+assert 'const Entity prototype=*original;' in cpp
+assert 'recordEdit();\n int added=0;' in cpp
+assert 'const Vec3 step=cloneSpacing(prototype);' in cpp
+assert 'std::hypot(width,depth)+2.f' in cpp
+print("OK: large-building-aware 10/50 clone grid shares original GPU resources and styles")

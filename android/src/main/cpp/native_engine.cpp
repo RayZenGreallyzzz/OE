@@ -2818,28 +2818,81 @@ static bool oeCurrentTraversalGraph(oe::roads::TraversalGraph&result){
 }
 // The R5.6 ghost is NOT part of the saved editor scene. It uses the actual
 // portable Character WalkController, with terrain and bridge deck collision.
-JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeWalkPreviewStart(
- JNIEnv*,jclass){
+// Initialise a preview with *fresh* authored barriers. For a test launched
+// from a selected wall, always spawn OUTSIDE the wall's capsule clearance:
+// the old preview started exactly at its midpoint, apparently walking
+// straight through a wall because the collision solver allows escape.
+bool oeStartWalkPreview(int targetBarrierId){
  oe::roads::TraversalGraph traversal;
- if(!oeCurrentTraversalGraph(traversal))return JNI_FALSE;
+ if(!oeCurrentTraversalGraph(traversal))return false;
  const auto ground=[](double x,double z)->double{
   return terrainHeightAt(static_cast<float>(x),static_cast<float>(z));
  };
  oe::runtime::WalkController demo;
- if(!demo.configure(traversal,ground,worldHalf(),gWalkBarriers))return JNI_FALSE;
+ if(!demo.configure(traversal,ground,worldHalf(),gWalkBarriers))return false;
  double x=gTarget.x,z=gTarget.z;
- if(const auto* selected=gRoads.find(gSelectedRoad)){
-  if(!selected->controlPoints.empty()){
-   x=selected->controlPoints.front().x;
-   z=selected->controlPoints.front().z;
+ if(targetBarrierId==0){
+  if(const auto* selected=gRoads.find(gSelectedRoad)){
+   if(!selected->controlPoints.empty()){
+    x=selected->controlPoints.front().x;
+    z=selected->controlPoints.front().z;
+   }
   }
  }
- if(!demo.spawn(x,z))return JNI_FALSE;
+ const oe::runtime::WalkBarrier* focus=nullptr;
+ double nearest=1e30;
+ for(const auto&w:gWalkBarriers){
+  const double d=oe::runtime::walkPointSegmentDistance(x,z,
+     w.ax,w.az,w.bx,w.bz);
+  if(targetBarrierId>0){
+   if(w.id==static_cast<std::uint64_t>(targetBarrierId)){focus=&w;break;}
+  }else if(d<w.thickness*.5+.36+.2&&d<nearest){
+   focus=&w;nearest=d;
+  }
+ }
+ if(targetBarrierId>0&&!focus)return false;
+ const auto safePoint=[&](double px,double pz)->bool{
+  if(!std::isfinite(px)||!std::isfinite(pz)||
+     std::abs(px)>worldHalf()-1.||std::abs(pz)>worldHalf()-1.)return false;
+  for(const auto&wall:gWalkBarriers){
+   if(oe::runtime::walkPointSegmentDistance(px,pz,
+       wall.ax,wall.az,wall.bx,wall.bz)<
+       wall.thickness*.5+.36+.2)return false;
+  }
+  return demo.spawn(px,pz);
+ };
+ bool spawned=false;
+ if(focus){
+  const double dx=focus->bx-focus->ax,dz=focus->bz-focus->az;
+  const double len=std::hypot(dx,dz);
+  if(len<1.)return false;
+  const double t=targetBarrierId>0?.5:
+    std::clamp(((x-focus->ax)*dx+(z-focus->az)*dz)/(len*len),0.,1.);
+  const double px=focus->ax+t*dx,pz=focus->az+t*dz;
+  const double nx=-dz/len,nz=dx/len;
+  for(const double extra:{1.5,3.0,5.0}){
+   const double offset=focus->thickness*.5+.36+extra;
+   for(const double sign:{-1.,1.}){
+    if(safePoint(px+nx*sign*offset,pz+nz*sign*offset)){
+     spawned=true;break;
+    }
+   }
+   if(spawned)break;
+  }
+ }else spawned=safePoint(x,z);
+ if(!spawned)return false;
  gWalkPreview=std::move(demo);
  const auto&position=gWalkPreview.state().feet;
  gTarget={static_cast<float>(position.x),static_cast<float>(position.y+1.2),
           static_cast<float>(position.z)};
- return JNI_TRUE;
+ return true;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeWalkPreviewStart(
+ JNIEnv*,jclass){return oeStartWalkPreview(0)?JNI_TRUE:JNI_FALSE;}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeWalkPreviewStartAtBarrier(
+ JNIEnv*,jclass,jint barrierId){
+ if(barrierId<1)return JNI_FALSE;
+ return oeStartWalkPreview(barrierId)?JNI_TRUE:JNI_FALSE;
 }
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeWalkPreviewStep(
  JNIEnv*,jclass,jfloat x,jfloat z,jboolean jump,jint ticks){

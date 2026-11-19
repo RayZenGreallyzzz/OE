@@ -51,7 +51,7 @@ public final class ProjectArchive {
         JSONObject json=new JSONObject(scene);
         int version=json.optInt("version",-1);
         JSONObject guide=json.optJSONObject("mapReference");
-        check(version>=1&&version<=8,"Неподдерживаемая версия сцены");
+        check(version>=1&&version<=9,"Неподдерживаемая версия сцены");
         if(version<3){
             check(!json.has("mapReference"),"Подложка требует сцену версии 3+");
             return null;
@@ -207,13 +207,51 @@ public final class ProjectArchive {
                   "Озеро выходит за пределы карты или имеет неверную высоту");
         }
     }
+    // UV56 native heightfield is permitted ONLY in a version-9 city file.
+    // Previous v1-v8 cities continue to be read exactly as before.
+    private static void validateNativeUv56(JSONObject doc,int version) throws Exception {
+        JSONObject field=doc.optJSONObject("uv56Terrain");
+        check((version==9&&field!=null)||(version<9&&!doc.has("uv56Terrain")),
+            "Повреждённое расширение UV56 / неправильная версия");
+        if(field==null)return;
+        check(field.optInt("version",-1)==1&&
+              "m".equals(field.optString("unit",""))&&
+              field.optInt("step",-1)==1,"Неверные единицы высот UV56");
+        final double area=field.getDouble("areaSqM");
+        final double world=doc.getDouble("worldSize");
+        check(Double.isFinite(area)&&area==Math.rint(area)&&
+              area>=1000&&area<=2000000&&Math.sqrt(area)<=world,
+              "Рельеф UV56 не помещается в сцене");
+        JSONArray nodes=field.getJSONArray("nodes");
+        check(nodes.length()>0&&nodes.length()<=32768,
+              "Превышено количество узлов земли");
+        java.util.HashSet<String> unique=new java.util.HashSet<>();
+        for(int i=0;i<nodes.length();i++){
+            JSONArray row=nodes.getJSONArray(i);
+            check(row.length()==4,"Повреждён узел UV56");
+            int[] ints=new int[4];
+            for(int j=0;j<4;j++){
+                double number=row.getDouble(j);
+                check(Double.isFinite(number)&&number==Math.rint(number)&&
+                      number>=Integer.MIN_VALUE&&number<=Integer.MAX_VALUE,
+                      "Некорректное значение UV56");
+                ints[j]=(int)number;
+            }
+            check(Math.abs(ints[0])<=Math.sqrt(area)/2+1&&
+                  Math.abs(ints[1])<=Math.sqrt(area)/2+1&&
+                  ints[2]>=-60000&&ints[2]<=60000&&
+                  ints[3]>=0&&ints[3]<=5&&
+                  unique.add(ints[0]+":"+ints[1]),"Неверные узлы UV56");
+        }
+    }
     private static Set<String> referencedModels(String scene) throws Exception {
         check(scene.getBytes(StandardCharsets.UTF_8).length<=MAX_SCENE_BYTES,"Сцена превышает безопасный лимит");
         JSONObject json=new JSONObject(scene);
         int version=json.optInt("version",-1);
-        check(version>=1&&version<=8,"Неподдерживаемая версия сцены");
+        check(version>=1&&version<=9,"Неподдерживаемая версия сцены");
         check(version==1||json.optJSONArray("roads")!=null,"Нет дорожной сети");
         validateLakes(json,version);
+        validateNativeUv56(json,version);
         referenceName(scene);
         JSONArray tileData=json.optJSONArray("paintTiles");
         if(version>=4){

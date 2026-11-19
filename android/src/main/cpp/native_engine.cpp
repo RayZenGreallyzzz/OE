@@ -508,6 +508,18 @@ void setupGL(){
  uniform float uPaintRadius;
  uniform float uImportedLighting;
  out vec4 fragColor;
+ vec3 srgbToLinear(vec3 v){
+   v=clamp(v,0.,1.);
+   vec3 low=v/12.92;
+   vec3 high=pow((v+.055)/1.055,vec3(2.4));
+   return mix(low,high,step(vec3(.04045),v));
+ }
+ vec3 linearToSrgb(vec3 v){
+   v=clamp(v,0.,1.);
+   vec3 low=v*12.92;
+   vec3 high=1.055*pow(v,vec3(1./2.4))-.055;
+   return mix(low,high,step(vec3(.0031308),v));
+ }
  void main(){
    float sun=max(dot(normalize(vNormal),normalize(vec3(-.55,1.,.5))),0.);
    vec4 texel=uUseTexture>.5?texture(uTexture,vUV):vec4(1.);
@@ -521,7 +533,7 @@ void setupGL(){
    if(uImportedLighting>.5){
      // glTF metallic-roughness PBR preview; GLB source bytes stay immutable.
      // Vertex/material factors are linear; baseColor texture is sRGB.
-     vec3 base=pow(clamp(texel.rgb,0.,1.),vec3(2.2))*
+     vec3 base=srgbToLinear(texel.rgb)*
                clamp(uColor*tint,0.,1.);
      float metallic=clamp(uMetallic,0.,1.);
      float roughness=clamp(uRoughness,0.,1.);
@@ -571,7 +583,7 @@ void setupGL(){
      vec3 ambient=base*(1.-metallic)*vec3(.22,.24,.28)*
                  (.75+.25*sky)+F0*.035;
      vec3 lit=ambient+(diffuse+specular)*vec3(2.35,2.12,1.90)*NoL;
-     color=pow(clamp(lit,0.,1.),vec3(1./2.2));
+     color=linearToSrgb(lit);
    }
    color=mix(color,vec3(.99,.72,.30),uHighlight*.30);
    fragColor=vec4(color,texel.a);

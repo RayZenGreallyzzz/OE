@@ -784,7 +784,7 @@ public class EditorActivity extends Activity {
         final String[] sections={
             "🖼 Разрешение изображения · "+selected,
             "🧱 Детализация текстур GLB на экране · "+textureLimit+" px",
-            "☀️ Освещение зданий GLB · "+(glbSoftLighting?"Мягкое":"Классическое"),
+            "✨ Материалы GLB · "+(glbSoftLighting?"PBR":"Классика"),
             "🖥 Видеочип и возможности"
         };
         new AlertDialog.Builder(this)
@@ -836,11 +836,11 @@ public class EditorActivity extends Activity {
         // GLBs. Original model geometry, embedded textures and saved city
         // are never rewritten when the owner switches lighting.
         final String[] choices={
-            "☀️ Мягкое дневное · цвета glTF в sRGB, небо и солнце",
+            "✨ PBR (экспериментально) · рельеф, шероховатость, металл",
             "🔹 Классическое · прежний вид OE 0.7.13"
         };
         new AlertDialog.Builder(this)
-            .setTitle("☀️ Освещение зданий GLB")
+            .setTitle("✨ Материалы GLB · не меняет оригиналы")
             .setSingleChoiceItems(choices,glbSoftLighting?0:1,(dialog,which)->{
                 glbSoftLighting=which==0;
                 getPreferences(MODE_PRIVATE).edit()
@@ -850,7 +850,7 @@ public class EditorActivity extends Activity {
                     surface.requestRender();
                 });
                 message(glbSoftLighting?
-                    "Мягкое дневное освещение включено · исходный GLB не меняется":
+                    "PBR освещение включено · исходный GLB не меняется":
                     "Восстановлено классическое освещение OE");
                 dialog.dismiss();
             })

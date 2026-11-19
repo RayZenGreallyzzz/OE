@@ -1315,6 +1315,53 @@ void drawEditorPlots(const Mat4&vp){
  }
  glBindVertexArray(0);
 }
+// Visual guides for authored physical barriers; no renderer geometry is
+// ever used in the collision solver. Hidden in the actual game export.
+void drawCollisionBarrierGuides(const Mat4&vp){
+ if(!gWalkBarriersVisible||gWalkBarriers.empty()||!gPaintMesh.vao)return;
+ glUniform1f(gShader.locMaterialLayer,0.f);
+ glUniform1f(gShader.locTextured,0.f);
+ glUniform1f(gShader.locGuide,0.f);
+ glUniform1f(gShader.locOpacity,1.f);
+ glUniform1f(gShader.locPaintOverride,0.f);
+ glUniform1f(gShader.locOverlay,0.f);
+ const Mat4 model=identity();
+ glUniformMatrix4fv(gShader.locMvp,1,GL_FALSE,vp.m);
+ glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
+ glUniform3f(gShader.locColor,1.f,1.f,1.f);
+ glUniform1f(gShader.locLight,0.f);
+ std::vector<float> vertices;
+ for(const auto&w:gWalkBarriers){
+  const float ax=static_cast<float>(w.ax),az=static_cast<float>(w.az),
+              bx=static_cast<float>(w.bx),bz=static_cast<float>(w.bz);
+  const float len=std::hypot(bx-ax,bz-az);
+  if(len<1.f)continue;
+  if(std::hypot((ax+bx)*.5f-gTarget.x,
+                (az+bz)*.5f-gTarget.z)>gDistance*2+len)continue;
+  const int count=std::max(1,static_cast<int>(std::ceil(len/8.f)));
+  vertices.clear();vertices.reserve(static_cast<size_t>(count)*6*11);
+  auto push=[&](float x,float y,float z){
+   vertices.insert(vertices.end(),{x,y,z,0.f,1.f,0.f,
+      .98f,.18f,.80f,0.f,0.f});
+  };
+  for(int i=0;i<count;++i){
+   const float a=static_cast<float>(i)/count,b=static_cast<float>(i+1)/count;
+   const float x0=ax+(bx-ax)*a,z0=az+(bz-az)*a;
+   const float x1=ax+(bx-ax)*b,z1=az+(bz-az)*b;
+   const float y0=terrainHeightAt(x0,z0)+.3f,
+               y1=terrainHeightAt(x1,z1)+.3f;
+   push(x0,y0,z0);push(x0,y0+.65f,z0);push(x1,y1,z1);
+   push(x1,y1,z1);push(x0,y0+.65f,z0);push(x1,y1+.65f,z1);
+  }
+  glBindVertexArray(gPaintMesh.vao);
+  glBindBuffer(GL_ARRAY_BUFFER,gPaintMesh.buffer);
+  glBufferData(GL_ARRAY_BUFFER,static_cast<GLsizeiptr>(vertices.size()*sizeof(float)),
+     vertices.data(),GL_DYNAMIC_DRAW);
+  glDrawArrays(GL_TRIANGLES,0,static_cast<GLsizei>(vertices.size()/11));
+  ++gDrawCalls;gTriangles+=static_cast<int>(vertices.size()/33);
+ }
+ glBindVertexArray(0);
+}
 void drawPrecisionCursor(const Mat4& vp){
  if(!gPaintCursorVisible||!gPaintMesh.vao)return;
  constexpr int segments=48;
@@ -2199,6 +2246,7 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDraw(JNIEnv*,jcl
  for(const auto&e:gEntities)drawEntity(vp,frustum,e);
  drawLakes(vp);
  drawEditorPlots(vp); // authoring overlay, never a game collision
+ drawCollisionBarrierGuides(vp); // magenta authoring guide only
  if(gWalkPreview.active()){
   const auto&state=gWalkPreview.state();
   const Vec3 place{static_cast<float>(state.feet.x),
@@ -3410,6 +3458,71 @@ JNIEXPORT jobjectArray JNICALL Java_game_oe_editor_EditorActivity_nativePlotList
  }
  return result;
 }
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeBarrierAdd(
+ JNIEnv*,jclass,jdouble ax,jdouble az,jdouble bx,jdouble bz,
+ jdouble thickness,jdouble height){
+ if(gWalkBarriers.size()>=oe::runtime::kMaxWalkBarriers||
+    gNextWalkBarrierId>1000000)return 0;
+ oe::runtime::WalkBarrier w{static_cast<std::uint64_t>(gNextWalkBarrierId),
+   ax,az,bx,bz,thickness,height};
+ if(!oe::runtime::validWalkBarrier(w,worldHalf()))return 0;
+ recordEdit();
+ gWalkBarriers.push_back(w);return gNextWalkBarrierId++;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeBarrierDelete(
+ JNIEnv*,jclass,jint id){
+ for(size_t i=0;i<gWalkBarriers.size();i++)if(
+    gWalkBarriers[i].id==static_cast<std::uint64_t>(id)){
+  recordEdit();
+  gWalkBarriers.erase(gWalkBarriers.begin()+static_cast<long>(i));
+  return JNI_TRUE;
+ }
+ return JNI_FALSE;
+}
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeBarrierCutAtScreen(
+ JNIEnv*,jclass,jint id,jfloat px,jfloat py,jfloat radius){
+ float x=0,z=0;
+ if(!groundPoint(px,py,x,z))return 0;
+ for(size_t i=0;i<gWalkBarriers.size();i++){
+  const auto old=gWalkBarriers[i];
+  if(old.id!=static_cast<std::uint64_t>(id))continue;
+  std::vector<oe::runtime::WalkBarrier> parts;
+  if(!oe::runtime::cutWalkBarrier(old,x,z,radius,parts))return 0;
+  if(gWalkBarriers.size()-1+parts.size()>oe::runtime::kMaxWalkBarriers)
+   return 0;
+  if(parts.size()==2){
+   if(gNextWalkBarrierId>1000000)return 0;
+   parts[1].id=static_cast<std::uint64_t>(gNextWalkBarrierId);
+  }
+  recordEdit();
+  gWalkBarriers.erase(gWalkBarriers.begin()+static_cast<long>(i));
+  for(const auto&part:parts)gWalkBarriers.push_back(part);
+  if(parts.size()==2)++gNextWalkBarrierId;
+  return 1; // one Undo opens/restores an entire gap
+ }
+ return 0;
+}
+JNIEXPORT jobjectArray JNICALL Java_game_oe_editor_EditorActivity_nativeBarrierList(
+ JNIEnv*env,jclass){
+ jclass str=env->FindClass("java/lang/String");
+ if(!str)return nullptr;
+ jobjectArray result=env->NewObjectArray(
+    static_cast<jsize>(gWalkBarriers.size()),str,nullptr);
+ if(!result)return nullptr;
+ for(size_t i=0;i<gWalkBarriers.size();i++){
+  const auto&w=gWalkBarriers[i];
+  std::ostringstream ss;
+  ss<<w.id<<"|"<<w.ax<<"|"<<w.az<<"|"<<w.bx<<"|"<<w.bz
+    <<"|"<<w.thickness<<"|"<<w.height;
+  jstring row=env->NewStringUTF(ss.str().c_str());
+  if(!row)return nullptr;
+  env->SetObjectArrayElement(result,static_cast<jsize>(i),row);
+  env->DeleteLocalRef(row);
+ }
+ return result;
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeBarrierShow(
+ JNIEnv*,jclass,jboolean visible){gWalkBarriersVisible=visible==JNI_TRUE;}
 std::string plotJsonEscaped(const std::string&in){
  std::ostringstream out;
  for(unsigned char c:in){

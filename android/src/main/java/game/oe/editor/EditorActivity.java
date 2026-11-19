@@ -4044,6 +4044,10 @@ public class EditorActivity extends Activity {
             if(importing)return true; // Prevent input changes during scene replacement.
             int action=e.getActionMasked();
             if(action==MotionEvent.ACTION_DOWN) {
+                if(barrierCutId>0){
+                    downX=lastX=e.getX();downY=lastY=e.getY();
+                    multiTouch=false;return true;
+                }
                 downX=lastX=e.getX();downY=lastY=e.getY();multiTouch=false;lastPinch=0;
                 touchedGizmoAxis=-1;
                 final float px=surfaceX(downX),py=surfaceY(downY);
@@ -4109,6 +4113,7 @@ public class EditorActivity extends Activity {
                 return true;
             }
             if(action==MotionEvent.ACTION_MOVE) {
+                if(barrierCutId>0)return true;
                 if(e.getPointerCount()>=2) {
                     float p=pinch(e);
                     final float midX=(e.getX(0)+e.getX(1))*.5f;
@@ -4174,6 +4179,22 @@ public class EditorActivity extends Activity {
             }
             if(action==MotionEvent.ACTION_POINTER_UP) {multiTouch=true;lastPinch=0;return true;}
             if(action==MotionEvent.ACTION_UP) {
+                if(barrierCutId>0){
+                    final int id=barrierCutId;
+                    final float radius=barrierCutRadius;
+                    final float sx=surfaceX(e.getX()),sy=surfaceY(e.getY());
+                    final boolean tap=!multiTouch&&
+                        Math.hypot(e.getX()-downX,e.getY()-downY)<dp(18);
+                    barrierCutId=0;
+                    if(tap)queueEvent(()->{
+                        int result=nativeBarrierCutAtScreen(id,sx,sy,radius);
+                        if(result>0){
+                            requestRender();
+                            message("✓ Проход вырезан · ↶ Undo вернёт коллизию");
+                        }else message("Не попал в преграду · выбери стену и повтори");
+                    });
+                    return true;
+                }
                 if(uv56SculptTool>0){
                     final float px=surfaceX(e.getX()),py=surfaceY(e.getY());
                     final int tool=uv56SculptTool;
@@ -4297,6 +4318,7 @@ public class EditorActivity extends Activity {
                 return true;
             }
             if(action==MotionEvent.ACTION_CANCEL) {
+                barrierCutId=0;
                 multiTouch=false;touchedGizmoAxis=-1;
                 queueEvent(()->{nativeGizmoEnd();gizmoEditStarted=false;
                     if(uv56GestureStarted)nativeUv56StrokeEnd();

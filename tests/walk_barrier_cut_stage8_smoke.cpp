@@ -55,6 +55,22 @@ int main(){
  assert(walker.spawn(-2.,8.));
  assert(walker.advance(1.,0.,false,90));
  assert(walker.state().feet.x>.50); // opening is truly passable
+ // Stage9 two-tap authoring: a DIAGONAL chain is as physical as old
+ // pre-sized walls. Cutting its middle must open the authored gap.
+ WalkBarrier diagonal{12,-12,-12,12,12,.8,4.};
+ assert(validWalkBarrier(diagonal,512.));
+ assert(walker.configure(empty,terrain,512.,{diagonal}));
+ assert(walker.spawn(-3.,3.));
+ assert(walker.advance(1.,0.,false,140));
+ assert(walker.state().feet.x<2.5);
+ std::vector<WalkBarrier> diagonalGap;
+ assert(cutWalkBarrier(diagonal,3.,3.,4.,diagonalGap));
+ assert(diagonalGap.size()==2);
+ diagonalGap[1].id=13;
+ assert(walker.configure(empty,terrain,512.,diagonalGap));
+ assert(walker.spawn(-3.,3.));
+ assert(walker.advance(1.,0.,false,140));
+ assert(walker.state().feet.x>4.);
  walker.clear();assert(walker.barrierCount()==0);
  std::cout<<"OE_STAGE8_REAL_WALK_COLLISIONS_OK\n";
 }

@@ -477,7 +477,9 @@ void setupGL(){
  out vec3 vWorldPos;
  void main(){
    gl_Position=uMvp*vec4(aPos,1.0);
-   vNormal=normalize(mat3(uModel)*aNormal);
+   // Inverse-transpose preserves correct lighting under non-uniform
+   // placement scaling (e.g. a tall medieval tower stretched on Y).
+   vNormal=normalize(transpose(inverse(mat3(uModel)))*aNormal);
    vColor=aColor;
    vUV=aUV;
    vWorldPos=(uModel*vec4(aPos,1.0)).xyz;

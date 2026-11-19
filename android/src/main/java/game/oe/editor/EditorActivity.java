@@ -88,6 +88,10 @@ public class EditorActivity extends Activity {
     private static native void nativePlotShow(boolean visible);
     private static native int nativeBarrierAdd(double ax,double az,double bx,
         double bz,double thickness,double height);
+    private static native double[] nativeBarrierPointAtScreen(float px,float py);
+    private static native void nativeBarrierDraftPoint(boolean visible,float x,float z);
+    private static native boolean nativeBarrierEdit(int id,double ax,double az,
+        double bx,double bz,double thickness,double height);
     private static native boolean nativeBarrierDelete(int id);
     private static native int nativeBarrierCutAtScreen(int id,float px,float py,
         float radius);
@@ -226,6 +230,9 @@ public class EditorActivity extends Activity {
     private volatile boolean barriersVisible=true;
     private volatile int barrierCutId=0;
     private volatile float barrierCutRadius=4f;
+    private volatile boolean barrierDrawMode=false;
+    private volatile int barrierDrawGeneration=0;
+    private double[] barrierDraftStart=null; // GL thread only; never saved
     private NativeLandscapePanel activeLandscapePanel;
     private boolean walkJumpQueued=false,walkAirborne=false;
     private float walkAxisX=0f,walkAxisZ=0f;
@@ -663,21 +670,26 @@ public class EditorActivity extends Activity {
                         "PNG-планы участков добавим отдельным этапом.")
                     .setPositiveButton("Понятно",null).show());
         }else if("Коллизии".equals(category)){
+            addPaletteOption("✏ Нарисовать границу по точкам",
+                this::startBarrierPolyline);
             addPaletteOption("🧱 Поставить невидимую преграду 30 м",
                 ()->createCollisionBarrier(30));
             addPaletteOption("🧱 Поставить преграду 100 м",
                 ()->createCollisionBarrier(100));
-            addPaletteOption("✂ Выбрать стену / вырезать проход",this::chooseCollisionBarrier);
+            addPaletteOption("🧱 Список / изменить коллизии",this::chooseCollisionBarrier);
             addPaletteOption(barriersVisible?"👁 Скрыть розовую разметку":
                 "👁 Показать розовую разметку",this::toggleCollisionBarriers);
             addPaletteOption("🧍 Проверить коллизии путником",this::startWalkCollisionPreview);
-            addPaletteOption("✕ Завершить вырезание",this::cancelPlace);
+            addPaletteOption("✕ Завершить рисование / вырезание",this::cancelPlace);
             addPaletteOption("ℹ О коллизиях",()->
                 new AlertDialog.Builder(this).setTitle("Физические преграды")
                     .setMessage("Розовая линия видна только в редакторе. "+
-                        "Сама невидимая стена является настоящей коллизией путника. "+
-                        "Можно вырезать проход касанием. Рамки участков не "+
-                        "создают коллизий и не мешают ходить.")
+                        "Рисование: первая точка отмечается жёлтым, "+
+                        "следующими касаниями создаются настоящие физические "+
+                        "отрезки от 1 до 512 м. Два пальца перемещают камеру. "+
+                        "В списке можно задать точные X/Z, толщину и высоту. "+
+                        "Проходы вырезаются касанием выбранной стены. "+
+                        "Рамки участков коллизий не создают.")
                     .setPositiveButton("Понятно",null).show());
         }else if("Вода".equals(category)){
             addPaletteOption("⛏ Вырыть чашу для озера",this::startLakeExcavation);
@@ -814,6 +826,11 @@ public class EditorActivity extends Activity {
     }
     private void cancelPlace() {
         barrierCutId=0;
+        barrierDrawMode=false;
+        ++barrierDrawGeneration;
+        barrierDraftStart=null; // actual GL state is cleared on its queue below
+        if(surface!=null)surface.queueEvent(()->
+            nativeBarrierDraftPoint(false,0f,0f));
         uv56SculptTool=0;
         if(surface!=null)surface.queueEvent(EditorActivity::nativeUv56StrokeEnd);
         paintTerrainMode=false;roadMode=false;roadMoveMode=false;precisionPaintMode=false;
@@ -960,6 +977,77 @@ public class EditorActivity extends Activity {
                 .setNegativeButton("Не менять землю",null).show());
         });
     }
+    private void startBarrierPolyline(){
+        if(importing)return;
+        if(walkControlsActive)finishWalkControls();
+        cancelPlace();
+        barrierDrawMode=true;
+        barrierDrawGeneration++;
+        barrierDraftStart=null;
+        if(!barriersVisible){
+            barriersVisible=true;
+            surface.queueEvent(()->nativeBarrierShow(true));
+        }
+        statusText.setText("🧱 СТЕНА: касайся земли по точкам · "+
+            "два пальца — камера · ✕ завершить");
+        message("Поставь первую точку коллизии. Далее каждое касание "+
+            "продолжает стену. Границы не влияют на грунт.");
+        toggleDrawer(false);
+    }
+    private void editCollisionBarrier(String row){
+        if(importing)return;
+        final String[] parts=row.split("\\|",7);
+        if(parts.length!=7){message("Повреждённые данные стены");return;}
+        final int id;
+        try{id=Integer.parseInt(parts[0]);}
+        catch(NumberFormatException ex){message("Неверный номер стены");return;}
+        final String[] labels={"Начало X, м","Начало Z, м",
+            "Конец X, м","Конец Z, м","Толщина, м","Высота, м"};
+        LinearLayout fields=new LinearLayout(this);
+        fields.setPadding(dp(14),dp(5),dp(14),dp(5));
+        fields.setOrientation(LinearLayout.VERTICAL);
+        final android.widget.EditText[] inputs=new android.widget.EditText[6];
+        for(int i=0;i<6;i++){
+            android.widget.EditText input=new android.widget.EditText(this);
+            input.setSingleLine(true);
+            input.setHint(labels[i]);
+            input.setText(parts[i+1]);
+            input.setInputType(android.text.InputType.TYPE_CLASS_NUMBER|
+                android.text.InputType.TYPE_NUMBER_FLAG_SIGNED|
+                android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL);
+            fields.addView(input);inputs[i]=input;
+        }
+        new AlertDialog.Builder(this)
+            .setTitle("✏ Изменить физическую стену #"+id)
+            .setMessage("Отрезок 1–512 м · толщина 0.3–4 м · "+
+                "высота 1–30 м. Все значения в метрах.")
+            .setView(fields)
+            .setPositiveButton("Применить",(dialog,which)->{
+                final double[] values=new double[6];
+                try{
+                    for(int i=0;i<6;i++){
+                        values[i]=Double.parseDouble(inputs[i].getText()
+                            .toString().trim().replace(',','.'));
+                        if(!Double.isFinite(values[i]))
+                            throw new NumberFormatException();
+                    }
+                }catch(NumberFormatException ex){
+                    message("Ошибка: введи числовые значения для стены");
+                    return;
+                }
+                surface.queueEvent(()->{
+                    boolean ok=nativeBarrierEdit(id,values[0],values[1],
+                        values[2],values[3],values[4],values[5]);
+                    if(ok){
+                        surface.requestRender();
+                        message("✓ Физическая стена изменена · ↶ отменить");
+                    }else message("Недопустимая длина, толщина, высота "+
+                        "или точка за границей карты");
+                });
+            })
+            .setNegativeButton("Отмена",null)
+            .show();
+    }
     private void toggleCollisionBarriers(){
         barriersVisible=!barriersVisible;
         surface.queueEvent(()->{
@@ -1013,6 +1101,7 @@ public class EditorActivity extends Activity {
     }
     private void chooseCollisionBarrier(){
         if(importing)return;
+        if(barrierDrawMode)cancelPlace();
         if(walkControlsActive)finishWalkControls();
         surface.queueEvent(()->{
             String[] raw=nativeBarrierList();
@@ -1043,6 +1132,7 @@ public class EditorActivity extends Activity {
         final String[] options={
             "✂ Вырезать проход 8 м касанием",
             "✂ Вырезать проход 16 м касанием",
+            "✏ Изменить X/Z, толщину и высоту",
             "🗑 Удалить всю преграду",
             "🧍 Пройти сквозь стену путником"
         };
@@ -1058,6 +1148,8 @@ public class EditorActivity extends Activity {
                         "одним пальцем. Камера пока зафиксирована.");
                     toggleDrawer(false);
                 }else if(k==2){
+                    editCollisionBarrier(row);
+                }else if(k==3){
                     new AlertDialog.Builder(this)
                         .setTitle("Удалить всю физическую преграду?")
                         .setMessage("Дороги, горы и здания сохраняются.")
@@ -4102,9 +4194,9 @@ public class EditorActivity extends Activity {
             if(importing)return true; // Prevent input changes during scene replacement.
             int action=e.getActionMasked();
             if(action==MotionEvent.ACTION_DOWN) {
-                if(barrierCutId>0){
+                if(barrierCutId>0||barrierDrawMode){
                     downX=lastX=e.getX();downY=lastY=e.getY();
-                    multiTouch=false;return true;
+                    multiTouch=false;lastPinch=0;return true;
                 }
                 downX=lastX=e.getX();downY=lastY=e.getY();multiTouch=false;lastPinch=0;
                 touchedGizmoAxis=-1;
@@ -4172,6 +4264,8 @@ public class EditorActivity extends Activity {
             }
             if(action==MotionEvent.ACTION_MOVE) {
                 if(barrierCutId>0)return true;
+                // One finger places vertices, two fingers remain camera controls.
+                if(barrierDrawMode&&e.getPointerCount()<2)return true;
                 if(e.getPointerCount()>=2) {
                     float p=pinch(e);
                     final float midX=(e.getX(0)+e.getX(1))*.5f;
@@ -4237,6 +4331,42 @@ public class EditorActivity extends Activity {
             }
             if(action==MotionEvent.ACTION_POINTER_UP) {multiTouch=true;lastPinch=0;return true;}
             if(action==MotionEvent.ACTION_UP) {
+                if(barrierDrawMode){
+                    final boolean tap=!multiTouch&&
+                        Math.hypot(e.getX()-downX,e.getY()-downY)<dp(18);
+                    final float px=surfaceX(e.getX()),py=surfaceY(e.getY());
+                    final int version=barrierDrawGeneration;
+                    if(tap)queueEvent(()->{
+                        if(!barrierDrawMode||version!=barrierDrawGeneration)return;
+                        double[] at=nativeBarrierPointAtScreen(px,py);
+                        if(at==null){
+                            message("Коснись земли внутри карты (не тёмного фона)");
+                            return;
+                        }
+                        if(barrierDraftStart==null){
+                            barrierDraftStart=at;
+                            nativeBarrierDraftPoint(true,(float)at[0],(float)at[1]);
+                            requestRender();
+                            message("Начало стены установлено · касайся следующей "+
+                                "точки или нажми ✕ для отмены");
+                        }else{
+                            int id=nativeBarrierAdd(barrierDraftStart[0],
+                                barrierDraftStart[1],at[0],at[1],.8,4.);
+                            if(id>0){
+                                barrierDraftStart=at; // continue same polygonal chain
+                                nativeBarrierDraftPoint(true,(float)at[0],(float)at[1]);
+                                requestRender();
+                                message("✓ Отрезок #"+id+" создан · следующая "+
+                                    "точка продолжит линию · ↶ отменить");
+                            }else{
+                                message("Отрезок должен быть от 1 до 512 м "+
+                                    "в пределах карты (лимит 64). Первая точка сохранена.");
+                            }
+                        }
+                    });
+                    multiTouch=false;
+                    return true;
+                }
                 if(barrierCutId>0){
                     final int id=barrierCutId;
                     final float radius=barrierCutRadius;
@@ -4377,6 +4507,10 @@ public class EditorActivity extends Activity {
             }
             if(action==MotionEvent.ACTION_CANCEL) {
                 barrierCutId=0;
+                barrierDrawMode=false;
+                ++barrierDrawGeneration;
+                barrierDraftStart=null;
+                queueEvent(()->nativeBarrierDraftPoint(false,0f,0f));
                 multiTouch=false;touchedGizmoAxis=-1;
                 queueEvent(()->{nativeGizmoEnd();gizmoEditStarted=false;
                     if(uv56GestureStarted)nativeUv56StrokeEnd();

@@ -638,7 +638,25 @@ void setupGL(){
    color=mix(color,vec3(.99,.72,.30),uHighlight*.30);
    fragColor=vec4(color,texel.a);
  })";
-  GLuint fallbackVertex=shader(GL_VERTEX_SHADER,vert);
+  const char*fallbackVert=R"(#version 300 es
+ layout(location=0) in vec3 aPos;
+ layout(location=1) in vec3 aNormal;
+ layout(location=2) in vec3 aColor;
+ layout(location=3) in vec2 aUV;
+ uniform mat4 uMvp;
+ uniform mat4 uModel;
+ out vec3 vNormal;
+ out vec3 vColor;
+ out vec2 vUV;
+ out vec3 vWorldPos;
+ void main(){
+   gl_Position=uMvp*vec4(aPos,1.);
+   vNormal=normalize(mat3(uModel)*aNormal);
+   vColor=aColor;
+   vUV=aUV;
+   vWorldPos=(uModel*vec4(aPos,1.)).xyz;
+ })";
+  GLuint fallbackVertex=shader(GL_VERTEX_SHADER,fallbackVert);
   GLuint fallbackFragment=shader(GL_FRAGMENT_SHADER,fallbackFrag);
   gShader.program=glCreateProgram();
   glAttachShader(gShader.program,fallbackVertex);

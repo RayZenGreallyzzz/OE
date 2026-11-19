@@ -1254,6 +1254,12 @@ void drawMaterialLayers(const Mat4& vp){
 // heightfield as the walker, but is excluded from Runtime Core and collisions.
 void drawEditorPlots(const Mat4&vp){
  if(!gEditorPlotsVisible||gEditorPlots.empty()||!gPaintMesh.vao)return;
+ glUniform1f(gShader.locMaterialLayer,0.f);
+ glUniform1f(gShader.locTextured,0.f);
+ glUniform1f(gShader.locGuide,0.f);
+ glUniform1f(gShader.locOpacity,1.f);
+ glUniform1f(gShader.locPaintOverride,0.f);
+ glUniform1f(gShader.locOverlay,0.f);
  const float visible=std::max(quality().viewRangeMetres+128.f,gDistance*1.35f);
  std::vector<float> v;
  for(const auto&plot:gEditorPlots){

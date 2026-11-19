@@ -27,7 +27,7 @@ public final class ProjectArchive {
     // copies of a house. Keep a bounded ZIP budget to prevent archive bombs.
     public static final long MAX_UNPACKED_BYTES=512L*1024*1024;
     public static final int MAX_MODELS=32;
-    public static final int MAX_SCENE_BYTES=4*1024*1024 // bounded for UV56's <=32768 terrain nodes;
+    public static final int MAX_SCENE_BYTES=4*1024*1024; // bounded for UV56's <=32768 terrain nodes;
     public static final int MAX_TEXTURES=32,MAX_TEXTURE_BYTES=8*1024*1024;
 
     public static final class StagedProject {

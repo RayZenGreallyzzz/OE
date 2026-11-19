@@ -102,6 +102,7 @@ public class EditorActivity extends Activity {
     private static native boolean nativeRedo();
     private static native void nativeClearHistory();
     private static native int nativeDuplicateSelected();
+    private static native int nativeDuplicateSelectedGrid(int columns,int rows);
     private static native boolean nativeRegisterAsset(String key, float[] vertices, float centerY,
             float radius, int[] draws, byte[][] images, int[] imageInfo,
             int[] pbrTextures, float[] pbrFactors,
@@ -371,6 +372,10 @@ public class EditorActivity extends Activity {
 
         advancedInspector=new LinearLayout(this);
         advancedInspector.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout neighbourhoodRow=row();
+        addControl(neighbourhoodRow,"🏘 Ряд ×10",()->duplicateGridAction(10,1));
+        addControl(neighbourhoodRow,"🏙 Квартал ×50",()->duplicateGridAction(10,5));
+        advancedInspector.addView(neighbourhoodRow);
         advancedScroll=new android.widget.ScrollView(this);
         advancedScroll.setFillViewport(false);
         advancedScroll.setVerticalScrollBarEnabled(true);
@@ -1154,6 +1159,17 @@ public class EditorActivity extends Activity {
         edit(() -> {
             if(nativeDuplicateSelected()!=0)message("Копия создана рядом — можешь её двигать");
             else message("Выбери объект: возможно достигнут лимит или край карты");
+        });
+    }
+    private void duplicateGridAction(int columns,int rows){
+        if(importing){message("Дождись завершения загрузки");return;}
+        if(placingKind!=-1)cancelPlace();
+        edit(()->{
+            int added=nativeDuplicateSelectedGrid(columns,rows);
+            if(added>0)message("✅ Добавлено "+added+" копий без новых GLB · "+
+                                  "исходные материалы и текстуры общие");
+            else message("Недостаточно места на карте или достигнут лимит объектов. "+
+                         "Увеличь карту или выбери другое место.");
         });
     }
     private void askDeleteSelected() {

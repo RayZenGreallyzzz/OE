@@ -2983,6 +2983,8 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeSetWorldSize
  float half=static_cast<float>(newSize)*.5f;
  // Never silently hide buildings when shrinking the world.
  for(const auto&e:gEntities)if(std::abs(e.x)>half-1.f||std::abs(e.z)>half-1.f)return JNI_FALSE;
+ for(const auto&p:gEditorPlots)if(std::abs(p.x)+p.size*.5f>half||
+    std::abs(p.z)+p.size*.5f>half)return JNI_FALSE;
  if(!roadBudget(gRoads.all(),newSize))return JNI_FALSE;
  oe::terrainpaint::Canvas nextTiles;
  if(!nextTiles.replaceAll(gPaintTiles.tiles(),newSize))return JNI_FALSE;

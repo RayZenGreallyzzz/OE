@@ -482,7 +482,9 @@ public final class GlbReader {
     }
     public static Result decode(byte[] data,int textureLimit) throws Exception {
         require(textureLimit==1024||textureLimit==2048,"Укажи 1024 или 2048 px");
-        require(data!=null && data.length>=20 && data.length<=MAX_BYTES,"Размер GLB должен быть до 24 МБ");
+        require(data!=null && data.length>=20 && data.length<=MAX_BYTES,
+                "Размер GLB превышает безопасный предел "+(MAX_BYTES/(1024*1024))+
+                " МиБ для текущего импортёра. Оригинальный файл сохранён.");
         ByteBuffer src=ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
         require(u32(src,0)==0x46546c67 && u32(src,4)==2 && Integer.toUnsignedLong(u32(src,8))==data.length,
                 "Нужен бинарный файл GLB версии 2.0");
@@ -575,21 +577,23 @@ public final class GlbReader {
                 }
             }
         }
-        float extent=Math.max(.001f,Math.max(maxX-minX,Math.max(maxY-minY,maxZ-minZ)));
-        float normalized=6.0f/extent,centerX=(maxX+minX)*.5f,centerZ=(maxZ+minZ)*.5f;
+        // glTF 2.0 uses meters. Preserve physical dimensions *exactly*:
+        // a 700-meter castle MUST be 700 meters wide in the OE city.
+        // Recenter X/Z around the footprint and ground minY at zero; these
+        // translations do NOT resize, decimate or modify the owner's GLB.
+        float centerX=(maxX+minX)*.5f,centerZ=(maxZ+minZ)*.5f;
         for(int i=0;i<verts.length;i+=11){
-            verts[i]=(verts[i]-centerX)*normalized;
-            verts[i+1]=(verts[i+1]-minY)*normalized;
-            verts[i+2]=(verts[i+2]-centerZ)*normalized;
+            verts[i]-=centerX;
+            verts[i+1]-=minY;
+            verts[i+2]-=centerZ;
         }
         // Every transformed vertex lies inside these axis-aligned bounds.
         // The enclosing sphere can only OVER-estimate visibility, never
         // incorrectly omit a valid triangle due to a too-small bounding box.
-        float dx=(maxX-minX)*normalized;
-        float dy=(maxY-minY)*normalized;
-        float dz=(maxZ-minZ)*normalized;
+        float dx=maxX-minX,dy=maxY-minY,dz=maxZ-minZ;
         float sphere=(float)(.5*Math.sqrt((double)dx*dx+(double)dy*dy+(double)dz*dz));
-        require(Float.isFinite(sphere)&&sphere>=0&&sphere<100,"Неверные границы GLB");
+        require(Float.isFinite(sphere)&&sphere>=0&&sphere<=8192,
+                "Некорректный размер модели в метрах (радиус более 8 км)");
         JSONArray images=gltf.optJSONArray("images"),skins=gltf.optJSONArray("skins");
         JSONArray animations=gltf.optJSONArray("animations"),textures=gltf.optJSONArray("textures");
         boolean rigged=(skins!=null&&skins.length()>0)||

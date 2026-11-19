@@ -3098,7 +3098,14 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeGroundHitAtS
  JNIEnv*,jclass,jfloat px,jfloat py){
  if(!std::isfinite(px)||!std::isfinite(py))return JNI_FALSE;
  float x=0,z=0;
- return groundPoint(px,py,x,z)?JNI_TRUE:JNI_FALSE;
+ if(!groundPoint(px,py,x,z))return JNI_FALSE;
+ // Do not paint an invisible terrain point beyond the GLES scene tiles.
+ const int tx=static_cast<int>(std::floor(x/WORLD_TILE));
+ const int tz=static_cast<int>(std::floor(z/WORLD_TILE));
+ const int gx=static_cast<int>(std::floor(gTarget.x/WORLD_TILE));
+ const int gz=static_cast<int>(std::floor(gTarget.z/WORLD_TILE));
+ const int r=quality().terrainTileRadius;
+ return std::abs(tx-gx)<=r&&std::abs(tz-gz)<=r?JNI_TRUE:JNI_FALSE;
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeSetNeutralLandPreview(
  JNIEnv*,jclass,jboolean enabled){

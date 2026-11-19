@@ -952,6 +952,7 @@ void updateTerrain(){
  for(int tz=std::max(-half,gz-radius);tz<=std::min(half-1,gz+radius);tz++)
  for(int tx=std::max(-half,gx-radius);tx<=std::min(half-1,gx+radius);tx++){
   // One beige base color across the entire editor canvas; no colored squares.
+  const float x=(tx+.5f)*WORLD_TILE,z=(tz+.5f)*WORLD_TILE;
   const Color c{.83f,.77f,.66f};
   bool detail=false;
   const float loX=x-WORLD_TILE*.5f,loZ=z-WORLD_TILE*.5f;

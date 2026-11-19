@@ -39,7 +39,7 @@ assert "if(available>0&&available<data.length*2L+DISK_RESERVE)" in bridge
 assert "private File projectFile()" in bridge
 assert 'startActivityForResult(new Intent(this,PhoenixBuilderActivity.class),PHOENIX_BUILDER)' in editor
 assert "applicationId 'game.oe.editor.phoenix013fix1'" in gradle
-assert "versionCode 34" in gradle
+assert "versionCode 35" in gradle
 # Graphics settings must live in the always-visible top-right toolbar,
 # use existing native quality implementation, and persist the selection.
 assert 'Button settingsButton=button("⚙️",this::showEngineSettings);' in editor
@@ -53,7 +53,9 @@ assert 'Детализация текстур GLB на экране' in settings
 assert '.setItems(sections,' in settings
 assert '.setMessage(' not in settings  # Android bug: hides the options
 assert 'else if(which==1)chooseTextureLimit();' in settings
-assert 'else if(which==2)chooseGlbLighting();' in settings
+assert 'else if(which==2)chooseTextureSampling();' in settings
+assert 'else if(which==3)chooseGlbLighting();' in settings
+assert 'Чёткость текстур под углом' in settings
 assert 'else showDeviceCapabilities();' in settings
 assert 'qualityPrefs.getInt("oe_display_resolution",' in editor
 assert 'qualityPrefs.getInt("oe_quality_tier",-1)' in editor  # migration
@@ -119,6 +121,24 @@ assert 'env->GetFloatArrayRegion(pbrFactorData' in cpp
 assert 'glUniform1f(gShader.locUseNormalMap,0.f);' in cpp
 assert 'glActiveTexture(GL_TEXTURE2);glBindTexture(GL_TEXTURE_2D,0);' in cpp
 assert 'glUniform1f(gShader.locImportedLighting,0.f); // Do not alter road/terrain/gizmos.' in cpp
+# Sampling changes GPU state only: never touch decoded glTF or saved GLB.
+assert 'private void chooseTextureSampling(){' in editor
+assert 'nativeSetTextureSampling(which);' in editor
+assert '.putInt("oe_glb_texture_sampling",which).apply();' in editor
+assert 'textureSamplingMode=getPreferences(MODE_PRIVATE).getInt("oe_glb_texture_sampling",2);' in editor
+assert 'nativeSetTextureSampling(textureSamplingMode);' in editor
+assert 'JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeSetTextureSampling(' in cpp
+assert 'glGenerateMipmap(GL_TEXTURE_2D);' in cpp
+assert 'gTextureSampling>=1&&tex.format==0&&!tex.mipmapsReady' in cpp
+assert 'GL_LINEAR_MIPMAP_LINEAR:GL_LINEAR' in cpp
+assert 'gAnisotropicAvailable' in cpp
+assert 'GL_EXT_texture_filter_anisotropic' in cpp
+assert 'std::min(4.f,gMaxAnisotropy)' in cpp
+assert 'for(auto&entry:gAssets)' in cpp
+assert 'for(auto&entry:gPaintTextures)' in cpp
+assert 'detectTextureFilterCapabilities();' in cpp
+assert 'tex.id=0;tex.mipmapsReady=false;' in cpp
+print("OK: GPU-only mipmaps and optional anisotropic filters persist across EGL recreation")
 assert 'GL_RGBA8' in cpp
 assert 'const char*fallbackVert=R"' in cpp
 assert 'const char*fallbackFrag=R"' in cpp

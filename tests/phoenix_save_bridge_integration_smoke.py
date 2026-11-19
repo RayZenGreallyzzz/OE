@@ -196,6 +196,11 @@ assert 'GLB больше 24 МБ' not in editor
 assert 'Неправильный размер GLB для города (макс. 24 МБ)' not in editor
 assert 'entry.bytes>24L*1024*1024' not in editor
 assert 'MAX_BYTES = 64 * 1024 * 1024' in glb
+assert 'MAX_TRIANGLES = 240000;' in glb
+assert 'MAX_IMPORTED_TRIANGLES=240000;' in cpp
+assert 'memoryUsed<=64*1024*1024' in glb
+assert 'if(totalNew>64u*1024u*1024u)return JNI_FALSE;' in cpp
+assert 'MAX_TEXTURE_CACHE_BYTES=128u*1024u*1024u' in cpp
 # Integer arithmetic should preserve a real 700 x 250 x 90m bounding box.
 points = [(-350.0, 4.0, -125.0),(350.0, 94.0, 125.0)]
 lo = tuple(min(p[i] for p in points) for i in range(3))

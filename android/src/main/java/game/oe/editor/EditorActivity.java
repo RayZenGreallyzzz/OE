@@ -193,7 +193,7 @@ public class EditorActivity extends Activity {
     private static native void nativeMapClear();
     private static native void nativeMapTopView();
     private static native void nativeMapPerspective();
-    private static final int PICK_GLB = 702, PICK_PROJECT=703, SAVE_PROJECT=704, PICK_PAINT=705, PICK_MAP=706;
+    private static final int PICK_GLB = 702, PICK_PROJECT=703, SAVE_PROJECT=704, PICK_PAINT=705, PICK_MAP=706, PICK_PLOT_PNG=707;
     private static final int MAX_ASSETS = 12;
 
     private EditorSurface surface;
@@ -269,6 +269,12 @@ public class EditorActivity extends Activity {
     private volatile boolean roadMoveMode=false;
     private volatile boolean mapTopViewActive=false;
     private volatile MapGuide mapGuide=null;
+    // Saved authoring plans are separate from the pre-existing global road PNG.
+    // Only ONE plan is rendered through the native R5.7 guide at a time.
+    private final java.util.concurrent.ConcurrentHashMap<Integer,MapGuide>
+        plotPlans=new java.util.concurrent.ConcurrentHashMap<>();
+    private volatile int activePlotPlanId=0,pendingPlotPngId=0;
+    private static final int MAX_PLOT_PNGS=8;
     private volatile double selectedRoadWidth=6.0;
     private volatile float paintRadius=16f;
     private volatile long statsUpdatedAt=0;
@@ -629,6 +635,9 @@ public class EditorActivity extends Activity {
             addPaletteOption("🏙 Создать участок города 1000×1000 м",
                 ()->newEditorPlot(1000));
             addPaletteOption("📋 Список / изменить / переместить",this::chooseEditorPlot);
+            addPaletteOption("🗺 PNG-план для выбранного участка",this::choosePlotForPlan);
+            addPaletteOption("🎥 Режим карты: план выбранного участка",
+                this::choosePlotForPlan);
             addPaletteOption(editorPlotsVisible?"👁 Скрыть рамки":"👁 Показать рамки",
                 this::toggleEditorPlotGuides);
             addPaletteOption("ℹ Рамки — только в редакторе",()->
@@ -651,6 +660,8 @@ public class EditorActivity extends Activity {
             addPaletteOption("✕ Завершить работу с водой",this::cancelPlace);
         }else if("Дороги".equals(category)){
             addPaletteOption("🗺 Загрузить PNG-план города",this::pickMapReference);
+            addPaletteOption("🗺 Активировать общий PNG-план",
+                this::showGlobalMapReference);
             addPaletteOption("📍 Положение и масштаб плана",this::configureMapReference);
             addPaletteOption("👁 Показать / скрыть план",this::toggleMapReference);
             addPaletteOption("⬇ Вид сверху на карту",this::showMapTopView);
@@ -1750,6 +1761,23 @@ public class EditorActivity extends Activity {
             if(plots==null||plots.length()<1||plots.length()>32)
                 throw new Exception("Повреждены границы участков");
             json.put("version",10);
+            JSONArray plans=new JSONArray();
+            for(int i=0;i<plots.length();i++){
+                int id=plots.getJSONObject(i).getInt("id");
+                MapGuide plan=plotPlans.get(id);
+                if(plan==null)continue;
+                if(!new File(referenceDir(),plan.key).isFile())
+                    throw new Exception("PNG-план участка отсутствует: "+id);
+                JSONObject entry=plan.toJson();
+                entry.put("plotId",id);
+                plans.put(entry);
+            }
+            if(plans.length()>0){
+                if(plans.length()>MAX_PLOT_PNGS)
+                    throw new Exception("В этом этапе максимум 8 PNG-планов");
+                json.put("plotPlans",plans);
+                json.put("version",11);
+            }
         }
         String result=json.toString();
         if(result.getBytes(StandardCharsets.UTF_8).length>ProjectArchive.MAX_SCENE_BYTES)
@@ -1812,6 +1840,7 @@ public class EditorActivity extends Activity {
                                 throw new Exception("GPU не смог загрузить PNG-карту");
                             mapGuide=new MapGuide(key,image.width,image.height,
                                                   centerX,centerZ,metres,.5f,true);
+                            activePlotPlanId=0;
                             nativeMapTopView();mapTopViewActive=true;
                             surface.requestRender();
                             message("PNG-карта поверх земли · вид сверху · отрегулируй размер");
@@ -1828,6 +1857,10 @@ public class EditorActivity extends Activity {
         });
     }
     private void configureMapReference(){
+        if(activePlotPlanId!=0){
+            message("Сначала нажми «Активировать общий PNG-план» в разделе «Дороги»");
+            return;
+        }
         MapGuide current=mapGuide;
         if(importing||current==null){message("Сначала загрузи PNG-карту");return;}
         LinearLayout fields=new LinearLayout(this);
@@ -1871,6 +1904,10 @@ public class EditorActivity extends Activity {
             }).setNegativeButton("Отмена",null).show();
     }
     private void toggleMapReference(){
+        if(activePlotPlanId!=0){
+            message("Сначала активируй общий PNG-план в разделе «Дороги»");
+            return;
+        }
         MapGuide current=mapGuide;
         if(importing||current==null){message("PNG-карта ещё не загружена");return;}
         edit(()->{
@@ -1892,6 +1929,10 @@ public class EditorActivity extends Activity {
         edit(EditorActivity::nativeMapPerspective);
     }
     private void askRemoveMapReference(){
+        if(activePlotPlanId!=0){
+            message("Сначала активируй общий PNG-план в разделе «Дороги»");
+            return;
+        }
         if(importing||mapGuide==null){message("Нет PNG-карты");return;}
         new AlertDialog.Builder(this).setTitle("Убрать PNG-карту из проекта?")
             .setMessage("Созданные дороги сохранятся. Исходный PNG останется в памяти приложения.")
@@ -2686,6 +2727,13 @@ public class EditorActivity extends Activity {
                 importMapReference(intent.getData());
             return;
         }
+        if(requestCode==PICK_PLOT_PNG){
+            int plotId=pendingPlotPngId;
+            pendingPlotPngId=0;
+            if(resultCode==RESULT_OK&&intent!=null&&intent.getData()!=null)
+                importPlotPlan(plotId,intent.getData());
+            return;
+        }
         if(requestCode==PICK_PAINT){
             if(resultCode==RESULT_OK&&intent!=null){
                 java.util.LinkedHashSet<Uri> selected=new java.util.LinkedHashSet<>();
@@ -2821,8 +2869,8 @@ public class EditorActivity extends Activity {
             }
             JSONObject document=new JSONObject(new String(jsonBytes.toByteArray(),StandardCharsets.UTF_8));
             final int sceneVersion=document.optInt("version",-1);
-            if(sceneVersion<1||sceneVersion>10)
-                throw new Exception("Неверная версия сцены (нужна 1–10)");
+            if(sceneVersion<1||sceneVersion>11)
+                throw new Exception("Неверная версия сцены (нужна 1–11)");
             final boolean demoRoads=document.optBoolean("demoRoads",false);
             final int worldSize=document.optInt("worldSize",1024);
             if(worldSize!=1024&&worldSize!=2048&&worldSize!=4096&&worldSize!=8192&&worldSize!=16384)
@@ -2869,7 +2917,7 @@ public class EditorActivity extends Activity {
             // Stage v10 editor guides alongside the scene, then hand all
             // validated coordinates to the native transactional replacement.
             JSONArray plotsJson=document.optJSONArray("editorPlots");
-            if((sceneVersion==10&&(plotsJson==null||plotsJson.length()==0))||
+            if((sceneVersion>=10&&(plotsJson==null||plotsJson.length()==0))||
                (sceneVersion<10&&document.has("editorPlots"))||
                (document.has("editorPlots")&&plotsJson==null))
                 throw new Exception("Сцена v10 требует границы участков");
@@ -3352,6 +3400,7 @@ public class EditorActivity extends Activity {
                         edit(()->{
                             nativeReset(demo);nativeMapClear();
                             mapGuide=null;mapTopViewActive=false;
+                            plotPlans.clear();activePlotPlanId=0;
                         });
                         message(demo?"Демонстрационный квартал восстановлен":"Пустая карта: все объекты удалены");
                     })

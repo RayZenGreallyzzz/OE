@@ -197,6 +197,7 @@ public class EditorActivity extends Activity {
     private volatile float uv56SculptRadius=4f,uv56SculptPower=2f;
     private volatile int uv56LandscapeMode=0,uv56BrushCm=400;
     private volatile String activePaletteCategory="Здания";
+    private NativeLandscapePanel activeLandscapePanel;
     private boolean walkJumpQueued=false,walkAirborne=false;
     private float walkAxisX=0f,walkAxisZ=0f;
     private volatile int walkSessionGeneration=0;
@@ -544,6 +545,7 @@ public class EditorActivity extends Activity {
     }
     private void showPalette(String category){
         paletteItems.removeAllViews();
+        activeLandscapePanel=null;
         activePaletteCategory=category;
         if("Здания".equals(category)){
             addPaletteOption("+ Таверна",()->enterPlaceMode(0,null));
@@ -894,6 +896,7 @@ public class EditorActivity extends Activity {
                 @Override public void close(){openUv56Mode(0);toggleDrawer(false);}
             },uv56LandscapeMode,uv56BrushCm,uv56SculptPower,textures,
                activePaintKey);
+        activeLandscapePanel=panel;
         paletteItems.addView(panel,new LinearLayout.LayoutParams(-1,-2));
         surface.queueEvent(()->{
             final int area=nativeUv56Area();
@@ -3227,6 +3230,11 @@ public class EditorActivity extends Activity {
                             if(!hadMultiple)nativeUv56StrokeMove(tool,px,py,radius,power);
                             nativeUv56StrokeEnd();
                             uv56GestureStarted=false;
+                            final int area=nativeUv56Area();
+                            ui(()->{
+                                if(activeLandscapePanel!=null)
+                                    activeLandscapePanel.setAreaStatus(area);
+                            });
                         }
                         requestRender();
                     });

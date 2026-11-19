@@ -115,6 +115,7 @@ public class EditorActivity extends Activity {
     private static native int nativeUv56Area();
     private static native boolean nativeUv56ConfigureArea(int areaSqM);
     private static native int nativeUv56LastStrokeError();
+    private static native int nativeUv56LastTouchHeightCm();
     private static native boolean nativeUv56StrokeStart(int tool,float x,float y,
             float radius,float power);
     private static native boolean nativeUv56StrokeMove(int tool,float x,float y,
@@ -3373,9 +3374,12 @@ public class EditorActivity extends Activity {
                             nativeUv56StrokeEnd();
                             uv56GestureStarted=false;
                             final int area=nativeUv56Area();
+                            final int heightCm=nativeUv56LastTouchHeightCm();
                             ui(()->{
                                 if(activeLandscapePanel!=null)
                                     activeLandscapePanel.setAreaStatus(area);
+                                statusText.setText("✓ Рельеф изменён · высота в точке "+
+                                    heightCm+" см · ↶ отменить / ↷ повторить");
                             });
                         }
                         requestRender();

@@ -35,14 +35,14 @@ for marker in (
     'private void chooseUv56SculptSize()',
     'final int kind=placingKind,brush=terrainMode,uv56Brush=uv56SculptTool;',
     'json.put("version",9)',
-    'sceneVersion>9',
-    'uv56Area,uv56Nodes))',
+    'sceneVersion>10',
+    'uv56Area,uv56Nodes,',
     'savedLakes=document.optJSONArray("lakes")',
     'snapshotWithGuide()'
 ):
     assert marker in java, ("java",marker)
 for marker in (
-    'version>=1&&version<=9',
+    'version>=1&&version<=10',
     'validateNativeUv56(json,version)',
     'validateLakes(json,version)',
     'MAX_SCENE_BYTES=8*1024*1024'

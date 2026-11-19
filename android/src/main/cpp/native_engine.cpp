@@ -48,6 +48,7 @@ struct Shader {
 struct TextureResource {
  GLuint id=0;
  int width=0,height=0,format=0; // 0 RGBA8, 1 ETC2 RGB, 2 ETC2 RGBA
+ bool mipmapsReady=false; // GPU-only: reset on EGL context recreation.
  std::vector<unsigned char> bytes; // Retained to restore an EGL context.
 };
 struct AssetBatch {
@@ -85,6 +86,11 @@ static TerrainGpu gTerrain;
 static int gDrawCalls=0,gTriangles=0;
 static int gQualityTier=oe::Low;
 static bool gImportedSoftLighting=true; // Default for owner GLB models; can revert in OE settings.
+static int gTextureSampling=2; // 0 bilinear, 1 trilinear, 2 trilinear + 4x aniso if supported
+static bool gAnisotropicAvailable=false;
+static GLfloat gMaxAnisotropy=1.f;
+static constexpr GLenum kTextureMaxAnisotropy=0x84FE; // GL_TEXTURE_MAX_ANISOTROPY_EXT
+static constexpr GLenum kMaxTextureMaxAnisotropy=0x84FF; // GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT
 static float gSubmitCpuMs=0.f;
 const oe::QualityProfile&quality(){return oe::profile(gQualityTier);}
 static std::unordered_map<std::string,Asset> gAssets;
@@ -417,9 +423,54 @@ void buildStaticLods(Asset&asset){
   }
  }
 }
+// All operations here execute on the GLES thread. Mip levels are GPU-only;
+// the original embedded model/PNG/KTX2 bytes are never resampled on disk.
+void detectTextureFilterCapabilities(){
+ gAnisotropicAvailable=false;
+ gMaxAnisotropy=1.f;
+ GLint count=0;
+ glGetIntegerv(GL_NUM_EXTENSIONS,&count);
+ for(GLint i=0;i<count&&i<2048;i++){
+  const GLubyte*value=glGetStringi(GL_EXTENSIONS,static_cast<GLuint>(i));
+  if(value&&std::strcmp(reinterpret_cast<const char*>(value),
+                         "GL_EXT_texture_filter_anisotropic")==0){
+   gAnisotropicAvailable=true;break;
+  }
+ }
+ if(gAnisotropicAvailable){
+  glGetFloatv(kMaxTextureMaxAnisotropy,&gMaxAnisotropy);
+  if(glGetError()!=GL_NO_ERROR||!std::isfinite(gMaxAnisotropy)||
+     gMaxAnisotropy<1.f){
+   gAnisotropicAvailable=false;gMaxAnisotropy=1.f;
+  }
+ }
+}
+void configureTextureFiltering(TextureResource&tex){
+ if(!tex.id)return;
+ glActiveTexture(GL_TEXTURE0);
+ glBindTexture(GL_TEXTURE_2D,tex.id);
+ // The supplied ETC2/KTX2 payload contains base level only. GLES drivers
+ // may reject mip generation for compressed ETC2, so keep it bilinear.
+ if(gTextureSampling>=1&&tex.format==0&&!tex.mipmapsReady){
+  glGenerateMipmap(GL_TEXTURE_2D);
+  const GLenum result=glGetError();
+  if(result==GL_NO_ERROR)tex.mipmapsReady=true;
+  else __android_log_print(ANDROID_LOG_WARN,"OE",
+       "GLB mipmap generation unavailable (0x%x); using bilinear",result);
+ }
+ glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,
+   gTextureSampling>=1&&tex.mipmapsReady?GL_LINEAR_MIPMAP_LINEAR:GL_LINEAR);
+ glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+ if(gAnisotropicAvailable){
+  const GLfloat aniso=(gTextureSampling>=2&&tex.mipmapsReady)?
+      std::min(4.f,gMaxAnisotropy):1.f;
+  glTexParameterf(GL_TEXTURE_2D,kTextureMaxAnisotropy,aniso);
+ }
+ glBindTexture(GL_TEXTURE_2D,0);
+}
 bool uploadTextures(Asset&asset){
  for(auto&tex:asset.textures){
-  tex.id=0;
+  tex.id=0;tex.mipmapsReady=false;
   glGenTextures(1,&tex.id);
   if(!tex.id)return false;
   glActiveTexture(GL_TEXTURE0);
@@ -438,6 +489,8 @@ bool uploadTextures(Asset&asset){
      static_cast<GLsizei>(tex.bytes.size()),tex.bytes.data());
   }
   glPixelStorei(GL_UNPACK_ALIGNMENT,4);
+  if(glGetError()!=GL_NO_ERROR)return false;
+  configureTextureFiltering(tex);
   if(glGetError()!=GL_NO_ERROR)return false;
  }
  glBindTexture(GL_TEXTURE_2D,0);
@@ -464,6 +517,7 @@ GLuint shader(GLenum kind,const char*src){
  return s;
 }
 void setupGL(){
+ detectTextureFilterCapabilities();
  const char*vert=R"(#version 300 es
  layout(location=0) in vec3 aPos;
  layout(location=1) in vec3 aNormal;
@@ -2236,6 +2290,18 @@ JNIEXPORT jfloat JNICALL Java_game_oe_editor_EditorActivity_nativeQualityScale(
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeSetImportedLighting(
  JNIEnv*,jclass,jboolean enabled){
  gImportedSoftLighting=(enabled==JNI_TRUE);
+}
+// Controls GPU sampling only. Rebind existing texture objects on GLES thread;
+// original GLBs, materials, geometry and city scene are never rewritten.
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeSetTextureSampling(
+ JNIEnv*,jclass,jint mode){
+ if(mode<0||mode>2)return;
+ gTextureSampling=mode;
+ for(auto&entry:gAssets){
+  for(auto&tex:entry.second.textures)configureTextureFiltering(tex);
+ }
+ for(auto&entry:gPaintTextures)configureTextureFiltering(entry.second);
+ glActiveTexture(GL_TEXTURE0);
 }
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeSetQualityProfile(
  JNIEnv*,jclass,jint tier){

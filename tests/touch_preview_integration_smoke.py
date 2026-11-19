@@ -22,7 +22,9 @@ for needle in [
     "if(!walkTickPending&&(moving||jump||walkAirborne))",
     "if(session!=walkSessionGeneration)return",
     "private void finishWalkControls()",
-    "finishWalkControls();\n        if(surface!=null)surface.onPause()",
+    "finishWalkControls();\n        barrierDrawMode=false;",
+    "surface.onPause();",
+    "surface.queueEvent(()->nativeBarrierDraftPoint(false,0f,0f))",
     "if(walkControlsActive)finishWalkControls();",
     "walkJumpQueued=true",
     "statusText.setText(walkPreviewDescription(state))",
@@ -39,6 +41,6 @@ for needle in ["nativeWalkPreviewStart(", "nativeWalkPreviewStep(",
     assert needle in native,needle
 assert "version>=1&&version<=12" in archive
 assert 'applicationIdSuffix' in (root/"android/build.gradle").read_text()
-assert 'OE R5.7 COLLISION FIX TEST' in manifest
+assert 'OE R5.7 WALL CHAIN TEST' in manifest
 assert 'android:allowBackup="false"' in manifest
 print("OE_TOUCH_WALK_UI_OK: bounded frame scheduling, pointer reset, lifecycle and safe approach ramps")

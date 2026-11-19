@@ -171,8 +171,22 @@ bool WalkController::advance(double dx,double dz,bool jump,std::size_t ticks){
   const bool uphill=newTerrain>oldTerrain+.0001;
   bool collisionWall=false;
   for(const auto&wall:barriers_){
-   const double groundY=terrain_( (wall.ax+wall.bx)*.5,
-                                  (wall.az+wall.bz)*.5 );
+   // Reject distant segments cheaply. Sampling the terrain at the WALL'S
+   // MIDPOINT broke collision along ridges: at the actual crossing the
+   // wall foot can be many metres above/below its distant midpoint.
+   const double clearance=wall.thickness*.5+.36;
+   if(walkSegmentDistance(next.feet.x,next.feet.z,
+                          desiredX,desiredZ,
+                          wall.ax,wall.az,wall.bx,wall.bz)>=clearance)continue;
+   const double vx=wall.bx-wall.ax,vz=wall.bz-wall.az;
+   const double lenSq=vx*vx+vz*vz;
+   const double midX=(next.feet.x+desiredX)*.5;
+   const double midZ=(next.feet.z+desiredZ)*.5;
+   const double t=std::clamp(
+       ((midX-wall.ax)*vx+(midZ-wall.az)*vz)/lenSq,0.,1.);
+   double groundY=0.;
+   if(!validTerrain(terrain_,wall.ax+t*vx,wall.az+t*vz,groundY))
+    return false; // invalid sampled terrain must never bypass collision
    if(walkBarrierStops(wall,next.feet.x,next.feet.z,
                        desiredX,desiredZ,next.feet.y,groundY)){
     collisionWall=true;break;

@@ -21,7 +21,7 @@ for needle in (
     "Диаметр кисти", "Радиус кисти",
     "−1 см", "+1 см", "⌗ Ввести см",
     "setOnSeekBarChangeListener", "Сила кисти",
-    "Покрытие / загруженный тайл", "Загрузить свой тайл PNG / JPG",
+    "Покрытие / загруженный тайл", "Добавить сразу 10–32 тайла PNG / JPG",
     "smallPreview", "inJustDecodeBounds", "inSampleSize",
     "host.chooseTexture(key)", "host.createArea(",
 ):

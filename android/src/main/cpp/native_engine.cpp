@@ -3033,18 +3033,41 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsse
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene(
  JNIEnv*env,jclass,jint size,jboolean demo,jintArray kinds,jfloatArray transforms,
  jobjectArray modelKeys,jfloatArray terrainData,jobjectArray objectPaintKeys,
+ jintArray styleCountData,jintArray styleIdData,jfloatArray styleColorData,
+ jobjectArray styleTextureData,
  jfloatArray painting,jobjectArray terrainPaintKeys,
  jintArray roadIds,jfloatArray roadWidths,jbooleanArray roadMarkings,
  jintArray roadCounts,jintArray roadMaterials,jfloatArray roadCoordinates,
  jboolean roadSidewalks,jboolean roadCrosswalks){
  if(!allowedWorldSize(size)||!kinds||!transforms||!modelKeys||!terrainData||
-    !objectPaintKeys||!painting||!terrainPaintKeys||
+    !objectPaintKeys||!styleCountData||!styleIdData||!styleColorData||
+    !styleTextureData||!painting||!terrainPaintKeys||
     !roadIds||!roadWidths||!roadMarkings||!roadCounts||!roadMaterials||
     !roadCoordinates)
     return JNI_FALSE;
  const jsize n=env->GetArrayLength(kinds);
  if(n<0||n>MAX_ENTITIES||env->GetArrayLength(transforms)!=n*12||
-    env->GetArrayLength(modelKeys)!=n||env->GetArrayLength(objectPaintKeys)!=n)return JNI_FALSE;
+    env->GetArrayLength(modelKeys)!=n||env->GetArrayLength(objectPaintKeys)!=n||
+    env->GetArrayLength(styleCountData)!=n)return JNI_FALSE;
+ const jsize styleTotal=env->GetArrayLength(styleIdData);
+ if(styleTotal<0||styleTotal>n*64||
+    env->GetArrayLength(styleColorData)!=styleTotal*3||
+    env->GetArrayLength(styleTextureData)!=styleTotal)return JNI_FALSE;
+ std::vector<jint> styleCounts(static_cast<size_t>(n)),styleIds(static_cast<size_t>(styleTotal));
+ std::vector<jfloat> styleColors(static_cast<size_t>(styleTotal*3));
+ if(n)env->GetIntArrayRegion(styleCountData,0,n,styleCounts.data());
+ if(styleTotal){
+  env->GetIntArrayRegion(styleIdData,0,styleTotal,styleIds.data());
+  env->GetFloatArrayRegion(styleColorData,0,styleTotal*3,styleColors.data());
+ }
+ if(env->ExceptionCheck())return JNI_FALSE;
+ jsize styleExpected=0;
+ for(jsize i=0;i<n;i++){
+  if(styleCounts[static_cast<size_t>(i)]<0||
+     styleCounts[static_cast<size_t>(i)]>64)return JNI_FALSE;
+  styleExpected+=styleCounts[static_cast<size_t>(i)];
+ }
+ if(styleExpected!=styleTotal)return JNI_FALSE;
  const jsize paintFloats=env->GetArrayLength(painting);
  if(paintFloats<0||paintFloats%3!=0||
     paintFloats>static_cast<jsize>(MAX_TERRAIN_PAINT*3)||
@@ -3094,6 +3117,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  }
  std::vector<Entity> staged;
  staged.reserve(static_cast<size_t>(n));
+ jsize styleAt=0;
  for(jsize i=0;i<n;i++){
   const int type=types[i];
   const float x=matrix[i*12],z=matrix[i*12+1],yaw=matrix[i*12+2],
@@ -3136,6 +3160,35 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
   Entity restored{static_cast<int>(i)+1,type,x,z,yaw,scl,key,y,sx,sy,sz,paintName};
   const auto q=oe::gizmo::normalized({qx,qy,qz,qw});
   restored.qx=q.x;restored.qy=q.y;restored.qz=q.z;restored.qw=q.w;
+  if(styleCounts[static_cast<size_t>(i)]>0&&type!=6)return JNI_FALSE;
+  for(jint k=0;k<styleCounts[static_cast<size_t>(i)];k++){
+   const jint id=styleIds[static_cast<size_t>(styleAt)];
+   const float r=styleColors[static_cast<size_t>(styleAt*3)],
+               g=styleColors[static_cast<size_t>(styleAt*3+1)],
+               b=styleColors[static_cast<size_t>(styleAt*3+2)];
+   if(id<-1||id>511||
+      !std::isfinite(r)||!std::isfinite(g)||!std::isfinite(b)||
+      r<0.f||r>2.f||g<0.f||g>2.f||b<0.f||b>2.f||
+      restored.materialStyles.find(id)!=restored.materialStyles.end())
+     return JNI_FALSE;
+   auto asset=gAssets.find(key);
+   if(asset==gAssets.end())return JNI_FALSE;
+   bool hasMaterial=false;
+   for(const auto&batch:asset->second.batches)
+    if(batch.materialId==id){hasMaterial=true;break;}
+   if(!hasMaterial)return JNI_FALSE;
+   jstring rawTexture=static_cast<jstring>(
+      env->GetObjectArrayElement(styleTextureData,styleAt));
+   if(!rawTexture||env->ExceptionCheck())return JNI_FALSE;
+   const char*tex=env->GetStringUTFChars(rawTexture,nullptr);
+   if(!tex){env->DeleteLocalRef(rawTexture);return JNI_FALSE;}
+   std::string texture(tex);
+   env->ReleaseStringUTFChars(rawTexture,tex);env->DeleteLocalRef(rawTexture);
+   if(!texture.empty()&&(!validPaintKey(texture)||
+        gPaintTextures.find(texture)==gPaintTextures.end()))return JNI_FALSE;
+   restored.materialStyles[id]={{r,g,b},texture};
+   ++styleAt;
+  }
   staged.push_back(std::move(restored));
  }
   // Validate staged road data before changing any scene or terrain.

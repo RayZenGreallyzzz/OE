@@ -6,3 +6,11 @@ local.properties
 .idea/
 *.iml
 .DS_Store
+
+# Only owner-staged APK-derived assets; never commit Phoenix models,
+# texture libraries, project snapshots, signing keys or paid packs.
+/android/src/main/assets/phoenix/
+/android/src/main/assets/phoenix-uv56-overlay/
+*.p12
+*.pfx
+*.keystore

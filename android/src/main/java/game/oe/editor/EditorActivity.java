@@ -589,6 +589,9 @@ public class EditorActivity extends Activity {
         paletteItems.addView(b,p);
     }
     private void showPalette(String category){
+        // Entering another tool must never leave a hidden wall touch handler.
+        if(!"Коллизии".equals(category)&&(barrierDrawMode||barrierCutId>0))
+            cancelPlace();
         paletteItems.removeAllViews();
         activeLandscapePanel=null;
         activePaletteCategory=category;
@@ -1017,11 +1020,13 @@ public class EditorActivity extends Activity {
                 android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL);
             fields.addView(input);inputs[i]=input;
         }
+        android.widget.ScrollView scroll=new android.widget.ScrollView(this);
+        scroll.addView(fields);
         new AlertDialog.Builder(this)
             .setTitle("✏ Изменить физическую стену #"+id)
             .setMessage("Отрезок 1–512 м · толщина 0.3–4 м · "+
                 "высота 1–30 м. Все значения в метрах.")
-            .setView(fields)
+            .setView(scroll)
             .setPositiveButton("Применить",(dialog,which)->{
                 final double[] values=new double[6];
                 try{

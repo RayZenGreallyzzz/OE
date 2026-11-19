@@ -105,7 +105,7 @@ static float gSubmitCpuMs=0.f;
 const oe::QualityProfile&quality(){return oe::profile(gQualityTier);}
 static std::unordered_map<std::string,Asset> gAssets;
 static std::unordered_map<std::string,TextureResource> gPaintTextures;
-static constexpr size_t MAX_PAINT_TEXTURES=8,MAX_PAINT_CACHE_BYTES=32u*1024u*1024u;
+static constexpr size_t MAX_PAINT_TEXTURES=32,MAX_PAINT_CACHE_BYTES=96u*1024u*1024u;
 static constexpr size_t MAX_TEXTURE_CACHE_BYTES=128u*1024u*1024u;
 static constexpr size_t MAX_LOD_CACHE_BYTES=40u*1024u*1024u;
 static int gLodDrawCounts[3]={0,0,0};
@@ -2747,6 +2747,20 @@ JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSceneSnapshot
      <<",\"qx\":"<<e.qx<<",\"qy\":"<<e.qy<<",\"qz\":"<<e.qz<<",\"qw\":"<<e.qw;
   if(e.type==6)out<<",\"asset\":\""<<e.asset<<"\"";
   if(!e.paint.empty())out<<",\"paint\":\""<<e.paint<<"\"";
+  if(!e.materialStyles.empty()){
+   out<<",\"materialStyles\":[";
+   std::vector<int> ids;ids.reserve(e.materialStyles.size());
+   for(const auto&entry:e.materialStyles)ids.push_back(entry.first);
+   std::sort(ids.begin(),ids.end());
+   bool first=true;
+   for(int id:ids){
+    const MaterialStyle&style=e.materialStyles.at(id);
+    if(!first)out<<",";first=false;
+    out<<"["<<id<<","<<style.tint.x<<","<<style.tint.y<<","
+       <<style.tint.z<<",\""<<style.texture<<"\"]";
+   }
+   out<<"]";
+  }
   out<<"}";
  }
  out<<"],\"terrain\":[";

@@ -172,6 +172,7 @@ public class EditorActivity extends Activity {
     private static native int[] nativeRoadTopologyStats();
     private static native int[] nativeBridgeTraversalStats();
     private static native boolean nativeWalkPreviewStart();
+    private static native boolean nativeWalkPreviewStartAtBarrier(int wallId);
     private static native boolean nativeWalkPreviewStep(float axisX,float axisZ,
             boolean jump,int fixedTicks);
     private static native void nativeWalkPreviewStop();
@@ -971,6 +972,7 @@ public class EditorActivity extends Activity {
     }
     private void createCollisionBarrier(int length){
         if(importing)return;
+        if(walkControlsActive)finishWalkControls();
         cancelPlace();
         surface.queueEvent(()->{
             double[] at=nativeMapTarget();
@@ -1011,6 +1013,7 @@ public class EditorActivity extends Activity {
     }
     private void chooseCollisionBarrier(){
         if(importing)return;
+        if(walkControlsActive)finishWalkControls();
         surface.queueEvent(()->{
             String[] raw=nativeBarrierList();
             ui(()->{
@@ -1066,7 +1069,7 @@ public class EditorActivity extends Activity {
                                 }
                             }))
                         .setNegativeButton("Отмена",null).show();
-                }else startWalkCollisionPreview();
+                }else startWalkCollisionPreview(id);
             }).setNegativeButton("Отмена",null).show();
     }
 
@@ -1845,16 +1848,24 @@ public class EditorActivity extends Activity {
         });
     }
     private void startWalkCollisionPreview(){
+        startWalkCollisionPreview(0);
+    }
+    private void startWalkCollisionPreview(int selectedWallId){
         if(importing)return;
         if(walkControlsActive)finishWalkControls();
         cancelPlace(); // close all editor paint/road modes before walking
         surface.queueEvent(()->{
-            boolean ok=nativeWalkPreviewStart();
+            boolean ok=selectedWallId>0?
+                nativeWalkPreviewStartAtBarrier(selectedWallId):
+                nativeWalkPreviewStart();
             double[] state=ok?nativeWalkPreviewState():null;
             ui(()->{
                 if(!ok||state==null){
-                    message("Не удалось поставить путника: проверь дорожные узлы, " +
-                        "высоту земли и уклон. Выдели дорогу для точной точки старта.");
+                    message(selectedWallId>0?
+                        "Нет безопасной точки рядом с преградой: "+
+                        "проверь уклон, край карты или соседние стены.":
+                        "Не удалось поставить путника: проверь уклон земли, "+
+                        "положение камеры и границу мира.");
                     return;
                 }
                 statusText.setText(walkPreviewDescription(state));
@@ -1867,7 +1878,11 @@ public class EditorActivity extends Activity {
                 toggleDrawer(false);
                 walkHandler.removeCallbacks(walkTick);
                 walkHandler.post(walkTick);
-                message("Круг слева — непрерывное движение. Прыжок и ✕ Тест справа.");
+                message(selectedWallId>0?
+                    "Путник поставлен СНАРУЖИ выбранной стены. Двигайся "+
+                    "джойстиком К розовой линии — коллизия должна остановить. "+
+                    "После вырезания прохода проверим снова.":
+                    "Круг слева — непрерывное движение. Прыжок и ✕ Тест справа.");
             });
             surface.requestRender();
         });
@@ -1907,8 +1922,9 @@ public class EditorActivity extends Activity {
                     "красный — находится в прыжке или падает.\n"+
                     "Путник не сохраняется в проекте. Сенсорный круг слева " +
                     "двигает непрерывно, прыжок — справа. Физика 60 Гц.\n"+
-                    "Пока нет столкновений со стенами, водой и перилами. " +
-                    "В будущем это будет частью Play/Stop.")
+                    "Стены в разделе «Коллизии» останавливают путника. " +
+                    "Розовые линии — только редакторские подсказки. " +
+                    "Вода и перила пока не имеют отдельной физики.")
                 .setPositiveButton("Понятно",null).show());
         });
     }

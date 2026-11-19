@@ -55,9 +55,14 @@ public final class PhoenixBuilderActivity extends Activity {
     public static final String EXTRA_MODE="oe_phoenix_mode";
     public static final String MODE_BUILD="build";
     public static final String MODE_LANDSCAPE="landscape";
+    // Only a guarded recovery option uses the exact, original UV44 scene.
+    // Both BUILD and LANDSCAPE use UV56's existing ONE live Three.js canvas,
+    // where all original UV44 library/model bytes are served from the base pack.
+    private static final String MODE_ORIGINAL_UV44="original_uv44";
     private static final String PREFIX="/phoenix/";
     private static final String LANDSCAPE_PREFIX="/phoenix-landscape/";
-    private boolean landscapeMode=false;
+    private boolean landscapeMode=true;
+    private String requestedMode=MODE_BUILD;
     private static final int PICK_FILE=7241,SAVE_FILE=7242;
     private static final long MAX_EXPORT_BYTES=1024L*1024*1024;
     private static final long DISK_RESERVE=16L*1024*1024;
@@ -138,7 +143,9 @@ public final class PhoenixBuilderActivity extends Activity {
 
     @Override public void onCreate(Bundle savedState) {
         super.onCreate(savedState);
-        landscapeMode=MODE_LANDSCAPE.equals(getIntent().getStringExtra(EXTRA_MODE));
+        String mode=getIntent().getStringExtra(EXTRA_MODE);
+        requestedMode=MODE_LANDSCAPE.equals(mode)?MODE_LANDSCAPE:MODE_BUILD;
+        landscapeMode=!MODE_ORIGINAL_UV44.equals(mode);
         getWindow().getDecorView().setSystemUiVisibility(
             View.SYSTEM_UI_FLAG_FULLSCREEN|View.SYSTEM_UI_FLAG_HIDE_NAVIGATION|
             View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
@@ -146,8 +153,10 @@ public final class PhoenixBuilderActivity extends Activity {
         // The complete, byte-identical UV44 bundle remains the immutable base.
         String entry=landscapeMode?"phoenix-uv56-overlay/assets/index.html":
             "phoenix/assets/index.html";
-        try(InputStream ignored=getAssets().open(entry)){
-            // The CI code-only APK deliberately omits the owner's UV44 assets.
+        try(InputStream base=getAssets().open("phoenix/assets/index.html");
+            InputStream page=getAssets().open(entry)){
+            // The CI code-only APK deliberately omits the owner's UV44 and UV56
+            // private assets. Both must be staged from owner APKs to launch.
         }catch(IOException unavailable) {
             TextView label=new TextView(this);
             label.setText("Phoenix Builder UV44 / UV56\n\nВ этой сборке пока нет частных " +
@@ -169,15 +178,20 @@ public final class PhoenixBuilderActivity extends Activity {
         settings.setMediaPlaybackRequiresUserGesture(true);
         web.setWebViewClient(new WebViewClient(){
             @Override public void onPageFinished(WebView view,String url){
-                // Shared origin keeps WebView IndexedDB texture/GLB references
-                // available between UV44 and UV56. Load only a saved project,
-                // never clear the editor or overwrite unsaved data on startup.
-                if(url!=null && (url.startsWith(ORIGIN+PREFIX) ||
-                    url.startsWith(ORIGIN+LANDSCAPE_PREFIX))){
-                    view.evaluateJavascript(
-                        "if(window.PhoenixClean&&typeof window.PhoenixClean.load==='function')"+
-                        "{window.PhoenixClean.load();}",null);
-                }
+                // Mode selection happens within ONE UV56 Three.js scene; no
+                // second application/canvas and no reload on tool switching.
+                String page=ORIGIN+(landscapeMode?LANDSCAPE_PREFIX:PREFIX)+"index.html";
+                if(!page.equals(url))return;
+                String tab=(landscapeMode&&MODE_LANDSCAPE.equals(requestedMode))?
+                    "modeLandscape":"modeBuild";
+                String js="(async function(){try{"+
+                    "const editor=window.PhoenixClean;"+
+                    "if(!editor||typeof editor.load!=='function')return;"+
+                    "await editor.load();"+
+                    "const tab=document.getElementById('"+tab+"');"+
+                    "if(tab)tab.click();"+
+                    "}catch(error){console.error('OE startup restore',error);}})();";
+                view.evaluateJavascript(js,null);
             }
             @Override public boolean shouldOverrideUrlLoading(WebView view,
                     WebResourceRequest request) {
@@ -280,48 +294,76 @@ public final class PhoenixBuilderActivity extends Activity {
     }
 
     private void showModeMenu(){
-        String[] items={"🏗 Стройка — оригинал UV44",
-            "🌿 Ландшафт + дороги — UV56","🏙 Вернуться в город OE",
+        String[] items={"🏗 Стройка (общая сцена)",
+            "🌿 Ландшафт и дороги (та же сцена)",
+            "🛟 Оригинал UV44 — только резервный режим",
+            "🏙 Сохранить и вернуться в город OE",
             "🛟 Копии проекта"};
-        new AlertDialog.Builder(this).setTitle("Режимы единого OE")
-            .setItems(items,(d,i)->{
-                if(i==0)requestModeSwitch(false);
-                else if(i==1)requestModeSwitch(true);
-                else if(i==2)confirmExit();
+        new AlertDialog.Builder(this).setTitle("Единое рабочее пространство OE")
+            .setItems(items,(dialog,which)->{
+                if(which==0)requestModeSwitch(MODE_BUILD);
+                else if(which==1)requestModeSwitch(MODE_LANDSCAPE);
+                else if(which==2)requestModeSwitch(MODE_ORIGINAL_UV44);
+                else if(which==3)confirmExit();
                 else showProjectRecovery();
             }).show();
     }
-    private void requestModeSwitch(boolean targetLandscape){
-        if(targetLandscape==landscapeMode)return;
-        if(pendingSave!=null||fileCopyInProgress||!pendingQueue.isEmpty()){
-            Toast.makeText(this,"Заверши экспорт, прежде чем менять режим",
-                Toast.LENGTH_LONG).show();
+    private void selectTabInLiveScene(String mode){
+        if(web==null||!landscapeMode)return;
+        requestedMode=mode;
+        String id=MODE_LANDSCAPE.equals(mode)?"modeLandscape":"modeBuild";
+        web.evaluateJavascript("(function(){const el=document.getElementById('"+
+            id+"');if(el){el.click();return true}return false})()",result->{
+                if(!"true".equals(result))
+                    Toast.makeText(this,"Вкладка редактора ещё не готова",
+                        Toast.LENGTH_SHORT).show();
+            });
+    }
+    private void requestModeSwitch(String mode){
+        if(web==null)return;
+        if(landscapeMode&&!MODE_ORIGINAL_UV44.equals(mode)){
+            // UV56 has native modeBuild and modeLandscape inside the SAME
+            // CleanBuilder instance. A tab switch must not serialize/reload.
+            selectTabInLiveScene(mode);
             return;
         }
-        new AlertDialog.Builder(this).setTitle("Сохранить перед переключением?")
-            .setMessage("Сохраним текущий редактируемый JSON с безопасными копиями. "+
-                "Здания и рельеф останутся в одном проекте. Полный переносимый "+
-                "JSON с изображениями и GLB экспортируй в режиме Ландшафт.")
-            .setPositiveButton("💾 Сохранить и перейти",(d,w)->saveAndSwitch(targetLandscape))
+        if(!landscapeMode&&MODE_ORIGINAL_UV44.equals(mode))return;
+        if(pendingSave!=null||fileCopyInProgress||!pendingQueue.isEmpty()){
+            Toast.makeText(this,"Заверши экспорт перед переключением",
+                Toast.LENGTH_LONG).show();return;
+        }
+        new AlertDialog.Builder(this).setTitle("Сохранить перед сменой редактора?")
+            .setMessage("Оригинальный UV44 открыт только для сравнения и "+
+                "восстановления. Рабочая стройка и ландшафт уже в одной сцене. "+
+                "Переключение сохранит общий JSON с резервными копиями.")
+            .setPositiveButton("💾 Сохранить и перейти",(d,w)->
+                saveCurrentProject(()->{
+                    landscapeMode=!MODE_ORIGINAL_UV44.equals(mode);
+                    requestedMode=MODE_LANDSCAPE.equals(mode)?
+                        MODE_LANDSCAPE:MODE_BUILD;
+                    web.loadUrl(ORIGIN+(landscapeMode?LANDSCAPE_PREFIX:PREFIX)+
+                        "index.html");
+                }))
             .setNegativeButton("Остаться",null).show();
     }
-    private void saveAndSwitch(boolean targetLandscape){
+    private void saveCurrentProject(Runnable onSaved){
         if(web==null)return;
         final String js="(function(){try{"+
-            "if(!window.PhoenixClean||!window.PhoenixClean.project)return 'not_ready';"+
-            "return window.NativeBridge.saveCleanProject(JSON.stringify(window.PhoenixClean.project()))"+
-            "?'ok':'save_failed: '+window.NativeBridge.getLastSaveError();"+
+            "if(!window.PhoenixClean||typeof window.PhoenixClean.project!=='function')"+
+                "return 'not_ready';"+
+            "const json=JSON.stringify(window.PhoenixClean.project());"+
+            "return window.NativeBridge.saveCleanProject(json)?'ok':"+
+                "('save_failed: '+window.NativeBridge.getLastSaveError());"+
             "}catch(e){return 'exception: '+String(e.message||e);}})();";
         web.evaluateJavascript(js,result->{
             if(!"\"ok\"".equals(result)){
                 new AlertDialog.Builder(this).setTitle("Проект не сохранён")
-                    .setMessage("Переключение отменено. Данные оставлены в текущем "+
-                        "режиме. Причина: "+result)
+                    .setMessage("Данные оставлены в текущем редакторе. "+
+                        "Переход отменён. Причина: "+result)
                     .setPositiveButton("Понятно",null).show();
                 return;
             }
-            landscapeMode=targetLandscape;
-            web.loadUrl(ORIGIN+(landscapeMode?LANDSCAPE_PREFIX:PREFIX)+"index.html");
+            onSaved.run();
         });
     }
     private static boolean isPhoenix(Uri uri){
@@ -382,12 +424,15 @@ public final class PhoenixBuilderActivity extends Activity {
 
     private void confirmExit(){
         new AlertDialog.Builder(this)
-            .setTitle("Вернуться в город OE?")
-            .setMessage("Сохрани здание в Phoenix (JSON) или экспортируй GLB. " +
-                "Готовый GLB можно импортировать в городской редактор OE.")
-            .setPositiveButton("В город",(dialog,which)->finish())
+            .setTitle("Сохранить стройку и ландшафт перед выходом?")
+            .setMessage("Один проект хранит здания и землю UV56. "+
+                "Сохраним его с резервными копиями до возвращения в город OE. "+
+                "Полный JSON с изображениями и GLB экспортируется из вкладки "+
+                "Файлы в редакторе.")
+            .setPositiveButton("💾 Сохранить и в город",
+                (dialog,which)->saveCurrentProject(this::finish))
             .setNeutralButton("🛟 Копии", (dialog,which)->showProjectRecovery())
-            .setNegativeButton("Продолжить строительство",null)
+            .setNegativeButton("Продолжить",null)
             .show();
     }
 

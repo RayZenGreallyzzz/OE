@@ -57,6 +57,7 @@ jobs:
           python3 tests/editor_only_plots_stage6_smoke.py
           python3 tests/editor_plot_png_blueprints_stage7_smoke.py
           python3 tests/editor_native_walls_stage8_smoke.py
+          python3 tests/wall_stage8b_regression_smoke.py
   device-quality:
     runs-on: ubuntu-latest
     steps:

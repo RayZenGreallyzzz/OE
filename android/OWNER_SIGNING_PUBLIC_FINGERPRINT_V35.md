@@ -39,3 +39,31 @@ from successful Android CI. No private assets in this public repository.
 
 Note: a successful CI compile and offline APK v2 signature verification do not
 replace an actual Android tablet installation and graphics smoke test.
+
+## 2026-11-19 v35 INSTALL HOTFIX — resource table ZIP alignment
+
+The first 112,693,377-byte private v35 signed APK was **not installable** on the
+owner's tablet. Investigation of its ZIP local entry headers established that
+`resources.arsc` was stored uncompressed at byte offset **3291317** (offset
+modulo 4 = 1). Android 11+ rejects APKs targeting API 30+ unless stored
+`resources.arsc` starts at a **4-byte boundary** (parse error -124).
+
+Corrected owner-only APK:
+`OE_0.7.13_Phoenix_UV44_v35_FIXED_NEW_PERMANENT_KEY_INSTALL.apk`
+(112,693,391 bytes; SHA-256
+`29e19568343c4c2c9a6432bae3aa9e4c3b5345fecb9efb56d7817cfa24f5697b`).
+
+The fixed payload is rebuilt by aligning **every STORED ZIP member** to 4
+bytes, with `lib/arm64-v8a/liboe_native.so` at a **16 KiB boundary**.
+`resources.arsc` now starts at offset **3291324**, modulo 4 = 0;
+`liboe_native.so` at **131072**, modulo 16384 = 0. All 1910 Phoenix
+builder members match v33 **by SHA-256** (not merely CRC); Android CI v35
+manifest, DEX, native library and resources byte-for-byte match the compiled
+artifact. The APK ZIP integrity and RSA-v2 signature both verify. The **same
+NEW permanent signing certificate** `edca742d…d61e262bb` signs the hotfix;
+no second signing key was generated. The owner's existing new key backup is
+still valid unchanged. **Do not distribute the earlier broken APK.**
+
+This hotfix changes only private APK ZIP packaging/offsets, *not source code,
+Phoenix builder, models, GLB project, or application ID*. No device-side QA
+claim can be made until the owner successfully installs and runs the hotfix.

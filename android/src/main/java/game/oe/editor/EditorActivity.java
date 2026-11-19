@@ -728,6 +728,7 @@ public class EditorActivity extends Activity {
     }
     private void cancelPlace() {
         uv56SculptTool=0;
+        if(surface!=null)surface.queueEvent(EditorActivity::nativeUv56StrokeEnd);
         paintTerrainMode=false;roadMode=false;roadMoveMode=false;precisionPaintMode=false;
         surface.queueEvent(()->{nativeRoadFinish();nativePaintStrokeEnd();nativeLayerStrokeEnd();});
         terrainMode=0;lakeMode=false;
@@ -737,9 +738,11 @@ public class EditorActivity extends Activity {
         message("Размещение отменено");
     }
     private void startLakeExcavation(){
-        terrainRadius=64f;terrainStrength=12f;
-        enterTerrainMode(-1);
-        message("Создай углубление, затем открой «Вода → Залить озеро»");
+        // Preserve R5.7 legacy brush data but use only native UV56 for new digs.
+        uv56BrushCm=1600;
+        uv56SculptRadius=16f;uv56SculptPower=5f;
+        openUv56Mode(2);
+        message("Нарисуй чашу инструментом UV56, затем залей озеро");
     }
     private void beginLakePlacement(){
         if(importing){message("Сначала дождись загрузки");return;}
@@ -2163,6 +2166,13 @@ public class EditorActivity extends Activity {
                         activePaintKey=key;
                         message("Текстура добавлена · теперь нанеси её на деталь или землю");
                         surface.requestRender();
+                        ui(()->{
+                            if("Рельеф".equals(activePaletteCategory)&&drawerOpen){
+                                uv56LandscapeMode=6;
+                                openUv56Mode(6);
+                                showPalette("Рельеф");
+                            }
+                        });
                     }else message("Лимит текстур/памяти GPU. Максимум 8 изображений.");
                 });
             }catch(Exception err){
@@ -2170,7 +2180,8 @@ public class EditorActivity extends Activity {
             }
         },"oe-paint-image-import").start();
     }
-    private void usePaintTexture(String key){
+    private void usePaintTexture(String key){usePaintTexture(key,false);}
+    private void usePaintTexture(String key,boolean armLandscapeAfterLoad){
         if(importing)return;
         importing=true;
         new Thread(()->{
@@ -2187,7 +2198,17 @@ public class EditorActivity extends Activity {
                 surface.queueEvent(()->{
                     boolean ok=nativeRegisterPaintTexture(key,image.bytes,image.width,image.height);
                     importing=false;
-                    if(ok){activePaintKey=key;message("Выбрана текстура: "+key);}
+                    if(ok){
+                        activePaintKey=key;
+                        message("Выбрана текстура: "+key);
+                        if(armLandscapeAfterLoad){
+                            ui(()->{
+                                openUv56Mode(6);
+                                if(drawerOpen&&"Рельеф".equals(activePaletteCategory))
+                                    showPalette("Рельеф");
+                            });
+                        }
+                    }
                     else message("Не удалось загрузить текстуру в GPU");
                 });
             }catch(Exception e){importing=false;message("Не открыть текстуру: "+e.getMessage());}
@@ -3010,6 +3031,7 @@ public class EditorActivity extends Activity {
         private volatile int touchedGizmoAxis=-1;
         private boolean gizmoEditStarted=false; // GL thread only.
         private volatile boolean paintStrokeFailed=false;
+        private boolean uv56GestureStarted=false; // GL thread only
         private float precisionScreenY(float y){
             return surfaceY(Math.max(0.f,y-dp(70))); // visible cursor ABOVE the finger
         }
@@ -3091,6 +3113,15 @@ public class EditorActivity extends Activity {
                 downX=lastX=e.getX();downY=lastY=e.getY();multiTouch=false;lastPinch=0;
                 touchedGizmoAxis=-1;
                 final float px=surfaceX(downX),py=surfaceY(downY);
+                if(uv56SculptTool>0){
+                    final int tool=uv56SculptTool;
+                    final float radius=uv56SculptRadius,power=uv56SculptPower;
+                    queueEvent(()->{
+                        uv56GestureStarted=nativeUv56StrokeStart(tool,px,py,radius,power);
+                        if(uv56GestureStarted)requestRender();
+                    });
+                    return true;
+                }
                 if(precisionPaintMode){
                     paintStrokeFailed=false;
                     final float cy=precisionScreenY(downY);
@@ -3118,6 +3149,8 @@ public class EditorActivity extends Activity {
                 multiTouch=true;
                 touchedGizmoAxis=-1;
                 queueEvent(()->{nativeGizmoEnd();gizmoEditStarted=false;
+                    if(uv56GestureStarted)nativeUv56StrokeEnd();
+                    uv56GestureStarted=false;
                     nativePaintStrokeEnd();nativeLayerStrokeEnd();requestRender();});
                 if(e.getPointerCount()>=2){
                     lastPinch=pinch(e);
@@ -3149,6 +3182,18 @@ public class EditorActivity extends Activity {
                         lastX=x;lastY=y;
                         return true;
                     }
+                    if(uv56SculptTool>0){
+                        final int tool=uv56SculptTool;
+                        final float px=surfaceX(x),py=surfaceY(y);
+                        final float radius=uv56SculptRadius,power=uv56SculptPower;
+                        queueEvent(()->{
+                            if(uv56GestureStarted&&
+                               nativeUv56StrokeMove(tool,px,py,radius,power))
+                                interactiveRender();
+                        });
+                        lastX=x;lastY=y;
+                        return true;
+                    }
                     final float dx=x-lastX,dy=y-lastY;
                     if(dx!=0||dy!=0){
                         final float sx=surfaceX(dx),sy=surfaceY(dy);
@@ -3172,6 +3217,21 @@ public class EditorActivity extends Activity {
             }
             if(action==MotionEvent.ACTION_POINTER_UP) {multiTouch=true;lastPinch=0;return true;}
             if(action==MotionEvent.ACTION_UP) {
+                if(uv56SculptTool>0){
+                    final float px=surfaceX(e.getX()),py=surfaceY(e.getY());
+                    final int tool=uv56SculptTool;
+                    final float radius=uv56SculptRadius,power=uv56SculptPower;
+                    final boolean hadMultiple=multiTouch;
+                    queueEvent(()->{
+                        if(uv56GestureStarted){
+                            if(!hadMultiple)nativeUv56StrokeMove(tool,px,py,radius,power);
+                            nativeUv56StrokeEnd();
+                            uv56GestureStarted=false;
+                        }
+                        requestRender();
+                    });
+                    multiTouch=false;return true;
+                }
                 if(precisionPaintMode){
                     final float px=surfaceX(e.getX()),py=precisionScreenY(e.getY());
                     final boolean wasMultiTouch=multiTouch;
@@ -3268,6 +3328,8 @@ public class EditorActivity extends Activity {
             if(action==MotionEvent.ACTION_CANCEL) {
                 multiTouch=false;touchedGizmoAxis=-1;
                 queueEvent(()->{nativeGizmoEnd();gizmoEditStarted=false;
+                    if(uv56GestureStarted)nativeUv56StrokeEnd();
+                    uv56GestureStarted=false;
                     nativePaintStrokeEnd();nativeLayerStrokeEnd();requestRender();});
                 return true;
             }

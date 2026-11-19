@@ -3271,24 +3271,67 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRedo(JNIEnv*
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeClearHistory(JNIEnv*,jclass){
  gUndo.clear();gRedo.clear();
 }
+// Every duplicated building reuses the same GPU asset and content-addressed
+// textures; only transform and per-instance MaterialStyle entries are copied.
+Vec3 cloneSpacing(const Entity&e){
+ if(e.type!=6){
+  const float gap=(e.type<=2?7.5f:2.5f)*e.size;
+  return {gap,0.f,gap};
+ }
+ auto it=gAssets.find(e.asset);
+ if(it==gAssets.end())return {8.f*e.size,0.f,8.f*e.size};
+ const Asset&a=it->second;
+ const float width=(a.maxX-a.minX)*e.size*e.sx;
+ const float depth=(a.maxZ-a.minZ)*e.size*e.sz;
+ // Conservative bounding square: no overlap when yaw/XYZ rotations are set.
+ const float gap=std::max(2.5f,std::hypot(width,depth)+2.f);
+ return {gap,0.f,gap};
+}
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeDuplicateSelected(JNIEnv*,jclass){
- Entity*original=selected();
+ const Entity*original=selected();
  if(!original||gEntities.size()>=MAX_ENTITIES)return 0;
  Entity copy=*original;
- float offset=(copy.type<=2?7.5f:2.5f)*copy.size;
- if(copy.type==6){
-  auto asset=gAssets.find(copy.asset);
-  offset=asset==gAssets.end()?8.f*copy.size:
-   std::max(2.f,(asset->second.maxX-asset->second.minX)*copy.size*copy.sx+2.f);
- }
- float nx=copy.x+offset;
- if(nx>worldHalf()-2.f)nx=copy.x-offset;
- if(nx<-worldHalf()+2.f)return 0;
- copy.x=nx;
+ const float step=cloneSpacing(copy).x;
+ const float half=worldHalf()-2.f;
+ if(copy.x+step<=half)copy.x+=step;
+ else if(copy.x-step>=-half)copy.x-=step;
+ else if(copy.z+step<=half)copy.z+=step;
+ else if(copy.z-step>=-half)copy.z-=step;
+ else return 0;
  recordEdit();
  copy.id=gNextId++;
- gEntities.push_back(copy);gSelected=copy.id;
- return copy.id;
+ gEntities.push_back(std::move(copy));
+ gSelected=gEntities.back().id;
+ return gSelected;
+}
+// A 1×10 row or 5×10 block includes the selected original. All-or-nothing
+// bounds checks and one undo entry prevent half-created neighbourhoods.
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeDuplicateSelectedGrid(
+ JNIEnv*,jclass,jint columns,jint rows){
+ const Entity*original=selected();
+ if(!original||columns<1||rows<1||columns>10||rows>10||
+    columns*rows<2||gEntities.size()+static_cast<size_t>(columns*rows-1)>MAX_ENTITIES)
+    return 0;
+ const Entity prototype=*original;
+ const Vec3 step=cloneSpacing(prototype);
+ const float half=worldHalf()-2.f;
+ for(int z=0;z<rows;z++)for(int x=0;x<columns;x++){
+  const float px=prototype.x+x*step.x,pz=prototype.z+z*step.z;
+  if(!std::isfinite(px)||!std::isfinite(pz)||std::abs(px)>half||
+     std::abs(pz)>half)return 0;
+ }
+ recordEdit();
+ int added=0;
+ for(int z=0;z<rows;z++)for(int x=0;x<columns;x++){
+  if(x==0&&z==0)continue;
+  Entity copy=prototype;
+  copy.id=gNextId++;
+  copy.x+=x*step.x;copy.z+=z*step.z;
+  copy.y=terrainHeightAt(copy.x,copy.z);
+  gEntities.push_back(std::move(copy));++added;
+ }
+ gSelected=gEntities.back().id;
+ return added;
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeReset(JNIEnv*,jclass,jboolean withDemo){reset(withDemo==JNI_TRUE);}
 } // extern C

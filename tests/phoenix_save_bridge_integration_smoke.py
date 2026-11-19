@@ -185,6 +185,8 @@ assert 'radius>8192.f' in cpp
 assert 'const float far=std::max(1800.f,gDistance*3.f+500.f);' in cpp
 assert 'std::min(3200.f,radius*6.f)' in cpp # giant stays in view at auto-frame
 assert 'gDistance=clampf(gDistance*clampf(zoom,.6f,1.5f),5,2400);' in cpp
+assert 'if(t<=0||t>6200.f)return false;' in cpp
+assert 'for(int i=1;i<=388;i++)' in cpp
 assert 'frameLargeImported(gEntities.back());' in cpp
 assert 'loX=a->second.minX;hiX=a->second.maxX;' in cpp
 assert 'gTarget.y=terrainHeightAt(gTarget.x,gTarget.z)+1.2f+elevation;' in cpp

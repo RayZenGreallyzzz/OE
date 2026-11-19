@@ -104,7 +104,8 @@ public class EditorActivity extends Activity {
     private static native int nativeDuplicateSelected();
     private static native boolean nativeRegisterAsset(String key, float[] vertices, float centerY,
             float radius, int[] draws, byte[][] images, int[] imageInfo,
-            int[] pbrTextures, float[] pbrFactors, boolean preserveRig);
+            int[] pbrTextures, float[] pbrFactors,
+            int[] materialIds,String[] materialNames,boolean preserveRig);
     private static native String[] nativeLoadedAssetKeys();
     private static native boolean nativeCanRegisterMore(int newUniqueAssets);
     private static native void nativeDiscardUnusedAsset(String key);
@@ -1518,7 +1519,7 @@ public class EditorActivity extends Activity {
                                 final boolean ok=nativeRegisterAsset(key,mesh.vertices,
                                         mesh.boundCenterY,mesh.boundRadius,mesh.draws,
                                         mesh.imageData,mesh.imageInfo,mesh.pbrTextures,mesh.pbrFactors,
-                                        mesh.previewOmitsRig);
+                                        mesh.materialIds,mesh.materialNames,mesh.previewOmitsRig);
                                 importing=false;
                                 if(ok){
                                     ui(()->enterPlaceMode(6,key));
@@ -1642,7 +1643,8 @@ public class EditorActivity extends Activity {
                                     boolean success=nativeRegisterAsset(key,model.vertices,
                                             model.boundCenterY,model.boundRadius,
                                             model.draws,model.imageData,model.imageInfo,
-                                            model.pbrTextures,model.pbrFactors,model.previewOmitsRig);
+                                            model.pbrTextures,model.pbrFactors,
+                                            model.materialIds,model.materialNames,model.previewOmitsRig);
                                     importing=false;
                                     if(success){
                                         surface.requestRender();

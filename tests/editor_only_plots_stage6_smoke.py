@@ -46,7 +46,7 @@ for marker in [
     "validateEditorPlots(json,version)",
     "validateNativeUv56(json,version)",
     "validateLakes(json,version)",
-    "version==10&&plots!=null&&plots.length()>0",
+    "version>=10&&plots!=null&&plots.length()>0",
 ]:
     assert marker in archive, ("missing legacy compatible v10 archive gate",marker)
 assert "applicationId 'game.oe.editor.r57blueprints'" in gradle

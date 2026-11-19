@@ -291,8 +291,11 @@ public class EditorActivity extends Activity {
         Button menu=button("☰ Каталог",()->toggleDrawer(!drawerOpen));
         top.addView(menu,new LinearLayout.LayoutParams(dp(104),dp(43)));
         Button builderMode=button("🏗 Стройка",this::openBuilderMode);
-        builderMode.setContentDescription("Режим Стройка · Phoenix Builder UV44");
+        builderMode.setContentDescription("Режим Стройка · неизменённый Phoenix UV44");
         top.addView(builderMode,new LinearLayout.LayoutParams(dp(103),dp(43)));
+        Button landscapeMode=button("🌿 Ландшафт",this::openLandscapeMode);
+        landscapeMode.setContentDescription("Режим Ландшафт · инструменты Phoenix UV56");
+        top.addView(landscapeMode,new LinearLayout.LayoutParams(dp(110),dp(43)));
         Button save=button("💾 Сохранить",this::saveScene);
         top.addView(save,new LinearLayout.LayoutParams(dp(112),dp(43)));
         Button undo=button("↶",this::undoAction);
@@ -468,10 +471,18 @@ public class EditorActivity extends Activity {
     // unchanged Phoenix UV44 builder is in its own construction mode.
     // The existing builder JSON/GLB save bridge handles persistence.
     private void openBuilderMode(){
-        if(importing){message("Заверши импорт перед переходом в Стройку");return;}
+        openPhoenixMode(PhoenixBuilderActivity.MODE_BUILD);
+    }
+    private void openLandscapeMode(){
+        openPhoenixMode(PhoenixBuilderActivity.MODE_LANDSCAPE);
+    }
+    private void openPhoenixMode(String mode){
+        if(importing){message("Заверши импорт перед переходом в Phoenix");return;}
         cancelPlace();
         toggleDrawer(false);
-        startActivityForResult(new Intent(this,PhoenixBuilderActivity.class),PHOENIX_BUILDER);
+        Intent intent=new Intent(this,PhoenixBuilderActivity.class);
+        intent.putExtra(PhoenixBuilderActivity.EXTRA_MODE,mode);
+        startActivityForResult(intent,PHOENIX_BUILDER);
     }
     private void toggleDrawer(boolean open){
         drawerOpen=open;
@@ -490,10 +501,11 @@ public class EditorActivity extends Activity {
     private void showPalette(String category){
         paletteItems.removeAllViews();
         if("🏗 Здание".equals(category)){
-            addPaletteOption("🏗 Режим Стройка · Phoenix Builder UV44",this::openBuilderMode);
+            addPaletteOption("🏗 Стройка — оригинальный Phoenix UV44",this::openBuilderMode);
+            addPaletteOption("🌿 Ландшафт — инструменты UV56",this::openLandscapeMode);
             addPaletteOption("📥 Импорт готового GLB из Phoenix",this::pickGlb);
-            addPaletteOption("ℹ Редактор зданий отдельный от ландшафта и дорог",
-                ()->message("Строй здание в Phoenix, экспортируй GLB и импортируй в город"));
+            addPaletteOption("ℹ Оба режима в одном OE, проект сохраняется между ними",
+                ()->message("Сохраняй проект перед сменой режима; ландшафт и дома в общем JSON"));
         }else if("Дома".equals(category)||"Здания".equals(category)){
             addPaletteOption("+ Таверна",()->enterPlaceMode(0,null));
             addPaletteOption("+ Кузница",()->enterPlaceMode(1,null));
@@ -531,6 +543,8 @@ public class EditorActivity extends Activity {
             addPaletteOption("+ Лавка",()->enterPlaceMode(9,null));
             addPaletteOption("Импорт 3D: GLB / glTF / VOX",this::pickGlb);
         }else if("Рельеф".equals(category)){
+            addPaletteOption("🌿 Ландшафт UV56 — полный редактор кистей/текстур/дорог",
+                this::openLandscapeMode);
             addPaletteOption("⛰ Поднять гору",()->enterTerrainMode(1));
             addPaletteOption("⛰ Опустить землю",()->enterTerrainMode(-1));
             addPaletteOption("📐 Радиус и сила кисти",this::chooseTerrainBrush);

@@ -110,7 +110,14 @@ public class EditorActivity extends Activity {
     private static native int nativeApplyTerrainBrushAtScreen(float x,float y,float radius,float amount);
     private static native int nativeTerrainBrushCount();
     private static native boolean nativeUv56SculptAtScreen(int tool,float x,float y,
+            float radius,float power); // stage 1 compatibility
+    private static native int nativeUv56Area();
+    private static native boolean nativeUv56ConfigureArea(int areaSqM);
+    private static native boolean nativeUv56StrokeStart(int tool,float x,float y,
             float radius,float power);
+    private static native boolean nativeUv56StrokeMove(int tool,float x,float y,
+            float radius,float power);
+    private static native void nativeUv56StrokeEnd();
     private static native int nativeLakePlaceAtScreen(float x,float y,float radius,float fillDepth);
     private static native String[] nativeLakeNames();
     private static native boolean nativeLakeSelect(int index);
@@ -188,6 +195,8 @@ public class EditorActivity extends Activity {
     // Source: UV56 landscape-manager.js. No UV56 building/character code.
     private volatile int uv56SculptTool=0; // 1 raise,2 lower,3 ridge,4 smooth,5 flatten
     private volatile float uv56SculptRadius=4f,uv56SculptPower=2f;
+    private volatile int uv56LandscapeMode=0,uv56BrushCm=400;
+    private volatile String activePaletteCategory="Здания";
     private boolean walkJumpQueued=false,walkAirborne=false;
     private float walkAxisX=0f,walkAxisZ=0f;
     private volatile int walkSessionGeneration=0;
@@ -352,7 +361,7 @@ public class EditorActivity extends Activity {
         top.setPadding(dp(5),dp(2),dp(5),dp(2));
         top.setBackgroundColor(Color.argb(220,14,21,32));
         TextView title=new TextView(this);
-        title.setText("OE TOUCH WALK R5.7 TEST");
+        title.setText("OE R5.7 · 🌳 Ландшафт UV56");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
         title.setTextSize(12);
@@ -361,6 +370,11 @@ public class EditorActivity extends Activity {
         top.addView(title,new LinearLayout.LayoutParams(0,dp(45),1f));
         Button menu=button("☰ Каталог",()->toggleDrawer(!drawerOpen));
         top.addView(menu,new LinearLayout.LayoutParams(dp(110),dp(43)));
+        Button land=button("🌿 Ландшафт",()->{
+            showPalette("Рельеф");
+            toggleDrawer(true);
+        });
+        top.addView(land,new LinearLayout.LayoutParams(dp(112),dp(43)));
         Button save=button("💾 Сохранить",this::saveScene);
         top.addView(save,new LinearLayout.LayoutParams(dp(112),dp(43)));
         Button undo=button("↶",this::undoAction);
@@ -392,9 +406,12 @@ public class EditorActivity extends Activity {
         toolDrawer.addView(paletteScroll,new LinearLayout.LayoutParams(-1,0,1f));
         Button closePalette=button("✕ Закрыть каталог",()->toggleDrawer(false));
         toolDrawer.addView(closePalette,new LinearLayout.LayoutParams(-1,dp(42)));
-        FrameLayout.LayoutParams drawerParams=new FrameLayout.LayoutParams(dp(355),dp(405),
+        // UV56 demonstration: persistent scrollable left landscape sidebar.
+        // The scene remains full-screen, with its own touch surface on the right.
+        FrameLayout.LayoutParams drawerParams=new FrameLayout.LayoutParams(dp(355),-1,
             Gravity.TOP|Gravity.LEFT);
         drawerParams.topMargin=dp(50);
+        drawerParams.bottomMargin=dp(8);
         root.addView(toolDrawer,drawerParams);
         toolDrawer.setVisibility(View.GONE);
         showPalette("Здания");
@@ -527,6 +544,7 @@ public class EditorActivity extends Activity {
     }
     private void showPalette(String category){
         paletteItems.removeAllViews();
+        activePaletteCategory=category;
         if("Здания".equals(category)){
             addPaletteOption("+ Таверна",()->enterPlaceMode(0,null));
             addPaletteOption("+ Кузница",()->enterPlaceMode(1,null));
@@ -576,17 +594,7 @@ public class EditorActivity extends Activity {
             addPaletteOption("+ Лавка",()->enterPlaceMode(9,null));
             addPaletteOption("Импорт 3D: GLB / glTF / VOX",this::pickGlb);
         }else if("Рельеф".equals(category)){
-            addPaletteOption("🌿 UV56 · поднять (сетка 1 м)",()->enterUv56Sculpt(1));
-            addPaletteOption("🌿 UV56 · опустить",()->enterUv56Sculpt(2));
-            addPaletteOption("🌿 UV56 · хребет",()->enterUv56Sculpt(3));
-            addPaletteOption("🌿 UV56 · сгладить",()->enterUv56Sculpt(4));
-            addPaletteOption("🌿 UV56 · выровнять",()->enterUv56Sculpt(5));
-            addPaletteOption("🌿 UV56 · размер/сила кисти",this::chooseUv56SculptSize);
-            addPaletteOption("🌿 UV56 · завершить",this::cancelPlace);
-            addPaletteOption("⛰ Поднять гору",()->enterTerrainMode(1));
-            addPaletteOption("⛰ Опустить землю",()->enterTerrainMode(-1));
-            addPaletteOption("📐 Радиус и сила кисти",this::chooseTerrainBrush);
-            addPaletteOption("✕ Завершить изменение",this::cancelPlace);
+            showUv56LandscapePanel();
         }else if("Вода".equals(category)){
             addPaletteOption("⛏ Вырыть чашу для озера",this::startLakeExcavation);
             addPaletteOption("🌊 Залить озеро касанием",this::beginLakePlacement);
@@ -803,6 +811,91 @@ public class EditorActivity extends Activity {
         statusText.setText("UV56: "+names[tool]+" · касайся земли. "+
             "Шаг узлов 1 метр, высота в сантиметрах. ↶ отменить.");
         message("Инструмент UV56 включён. Сцена города остаётся прежней");
+    }
+    private void openUv56Mode(int tool){
+        uv56LandscapeMode=tool;
+        if(tool==0){
+            cancelPlace();
+            statusText.setText("Осмотр карты · вращай камеру пальцем");
+        }else if(tool<=5){
+            enterUv56Sculpt(tool);
+        }else if(activePaintKey.isEmpty()){
+            cancelPlace();
+            message("Для покраски выбери или загрузи PNG/JPG внизу панели");
+        }else{
+            // Reuse the existing R5.7 native material canvas, never a
+            // second WebView renderer. Fine 1cm masks are a later milestone.
+            activateMaterialPaint(tool==7);
+            precisionPaintRadius=Math.max(.5f,uv56BrushCm/200.f);
+            precisionPaintOpacity=Math.max(.05f,Math.min(1f,uv56SculptPower/2f));
+        }
+    }
+    private void chooseUv56Territory(int area){
+        if(importing)return;
+        surface.queueEvent(()->{
+            final int old=nativeUv56Area();
+            ui(()->new AlertDialog.Builder(this)
+                .setTitle("🌍 Территория UV56 в городе OE")
+                .setMessage((old>0?"ВНИМАНИЕ: прежний слой высот UV56 будет заменён. "+
+                    "Дома, дороги, старые кисти OE и озёра останутся. "+
+                    "Это действие можно отменить кнопкой ↶. ":"")+
+                    "Новая территория: "+area+" м². Она должна помещаться "+
+                    "в размеры города OE. Продолжить?")
+                .setPositiveButton("Создать землю",(dialog,which)->
+                    surface.queueEvent(()->{
+                        boolean ok=nativeUv56ConfigureArea(area);
+                        surface.requestRender();
+                        if(ok){
+                            message("Территория "+area+" м² создана · ↶ отменить");
+                            ui(()->{
+                                if("Рельеф".equals(activePaletteCategory)&&drawerOpen)
+                                    showPalette("Рельеф");
+                            });
+                        }else message("Не помещается в карту OE. Выбери "+
+                            "меньшую территорию или увеличь размер мира.");
+                    }))
+                .setNegativeButton("Не менять землю",null).show());
+        });
+    }
+    private void showUv56LandscapePanel(){
+        final File[] textures;
+        try{
+            File[] files=textureDir().listFiles((dir,name)->validTexture(name));
+            if(files==null)files=new File[0];
+            Arrays.sort(files,(a,b)->a.getName().compareTo(b.getName()));
+            textures=files;
+        }catch(Exception ex){
+            message("Нет доступа к библиотеке текстур: "+ex.getMessage());
+            return;
+        }
+        NativeLandscapePanel panel=new NativeLandscapePanel(this,
+            new NativeLandscapePanel.Host(){
+                @Override public void tool(int tool){openUv56Mode(tool);}
+                @Override public void brushCentimeters(int cm){
+                    uv56BrushCm=cm;
+                    uv56SculptRadius=cm/100.f;
+                    precisionPaintRadius=Math.max(.5f,cm/200.f);
+                }
+                @Override public void brushPower(float power){
+                    uv56SculptPower=power;
+                    precisionPaintOpacity=Math.max(.05f,Math.min(1f,power/2.f));
+                }
+                @Override public void createArea(int areaSqM){
+                    chooseUv56Territory(areaSqM);
+                }
+                @Override public void uploadTexture(){pickPaintTexture();}
+                @Override public void chooseTexture(String key){
+                    uv56LandscapeMode=6;
+                    usePaintTexture(key,true);
+                }
+                @Override public void close(){openUv56Mode(0);toggleDrawer(false);}
+            },uv56LandscapeMode,uv56BrushCm,uv56SculptPower,textures,
+               activePaintKey);
+        paletteItems.addView(panel,new LinearLayout.LayoutParams(-1,-2));
+        surface.queueEvent(()->{
+            final int area=nativeUv56Area();
+            ui(()->{if(panel.getParent()!=null)panel.setAreaStatus(area);});
+        });
     }
     private void chooseUv56SculptSize(){
         final String[] options={"Точно: 1 м / сила 1",

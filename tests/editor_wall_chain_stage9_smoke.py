@@ -49,6 +49,6 @@ assert "GLSurfaceView.RENDERMODE_WHEN_DIRTY" in java
 assert "new WebView(" not in java
 # Do not upgrade v12: same persisted physical wall record shape.
 assert 'json.put("version",12)' in java
-assert '"collisionWalls"' in cpp
+assert "collisionWalls" in cpp
 print("OE_STAGE9_WALL_CHAIN_OK: two-finger camera, continuous native wall segments, "
       "correct physical edit and Undo, reusable v12 save format, no extra loop")

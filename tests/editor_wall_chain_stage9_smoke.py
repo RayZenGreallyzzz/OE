@@ -30,7 +30,7 @@ for q in (
     "nativeBarrierEdit(int id,double ax,double az",
     "private void startBarrierPolyline()",
     "private void editCollisionBarrier(String row)",
-    "barrierDrawMode&&e.getPointerCount()<2",
+    "(barrierDrawMode||barrierPickMode||barrierMoveId>0)&&",
     "int id=nativeBarrierAdd(barrierDraftStart[0]",
     "barrierDraftStart=at; // continue same polygonal chain",
     "++barrierDrawGeneration",

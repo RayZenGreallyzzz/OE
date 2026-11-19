@@ -91,8 +91,10 @@ final class NativeLandscapePanel extends LinearLayout {
             "два пальца — камера и масштаб.",12,true));
         LinearLayout modes=new LinearLayout(ctx);
         modes.setOrientation(HORIZONTAL);
-        Button beige=button("🟨 Холст",()->host.neutralPreview(true));
-        Button textured=button("🎨 Текстуры",()->host.neutralPreview(false));
+        Button beige=button(neutralPreview?"✓ Бежевый":"🟨 Холст",
+            ()->host.neutralPreview(true));
+        Button textured=button(neutralPreview?"🎨 Текстуры":"✓ Текстуры",
+            ()->host.neutralPreview(false));
         modes.addView(beige,new LayoutParams(0,px(46),1));
         modes.addView(textured,new LayoutParams(0,px(46),1));
         addView(modes,new LayoutParams(-1,px(48)));

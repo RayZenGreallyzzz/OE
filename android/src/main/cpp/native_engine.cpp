@@ -593,7 +593,63 @@ void setupGL(){
  glAttachShader(gShader.program,v);glAttachShader(gShader.program,f);
  glLinkProgram(gShader.program);glDeleteShader(v);glDeleteShader(f);
  GLint linked=GL_FALSE;glGetProgramiv(gShader.program,GL_LINK_STATUS,&linked);
- if(!linked)__android_log_print(ANDROID_LOG_ERROR,"OE","GL shader link failed");
+ if(!linked){
+  __android_log_print(ANDROID_LOG_ERROR,"OE",
+    "GLB PBR shader unsupported by this GLES device: falling back to legacy");
+  glDeleteProgram(gShader.program);
+  // GLES3 implementations differ. An unsupported optional PBR shader MUST
+  // NOT break terrain, editor gizmos, or the owner's loaded city.
+  const char*fallbackFrag=R"(#version 300 es
+ precision mediump float;
+ in vec3 vNormal;
+ in vec3 vColor;
+ in vec2 vUV;
+ in vec3 vWorldPos;
+ uniform vec3 uColor;
+ uniform sampler2D uTexture;
+ uniform float uUseTexture;
+ uniform float uHighlight;
+ uniform float uPaintOverride;
+ uniform float uOverlay;
+ uniform vec2 uPaintCenter;
+ uniform float uPaintRadius;
+ uniform float uImportedLighting;
+ out vec4 fragColor;
+ void main(){
+   float sun=max(dot(normalize(vNormal),normalize(vec3(-.55,1.,.5))),0.);
+   vec4 texel=uUseTexture>.5?texture(uTexture,vUV):vec4(1.);
+   if(uOverlay>.5){
+     float dist=length(vWorldPos.xz-uPaintCenter)/max(uPaintRadius,.001);
+     texel.a*=1.-smoothstep(.82,1.,dist);
+   }
+   if(texel.a<(uOverlay>.5?.01:.45))discard;
+   vec3 tint=mix(vColor,vec3(1.),uPaintOverride);
+   vec3 color=uColor*tint*texel.rgb*(.52+.48*sun);
+   if(uImportedLighting>.5){
+     vec3 n=normalize(vNormal);
+     float sky=clamp(n.y*.5+.5,0.,1.);
+     vec3 ambient=vec3(.36,.39,.45)*(.75+.25*sky);
+     vec3 daylight=vec3(.71,.67,.60)*sun;
+     vec3 linearTexture=pow(clamp(texel.rgb,0.,1.),vec3(2.2));
+     vec3 linearFactor=clamp(uColor*tint,0.,1.);
+     vec3 litLinear=clamp(linearTexture*linearFactor*(ambient+daylight),0.,1.);
+     color=pow(litLinear,vec3(1.0/2.2));
+   }
+   color=mix(color,vec3(.99,.72,.30),uHighlight*.30);
+   fragColor=vec4(color,texel.a);
+ })";
+  GLuint fallbackVertex=shader(GL_VERTEX_SHADER,vert);
+  GLuint fallbackFragment=shader(GL_FRAGMENT_SHADER,fallbackFrag);
+  gShader.program=glCreateProgram();
+  glAttachShader(gShader.program,fallbackVertex);
+  glAttachShader(gShader.program,fallbackFragment);
+  glLinkProgram(gShader.program);
+  glDeleteShader(fallbackVertex);
+  glDeleteShader(fallbackFragment);
+  glGetProgramiv(gShader.program,GL_LINK_STATUS,&linked);
+  if(!linked)__android_log_print(ANDROID_LOG_ERROR,"OE",
+    "Legacy GLSL fallback also failed: check GPU driver");
+ }
  gShader.locMvp=glGetUniformLocation(gShader.program,"uMvp");
  gShader.locModel=glGetUniformLocation(gShader.program,"uModel");
  gShader.locColor=glGetUniformLocation(gShader.program,"uColor");

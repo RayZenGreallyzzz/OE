@@ -111,6 +111,7 @@ public class EditorActivity extends Activity {
     private static native int nativeTerrainBrushCount();
     private static native boolean nativeUv56SculptAtScreen(int tool,float x,float y,
             float radius,float power); // stage 1 compatibility
+    private static native void nativeSetNeutralLandPreview(boolean on);
     private static native int nativeUv56Area();
     private static native boolean nativeUv56ConfigureArea(int areaSqM);
     private static native int nativeUv56LastStrokeError();
@@ -196,7 +197,9 @@ public class EditorActivity extends Activity {
     // Source: UV56 landscape-manager.js. No UV56 building/character code.
     private volatile int uv56SculptTool=0; // 1 raise,2 lower,3 ridge,4 smooth,5 flatten
     private volatile float uv56SculptRadius=4f,uv56SculptPower=2f;
-    private volatile int uv56LandscapeMode=0,uv56BrushCm=400;
+    // First open must select a working brush, not the passive camera mode.
+    private volatile int uv56LandscapeMode=1,uv56BrushCm=400;
+    private volatile boolean uv56NeutralCanvas=true; // editor view, not saved game data
     private static final int MAX_TILE_LIBRARY=32; // imported files, not automatic GPU uploads
     private volatile String activePaletteCategory="Здания";
     private NativeLandscapePanel activeLandscapePanel;
@@ -598,6 +601,15 @@ public class EditorActivity extends Activity {
             addPaletteOption("+ Лавка",()->enterPlaceMode(9,null));
             addPaletteOption("Импорт 3D: GLB / glTF / VOX",this::pickGlb);
         }else if("Рельеф".equals(category)){
+            // Stage 3 bug: the toolbar previously showed LOOK mode by default
+            // while the owner was trying to raise ground. Arm Raise visibly.
+            if(uv56LandscapeMode>=1&&uv56LandscapeMode<=5&&
+               uv56SculptTool!=uv56LandscapeMode)
+                enterUv56Sculpt(uv56LandscapeMode);
+            surface.queueEvent(()->{
+                nativeSetNeutralLandPreview(uv56NeutralCanvas);
+                surface.requestRender();
+            });
             showUv56LandscapePanel();
         }else if("Вода".equals(category)){
             addPaletteOption("⛏ Вырыть чашу для озера",this::startLakeExcavation);
@@ -830,12 +842,25 @@ public class EditorActivity extends Activity {
             cancelPlace();
             message("Для покраски выбери или загрузи PNG/JPG внизу панели");
         }else{
+            // Painting must display the owner's actual material textures.
+            setUv56NeutralPreview(false);
             // Reuse the existing R5.7 native material canvas, never a
             // second WebView renderer. Fine 1cm masks are a later milestone.
             activateMaterialPaint(tool==7);
             precisionPaintRadius=Math.max(.5f,uv56BrushCm/200.f);
             precisionPaintOpacity=Math.max(.05f,Math.min(1f,uv56SculptPower/2f));
         }
+    }
+    private void setUv56NeutralPreview(boolean neutral){
+        uv56NeutralCanvas=neutral;
+        if(surface==null)return;
+        surface.queueEvent(()->{
+            nativeSetNeutralLandPreview(neutral);
+            surface.requestRender();
+        });
+        message(neutral?
+            "Бежевый холст · текстуры скрыты только в редакторе (не удалены)":
+            "Отображаются твои материалы · высоты и коллизии неизменны");
     }
     private void chooseUv56Territory(int area){
         if(importing)return;
@@ -896,14 +921,21 @@ public class EditorActivity extends Activity {
                 @Override public void createArea(int areaSqM){
                     chooseUv56Territory(areaSqM);
                 }
+                @Override public void neutralPreview(boolean neutral){
+                    setUv56NeutralPreview(neutral);
+                }
                 @Override public void uploadTexture(){pickPaintTexture();}
                 @Override public void chooseTexture(String key){
                     uv56LandscapeMode=6;
                     usePaintTexture(key,true);
                 }
-                @Override public void close(){openUv56Mode(0);toggleDrawer(false);}
+                @Override public void close(){
+                    openUv56Mode(0);
+                    setUv56NeutralPreview(false);
+                    toggleDrawer(false);
+                }
             },uv56LandscapeMode,uv56BrushCm,uv56SculptPower,textures,
-               activePaintKey,titles);
+               activePaintKey,titles,uv56NeutralCanvas);
         activeLandscapePanel=panel;
         paletteItems.addView(panel,new LinearLayout.LayoutParams(-1,-2));
         surface.queueEvent(()->{

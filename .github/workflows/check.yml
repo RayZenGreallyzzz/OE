@@ -59,6 +59,7 @@ jobs:
           python3 tests/editor_native_walls_stage8_smoke.py
           python3 tests/wall_stage8b_regression_smoke.py
           python3 tests/editor_wall_chain_stage9_smoke.py
+          python3 tests/editor_wall_point_stage10_smoke.py
   device-quality:
     runs-on: ubuntu-latest
     steps:

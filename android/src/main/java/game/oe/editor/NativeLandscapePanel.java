@@ -4,6 +4,10 @@ import android.app.AlertDialog;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.Paint;
+import android.graphics.Rect;
+import java.util.Map;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.view.Gravity;
@@ -65,7 +69,8 @@ final class NativeLandscapePanel extends LinearLayout {
     private boolean initialized=false;
 
     NativeLandscapePanel(Context ctx,Host host,int activeMode,int brushCm,
-                         float strength,File[] userTiles,String selectedKey){
+                         float strength,File[] userTiles,String selectedKey,
+                         Map<String,String> tileTitles){
         super(ctx);
         this.ctx=ctx;this.host=host;
         setOrientation(VERTICAL);
@@ -161,8 +166,10 @@ final class NativeLandscapePanel extends LinearLayout {
         addView(label("Выбери плитку ниже — кисть переключится на покраску. "
                 +"Текущий нативный материал OE имеет минимальный диаметр 1 м; "
                 +"сантиметровые маски UV56 пока переносим.",11,false));
-        addView(button("🖼 Загрузить свой тайл PNG / JPG",host::uploadTexture),
+        addView(button("🖼 Добавить сразу 10–32 тайла PNG / JPG",host::uploadTexture),
             new LayoutParams(-1,px(46)));
+        addView(label("Мои материалы: "+(userTiles==null?0:userTiles.length)+
+            " / 32 · миниатюры показывают повторение рисунка",12,true));
         if(userTiles==null||userTiles.length==0){
             addView(label("Пока нет загруженных плиток. Добавь PNG/JPG, "
                 +"чтобы увидеть здесь изображения материалов.",12,false));
@@ -171,7 +178,7 @@ final class NativeLandscapePanel extends LinearLayout {
             grid.setColumnCount(2);
             int shown=0;
             for(File file:userTiles){
-                if(file==null||!file.isFile()||shown>=8)continue;
+                if(file==null||!file.isFile()||shown>=32)continue;
                 final String key=file.getName();
                 boolean chosen=key.equals(selectedKey);
                 LinearLayout card=new LinearLayout(ctx);
@@ -184,13 +191,17 @@ final class NativeLandscapePanel extends LinearLayout {
                 Bitmap image=smallPreview(file);
                 if(image!=null)thumb.setImageBitmap(image);
                 else thumb.setBackgroundColor(Color.rgb(62,78,80));
-                card.addView(thumb,new LayoutParams(-1,px(96)));
-                TextView caption=label(chosen?"✓ Выбрано":"Тайл "+(shown+1),11,false);
+                card.addView(thumb,new LayoutParams(-1,px(112)));
+                String nice=tileTitles!=null?tileTitles.get(key):null;
+                if(nice==null||nice.trim().isEmpty())nice="Тайл "+(shown+1);
+                TextView caption=label((chosen?"✓ ":"")+nice,11,false);
                 caption.setGravity(Gravity.CENTER);
-                card.addView(caption,new LayoutParams(-1,px(40)));
+                caption.setMaxLines(2);
+                caption.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                card.addView(caption,new LayoutParams(-1,px(48)));
                 card.setOnClickListener(v->host.chooseTexture(key));
                 GridLayout.LayoutParams gridParams=new GridLayout.LayoutParams();
-                gridParams.width=px(146);gridParams.height=px(148);
+                gridParams.width=px(146);gridParams.height=px(168);
                 gridParams.setMargins(px(3),px(3),px(3),px(3));
                 grid.addView(card,gridParams);
                 ++shown;
@@ -299,7 +310,19 @@ final class NativeLandscapePanel extends LinearLayout {
             while(Math.max(opts.outWidth,opts.outHeight)/scale>256)scale*=2;
             opts.inJustDecodeBounds=false;
             opts.inSampleSize=scale;
-            return BitmapFactory.decodeFile(file.getAbsolutePath(),opts);
+            Bitmap source=BitmapFactory.decodeFile(file.getAbsolutePath(),opts);
+            if(source==null)return null;
+            // Show a true 2×2 repeat of the owner's actual tile image.
+            // Do not generate/recolour/recompress the source file itself.
+            Bitmap preview=Bitmap.createBitmap(192,192,Bitmap.Config.ARGB_8888);
+            Canvas canvas=new Canvas(preview);
+            Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG|Paint.FILTER_BITMAP_FLAG);
+            Rect entire=new Rect(0,0,source.getWidth(),source.getHeight());
+            for(int row=0;row<2;row++)for(int col=0;col<2;col++)
+                canvas.drawBitmap(source,entire,
+                    new Rect(col*96,row*96,(col+1)*96,(row+1)*96),paint);
+            source.recycle();
+            return preview;
         }catch(RuntimeException e){return null;}
     }
     private int px(float dp){

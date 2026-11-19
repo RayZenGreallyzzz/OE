@@ -41,7 +41,7 @@ assert 'private void openPhoenixMode(String mode)' in editor
 assert 'intent.putExtra(PhoenixBuilderActivity.EXTRA_MODE,mode);' in editor
 assert 'startActivityForResult(intent,PHOENIX_BUILDER);' in editor
 assert "applicationId 'game.oe.editor.phoenix013fix1'" in gradle
-assert "versionCode 39" in gradle
+assert "versionCode 40" in gradle
 # Graphics settings must live in the always-visible top-right toolbar,
 # use existing native quality implementation, and persist the selection.
 assert 'Button settingsButton=button("⚙️",this::showEngineSettings);' in editor
@@ -269,3 +269,19 @@ assert 'recordEdit();\n int added=0;' in cpp
 assert 'const Vec3 step=cloneSpacing(prototype);' in cpp
 assert 'std::hypot(width,depth)+2.f' in cpp
 print("OK: large-building-aware 10/50 clone grid shares original GPU resources and styles")
+
+# v40 native land bridge: do not change source UV56 or silently replace native
+# houses/roads; imported heightfield persists through scene snapshots.
+assert 'nativeImportPhoenixTerrain(' in editor
+assert 'importPhoenixTerrainFromSavedProject()' in editor
+assert 'decodePhoenixHeightfield(' in editor
+assert 'savedPhoenix==null?new int[0]:savedPhoenix.raw' in editor
+assert 'EXTRA_TRANSFER_TERRAIN' in bridge
+assert 'saveCurrentProject(()->{' in bridge
+assert 'terrain' in bridge
+assert 'phoenix_terrain.h' in cpp
+assert 'gPhoenixTerrain.heightAt(x,z)' in cpp
+assert 'gPhoenixTerrain=std::move(stagedPhoenix)' in cpp
+assert 'gPhoenixTerrain.clear();gTerrainRevision++' in cpp
+assert '"\\\"phoenixTerrain\\\""' not in cpp or 'phoenixTerrain' in cpp
+print("OK: source UV56 terrain is validated, reversible and saved as OE scene v1")

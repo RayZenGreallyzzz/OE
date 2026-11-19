@@ -6,3 +6,11 @@ local.properties
 .idea/
 *.iml
 .DS_Store
+
+# Owner-only UV44 model pack and UV56 overlay must NEVER enter public GitHub.
+/android/src/main/assets/phoenix/
+/android/src/main/assets/phoenix-uv56-overlay/
+/android/src/main/assets/medieval/
+*.p12
+*.pfx
+*.keystore

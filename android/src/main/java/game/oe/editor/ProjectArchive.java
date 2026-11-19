@@ -27,7 +27,7 @@ public final class ProjectArchive {
     // copies of a house. Keep a bounded ZIP budget to prevent archive bombs.
     public static final long MAX_UNPACKED_BYTES=512L*1024*1024;
     public static final int MAX_MODELS=32;
-    public static final int MAX_SCENE_BYTES=512000;
+    public static final int MAX_SCENE_BYTES=4*1024*1024; // bounded for UV56's <=32768 terrain nodes;
     public static final int MAX_TEXTURES=32,MAX_TEXTURE_BYTES=8*1024*1024;
 
     public static final class StagedProject {
@@ -107,7 +107,7 @@ public final class ProjectArchive {
     }
     private static Set<String> referencedModels(String scene) throws Exception {
         check(scene.getBytes(StandardCharsets.UTF_8).length<=MAX_SCENE_BYTES,
-            "Сцена превышает допустимую память для JSON (512 КБ)");
+            "Сцена превышает допустимую память для JSON (4 МиБ)");
         JSONObject json=new JSONObject(scene);
         check(json.optInt("version",-1)==1,"Неподдерживаемая версия сцены");
         JSONArray items=json.getJSONArray("items");

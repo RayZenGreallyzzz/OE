@@ -75,6 +75,8 @@ public class EditorActivity extends Activity {
     private static native double[] nativeSelectedCoordinates();
     private static native boolean nativeSetSelectedCoordinates(double x,double y,double z);
     private static native String nativeSceneSnapshot();
+    // UV56 native preview: exact sparse 1m height nodes, source cm retained.
+    private static native boolean nativeImportPhoenixTerrain(int areaSqM,int[] nodes);
     private static native void nativeRoadMode(int mode);
     private static native int nativeRoadBegin(float width,boolean markings,int material);
     private static native int nativeRoadAppend(float pixelX,float pixelY,float minSpacing);
@@ -113,6 +115,7 @@ public class EditorActivity extends Activity {
     private static native int nativeTrimUnusedAssets();
     private static native boolean nativeReplaceScene(int size, boolean demoRoads,
             int[] kinds, float[] transforms, String[] modelKeys, float[] terrain,
+            int phoenixAreaSqM,int[] phoenixNodes,
             String[] objectPaintKeys, int[] styleCounts,int[] styleIds,
             float[] styleColors,String[] styleTextures,
             float[] painting, String[] terrainPaintKeys,
@@ -291,8 +294,11 @@ public class EditorActivity extends Activity {
         Button menu=button("☰ Каталог",()->toggleDrawer(!drawerOpen));
         top.addView(menu,new LinearLayout.LayoutParams(dp(104),dp(43)));
         Button builderMode=button("🏗 Стройка",this::openBuilderMode);
-        builderMode.setContentDescription("Режим Стройка · Phoenix Builder UV44");
+        builderMode.setContentDescription("Режим Стройка · общая сцена Phoenix UV56, библиотека оригинала UV44");
         top.addView(builderMode,new LinearLayout.LayoutParams(dp(103),dp(43)));
+        Button landscapeMode=button("🌿 Ландшафт",this::openLandscapeMode);
+        landscapeMode.setContentDescription("Режим Ландшафт · та же сцена с домами, инструменты UV56");
+        top.addView(landscapeMode,new LinearLayout.LayoutParams(dp(110),dp(43)));
         Button save=button("💾 Сохранить",this::saveScene);
         top.addView(save,new LinearLayout.LayoutParams(dp(112),dp(43)));
         Button undo=button("↶",this::undoAction);
@@ -468,10 +474,18 @@ public class EditorActivity extends Activity {
     // unchanged Phoenix UV44 builder is in its own construction mode.
     // The existing builder JSON/GLB save bridge handles persistence.
     private void openBuilderMode(){
-        if(importing){message("Заверши импорт перед переходом в Стройку");return;}
+        openPhoenixMode(PhoenixBuilderActivity.MODE_BUILD);
+    }
+    private void openLandscapeMode(){
+        openPhoenixMode(PhoenixBuilderActivity.MODE_LANDSCAPE);
+    }
+    private void openPhoenixMode(String mode){
+        if(importing){message("Заверши импорт перед переходом в Phoenix");return;}
         cancelPlace();
         toggleDrawer(false);
-        startActivityForResult(new Intent(this,PhoenixBuilderActivity.class),PHOENIX_BUILDER);
+        Intent intent=new Intent(this,PhoenixBuilderActivity.class);
+        intent.putExtra(PhoenixBuilderActivity.EXTRA_MODE,mode);
+        startActivityForResult(intent,PHOENIX_BUILDER);
     }
     private void toggleDrawer(boolean open){
         drawerOpen=open;
@@ -490,10 +504,11 @@ public class EditorActivity extends Activity {
     private void showPalette(String category){
         paletteItems.removeAllViews();
         if("🏗 Здание".equals(category)){
-            addPaletteOption("🏗 Режим Стройка · Phoenix Builder UV44",this::openBuilderMode);
+            addPaletteOption("🏗 Стройка — общая сцена, оригинальные ресурсы UV44",this::openBuilderMode);
+            addPaletteOption("🌿 Ландшафт — те же здания и земля UV56",this::openLandscapeMode);
             addPaletteOption("📥 Импорт готового GLB из Phoenix",this::pickGlb);
-            addPaletteOption("ℹ Редактор зданий отдельный от ландшафта и дорог",
-                ()->message("Строй здание в Phoenix, экспортируй GLB и импортируй в город"));
+            addPaletteOption("ℹ Оба режима в одном OE, проект сохраняется между ними",
+                ()->message("Стройка и ландшафт работают в одной сцене; экспорт в город через GLB"));
         }else if("Дома".equals(category)||"Здания".equals(category)){
             addPaletteOption("+ Таверна",()->enterPlaceMode(0,null));
             addPaletteOption("+ Кузница",()->enterPlaceMode(1,null));
@@ -531,6 +546,8 @@ public class EditorActivity extends Activity {
             addPaletteOption("+ Лавка",()->enterPlaceMode(9,null));
             addPaletteOption("Импорт 3D: GLB / glTF / VOX",this::pickGlb);
         }else if("Рельеф".equals(category)){
+            addPaletteOption("🌿 Ландшафт UV56 — полный редактор кистей/текстур/дорог",
+                this::openLandscapeMode);
             addPaletteOption("⛰ Поднять гору",()->enterTerrainMode(1));
             addPaletteOption("⛰ Опустить землю",()->enterTerrainMode(-1));
             addPaletteOption("📐 Радиус и сила кисти",this::chooseTerrainBrush);
@@ -1685,6 +1702,81 @@ public class EditorActivity extends Activity {
         try { startActivityForResult(intent, PICK_GLB); }
         catch(Exception e) { message("Файловый менеджер недоступен: "+e.getMessage()); }
     }
+    private static final int MAX_PHOENIX_TERRAIN_NODES=32768;
+    private static final class PhoenixHeightfield{
+        final int areaSqM;
+        final int[] raw;
+        PhoenixHeightfield(int areaSqM,int[] raw){this.areaSqM=areaSqM;this.raw=raw;}
+    }
+    private static int preciseInt(Object number,String name) throws Exception {
+        if(!(number instanceof Number))
+            throw new Exception("Не число в "+name);
+        double value=((Number)number).doubleValue();
+        if(!Double.isFinite(value)||value!=Math.rint(value)||
+           value<Integer.MIN_VALUE||value>Integer.MAX_VALUE)
+            throw new Exception("Недопустимое целое "+name);
+        return (int)value;
+    }
+    // This consumes UV56's own serialized {version:1,areaSqM,unit:'m',
+    // step:1,nodes:[[x,z,h_cm,paint_id],...]} without resampling or editing it.
+    private static PhoenixHeightfield decodePhoenixHeightfield(JSONObject src)
+            throws Exception {
+        if(src==null)return null;
+        if(preciseInt(src.get("version"),"version")!=1 ||
+           !"m".equals(src.optString("unit",""))||
+           preciseInt(src.get("step"),"step")!=1)
+            throw new Exception("Неверная версия рельефа UV56");
+        final int area=preciseInt(src.get("areaSqM"),"areaSqM");
+        if(area<1000||area>2000000)
+            throw new Exception("Неверная площадь ландшафта");
+        JSONArray nodes=src.getJSONArray("nodes");
+        if(nodes.length()>MAX_PHOENIX_TERRAIN_NODES)
+            throw new Exception("Слишком много изменённых узлов (макс. 32768). "+
+                "Оригинал UV56 не изменён");
+        int[] raw=new int[nodes.length()*4];
+        for(int i=0;i<nodes.length();++i){
+            JSONArray n=nodes.getJSONArray(i);
+            if(n.length()!=4)throw new Exception("Неверный узел "+i);
+            for(int j=0;j<4;j++)raw[i*4+j]=preciseInt(n.get(j),"узел "+i);
+        }
+        return new PhoenixHeightfield(area,raw);
+    }
+    private void importPhoenixTerrainFromSavedProject(){
+        if(importing){message("Сначала заверши текущий импорт");return;}
+        importing=true;
+        new Thread(()->{
+            try{
+                File source=new File(getFilesDir(),"phoenix_uv44_project.json");
+                if(!source.isFile()||source.length()<20||source.length()>48L*1024*1024)
+                    throw new Exception("Нет безопасного JSON ландшафта Phoenix");
+                JSONObject project=new JSONObject(
+                    new String(Files.readAllBytes(source.toPath()),StandardCharsets.UTF_8));
+                if(project.optInt("version",-1)!=2)
+                    throw new Exception("Неверная версия проекта Phoenix");
+                PhoenixHeightfield field=decodePhoenixHeightfield(
+                    project.optJSONObject("terrain"));
+                if(field==null)
+                    throw new Exception("Ландшафт в UV56 ещё не создан");
+                surface.queueEvent(()->{
+                    try{
+                        if(nativeImportPhoenixTerrain(field.areaSqM,field.raw)){
+                            surface.requestRender();
+                            message("Высоты UV56 переданы в город: "+field.raw.length/4+
+                                " узлов · сохрани сцену OE кнопкой 💾. "+
+                                "Покраска/дороги UV56 пока остаются в Phoenix");
+                        }else{
+                            message("Высоты не перенесены: проверь размер карты OE, "+
+                                "диапазон высот −24..140 м и лимит 32768 узлов. "+
+                                "Рабочая сцена не изменена");
+                        }
+                    }finally{importing=false;}
+                });
+            }catch(Exception error){
+                importing=false;
+                message("Ландшафт UV56 не перенесён: "+error.getMessage());
+            }
+        },"oe-phoenix-terrain-import").start();
+    }
     @Override protected void onActivityResult(int requestCode,int resultCode,Intent intent) {
         super.onActivityResult(requestCode,resultCode,intent);
         if(requestCode==PICK_LIBRARY){
@@ -1702,6 +1794,11 @@ public class EditorActivity extends Activity {
                 if(requestCode==SAVE_PROJECT)exportToUri(intent.getData());
                 else importFromUri(intent.getData());
             }
+            return;
+        }
+        if(requestCode==PHOENIX_BUILDER&&resultCode==RESULT_OK&&intent!=null&&
+           intent.getBooleanExtra(PhoenixBuilderActivity.EXTRA_TRANSFER_TERRAIN,false)){
+            importPhoenixTerrainFromSavedProject();
             return;
         }
         if((requestCode!=PICK_GLB&&requestCode!=PHOENIX_BUILDER)||
@@ -1860,6 +1957,12 @@ public class EditorActivity extends Activity {
             final int worldSize=document.optInt("worldSize",1024);
             if(worldSize!=1024&&worldSize!=2048&&worldSize!=4096&&worldSize!=8192&&worldSize!=16384)
                 throw new Exception("Неподдерживаемый размер карты");
+            // Legacy OE scene v1 has no Phoenix layer; null means absent.
+            if(document.has("phoenixTerrain")&&!document.isNull("phoenixTerrain")&&
+               document.optJSONObject("phoenixTerrain")==null)
+                throw new Exception("Повреждён слой высот UV56");
+            final PhoenixHeightfield savedPhoenix=decodePhoenixHeightfield(
+                document.optJSONObject("phoenixTerrain"));
             JSONArray arr=document.getJSONArray("items");
             if(arr.length()>300)throw new Exception("Слишком много объектов");
             // Backward-compatible version-1 scenes can omit the roads field.
@@ -2158,7 +2261,10 @@ public class EditorActivity extends Activity {
                         uploaded.add(entry.getKey());
                     }
                     if(!nativeReplaceScene(worldSize,demoRoads,kinds,transforms,modelKeys,
-                            terrainBrushes,objectPaintKeys,styleCounts,styleIds,
+                            terrainBrushes,
+                            savedPhoenix==null?0:savedPhoenix.areaSqM,
+                            savedPhoenix==null?new int[0]:savedPhoenix.raw,
+                            objectPaintKeys,styleCounts,styleIds,
                             styleColors,styleTextures,paintBrushes,paintBrushKeys,
                             roadIds,roadWidths,roadMarkings,roadCounts,roadMaterials,roadCoordinates,
                             roadSidewalks,roadCrosswalks))

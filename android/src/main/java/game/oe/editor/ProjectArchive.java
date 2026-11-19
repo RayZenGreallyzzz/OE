@@ -26,7 +26,7 @@ public final class ProjectArchive {
     public static final long MAX_UNPACKED_BYTES=128L*1024*1024;
     public static final int MAX_MODELS=12;
     public static final int MAX_SCENE_BYTES=8*1024*1024; // bounded R4 composite and R4.1 material masks
-    public static final int MAX_TEXTURES=8,MAX_TEXTURE_BYTES=8*1024*1024;
+    public static final int MAX_TEXTURES=32,MAX_TEXTURE_BYTES=8*1024*1024;
     public static final int MAX_REFERENCE_BYTES=8*1024*1024;
 
     public static final class StagedProject {
@@ -174,7 +174,7 @@ public final class ProjectArchive {
             }
             check(tileSet.size()<=32,"Превышено число текстурных участков");
         }else check(!document.has("paintLayers"),"Неверная версия слоёв R4.1");
-        check(keys.size()<=MAX_TEXTURES,"Более 8 пользовательских текстур");
+        check(keys.size()<=MAX_TEXTURES,"Более 32 пользовательских текстур");
         return keys;
     }
     private static void check(boolean ok,String reason) throws IOException{

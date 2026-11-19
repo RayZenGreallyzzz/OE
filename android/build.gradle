@@ -8,8 +8,8 @@ android {
         applicationId 'game.oe.editor.phoenix013fix1'
         minSdk 26
         targetSdk 34
-        versionCode 39
-        versionName '0.7.13-phoenix-uv44-uv56-unified-studio-v39-test'
+        versionCode 40
+        versionName '0.7.13-phoenix-uv56-native-terrain-v40-test'
         ndk { abiFilters 'arm64-v8a' }
         externalNativeBuild {
             cmake { cppFlags '-std=c++17 -O2 -Wall -Wextra' }

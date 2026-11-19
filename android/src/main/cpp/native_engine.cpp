@@ -129,6 +129,7 @@ static oe::uv56::Terrain gUv56Terrain; // single native city GLES terrain
 static bool gNeutralLandPreview=false; // editor-only; not serialized
 static bool gUv56StrokeActive=false; // one touch gesture = one Undo action
 static int gUv56LastStrokeError=0; // 1 busy/args, 2 ground ray, 3 outside area, 4 brush rejected
+static int gUv56LastTouchHeightCm=0; // visual verification of native edits
 // R4 composited paint tiles: GPU cache is disposable; authoring bytes are portable.
 static oe::terrainpaint::Canvas gPaintTiles;
 static oe::terrainpaint::MaterialCanvas gMaterialCanvas;
@@ -3129,6 +3130,8 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeUv56StrokeSt
  }
  recordEdit(); // one native R5.7 undo entry for the whole drag
  gUv56Terrain=std::move(proposal);
+ gUv56LastTouchHeightCm=static_cast<int>(
+     std::lround(terrainHeightAt(x,z)*100.f));
  gUv56StrokeActive=true;
  ++gTerrainRevision;++gRoadRevision;
  return JNI_TRUE;
@@ -3142,9 +3145,13 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeUv56StrokeMo
  if(!groundPoint(px,py,x,z)||!gUv56Terrain.valid(x,z))return JNI_FALSE;
  if(!gUv56Terrain.brushAt(x,z,static_cast<oe::uv56::Tool>(tool),radius,power))
     return JNI_FALSE;
+ gUv56LastTouchHeightCm=static_cast<int>(
+     std::lround(terrainHeightAt(x,z)*100.f));
  ++gTerrainRevision;++gRoadRevision;
  return JNI_TRUE;
 }
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeUv56LastTouchHeightCm(
+ JNIEnv*,jclass){return gUv56LastTouchHeightCm;}
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeUv56StrokeEnd(
  JNIEnv*,jclass){
  if(!gUv56StrokeActive)return;

@@ -248,7 +248,7 @@ assert 'MAX_UNPACKED_BYTES=512L*1024*1024' in project
 assert 'JSONArray variants=objects.getJSONObject(i).optJSONArray("materialStyles");' in project
 assert "keys.add(image);" in project
 assert "MAX_PAINT_TEXTURES=32" in cpp
-assert "copy.type==6" in cpp
+assert "const Vec3 step=cloneSpacing(prototype);" in cpp
 assert "gAssets.size()" in cpp
 assert 'Button builderMode=button("🏗 Стройка",this::openBuilderMode);' in editor
 assert 'startActivityForResult(new Intent(this,PhoenixBuilderActivity.class),PHOENIX_BUILDER)' in editor

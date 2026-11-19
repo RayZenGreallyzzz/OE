@@ -171,7 +171,7 @@ public class EditorActivity extends Activity {
     private static native void nativeMapClear();
     private static native void nativeMapTopView();
     private static native void nativeMapPerspective();
-    private static final int PICK_GLB = 702, PICK_PROJECT=703, SAVE_PROJECT=704, PICK_PAINT=705, PICK_MAP=706;
+    private static final int PICK_GLB = 702, PICK_PROJECT=703, SAVE_PROJECT=704, PICK_PAINT=705, PICK_MAP=706, PHOENIX_STUDIO=710;
     private static final int MAX_ASSETS = 12;
 
     private EditorSurface surface;
@@ -355,6 +355,14 @@ public class EditorActivity extends Activity {
         top.addView(title,new LinearLayout.LayoutParams(0,dp(45),1f));
         Button menu=button("☰ Каталог",()->toggleDrawer(!drawerOpen));
         top.addView(menu,new LinearLayout.LayoutParams(dp(110),dp(43)));
+        Button builder=button("🏗 Стройка",()->openPhoenixStudio(
+            PhoenixBuilderActivity.MODE_BUILD));
+        builder.setContentDescription("Строительство UV44/UV56 со своей физикой персонажа");
+        top.addView(builder,new LinearLayout.LayoutParams(dp(100),dp(43)));
+        Button landscape=button("🌿 Ландшафт",()->openPhoenixStudio(
+            PhoenixBuilderActivity.MODE_LANDSCAPE));
+        landscape.setContentDescription("Ландшафт UV56 в той же сцене со стройкой");
+        top.addView(landscape,new LinearLayout.LayoutParams(dp(110),dp(43)));
         Button save=button("💾 Сохранить",this::saveScene);
         top.addView(save,new LinearLayout.LayoutParams(dp(112),dp(43)));
         Button undo=button("↶",this::undoAction);
@@ -522,6 +530,8 @@ public class EditorActivity extends Activity {
     private void showPalette(String category){
         paletteItems.removeAllViews();
         if("Здания".equals(category)){
+            addPaletteOption("🏗 Phoenix UV44/UV56 · полноценная стройка",
+                ()->openPhoenixStudio(PhoenixBuilderActivity.MODE_BUILD));
             addPaletteOption("+ Таверна",()->enterPlaceMode(0,null));
             addPaletteOption("+ Кузница",()->enterPlaceMode(1,null));
             addPaletteOption("+ Аукционный дом",()->enterPlaceMode(2,null));
@@ -570,6 +580,8 @@ public class EditorActivity extends Activity {
             addPaletteOption("+ Лавка",()->enterPlaceMode(9,null));
             addPaletteOption("Импорт 3D: GLB / glTF / VOX",this::pickGlb);
         }else if("Рельеф".equals(category)){
+            addPaletteOption("🌿 Phoenix UV56 · ландшафт с домами",
+                ()->openPhoenixStudio(PhoenixBuilderActivity.MODE_LANDSCAPE));
             addPaletteOption("⛰ Поднять гору",()->enterTerrainMode(1));
             addPaletteOption("⛰ Опустить землю",()->enterTerrainMode(-1));
             addPaletteOption("📐 Радиус и сила кисти",this::chooseTerrainBrush);
@@ -2207,6 +2219,41 @@ public class EditorActivity extends Activity {
         if(stagingRoot!=null)new Thread(() -> ProjectArchive.removeTree(stagingRoot),
                 "oe-project-cleanup").start();
     }
+    private void openPhoenixStudio(String mode){
+        if(importing){
+            message("Заверши импорт прежде чем открывать стройку");return;
+        }
+        // Preserve the R5.7 road/bridge walker implementation completely.
+        // Phoenix has its own CharacterCollision physics in its own WebGL
+        // scene. Pausing the city stops the temporary walker preview.
+        finishWalkControls();
+        cancelPlace();
+        toggleDrawer(false);
+        // An unexpected Android process reclaim while Phoenix is foreground
+        // must not discard the last editable R5.7 city. Save the unchanged
+        // v1-v8 city scene before launching the private studio Activity.
+        surface.queueEvent(()->{
+            AtomicFile backup=new AtomicFile(saveFile());
+            FileOutputStream stream=null;
+            try{
+                byte[] json=snapshotWithGuide().getBytes(StandardCharsets.UTF_8);
+                if(json.length>ProjectArchive.MAX_SCENE_BYTES)
+                    throw new Exception("Город превышает лимит безопасного JSON");
+                stream=backup.startWrite();
+                stream.write(json);
+                backup.finishWrite(stream);stream=null;
+                ui(()->{
+                    Intent studio=new Intent(this,PhoenixBuilderActivity.class);
+                    studio.putExtra(PhoenixBuilderActivity.EXTRA_MODE,mode);
+                    startActivityForResult(studio,PHOENIX_STUDIO);
+                });
+            }catch(Exception error){
+                if(stream!=null)backup.failWrite(stream);
+                message("Стройка не открыта: сначала сохрани город. "+
+                    error.getMessage());
+            }
+        });
+    }
     private void pickGlb() {
         if(importing) { message("Импорт или загрузка уже выполняется"); return; }
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -2234,16 +2281,41 @@ public class EditorActivity extends Activity {
             }
             return;
         }
-        if(requestCode!=PICK_GLB || resultCode!=RESULT_OK || intent==null || intent.getData()==null)return;
+        if((requestCode!=PICK_GLB&&requestCode!=PHOENIX_STUDIO)||
+           resultCode!=RESULT_OK||intent==null||intent.getData()==null)return;
         final Uri uri=intent.getData();
+        final File phoenixOriginal;
+        if(requestCode==PHOENIX_STUDIO){
+            try{
+                if(!"file".equals(uri.getScheme())||uri.getPath()==null)
+                    throw new Exception("Phoenix не передал GLB");
+                File source=new File(uri.getPath()).getCanonicalFile();
+                File permitted=new File(getCacheDir(),"phoenix-export").getCanonicalFile();
+                if(!source.getPath().startsWith(permitted.getPath()+File.separator)||
+                    !source.isFile()||source.length()<20||
+                    source.length()>GlbReader.MAX_BYTES)
+                    throw new Exception("Город R5.7 импортирует GLB до "+
+                       (GlbReader.MAX_BYTES/1048576)+" МиБ. "+
+                       "Большой оригинал сохрани в Phoenix на устройство.");
+                phoenixOriginal=source;
+            }catch(Exception e){
+                message("Phoenix → OE: "+e.getMessage());return;
+            }
+        }else phoenixOriginal=null;
         if(importing)return;
         importing=true;
         message("Распознаю GLB / glTF / VOX…");
         new Thread(() -> {
             try {
-                InputStream stream=getContentResolver().openInputStream(uri);
+                InputStream stream=phoenixOriginal!=null?
+                    new java.io.FileInputStream(phoenixOriginal):
+                    getContentResolver().openInputStream(uri);
                 if(stream==null)throw new Exception("Не удалось открыть файл");
                 byte[] original=limitedRead(stream);
+                // Cleanup only this app's transient Phoenix transfer file.
+                // Never delete an original selected with Android SAF.
+                if(phoenixOriginal!=null&&!phoenixOriginal.delete())
+                    android.util.Log.w("OE","Could not remove transient Phoenix GLB");
                 UniversalModelReader.Converted converted=UniversalModelReader.convert(original);
                 byte[] bytes=converted.glb;
                 final String key=GlbReader.key(bytes);

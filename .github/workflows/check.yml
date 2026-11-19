@@ -14,6 +14,17 @@ jobs:
       - run: node --check src/engine.js
       - run: node --check src/editor.js
       - run: node --test tests/engine.test.cjs
+      - name: Preserve both R5.7 city walker and original Phoenix walker in one app
+        run: python3 tests/phoenix_r57_studio_integration_smoke.py
+      - name: Verify UV44 original assets, UV56 landscape delta, no walker physics rewrite
+        run: python3 -m unittest discover -s tests -p 'test_uv44_uv56_staging.py' -v
+      - name: Test exact SHA256 verification before deleting private Android export
+        run: |
+          mkdir -p /tmp/oe-r57-phoenix-verifier
+          javac -d /tmp/oe-r57-phoenix-verifier \
+            android/src/main/java/game/oe/editor/PhoenixFileVerifier.java \
+            tests/PhoenixFileVerifierTest.java
+          java -cp /tmp/oe-r57-phoenix-verifier PhoenixFileVerifierTest
   meshopt-codec:
     runs-on: ubuntu-latest
     steps:

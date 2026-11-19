@@ -42,7 +42,7 @@ int main(){
  assert(walker.state().feet.x>0.5);  // a gap works
  // On an ascending hillside, compare actor Y with wall LOCAL foot height,
  // NOT wall midpoint Y: old code let players walk through uphill wall ends.
- const TerrainHeight hillside=[](double,double z){return .5*z;};
+ const oe::roads::TerrainHeight hillside=[](double,double z){return .5*z;};
  WalkBarrier ridge{5,0,-15,0,15,.8,4.};
  assert(walker.configure(empty,hillside,512.,{ridge}));
  assert(walker.spawn(-2.,12.));

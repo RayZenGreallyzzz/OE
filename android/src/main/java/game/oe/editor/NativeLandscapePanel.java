@@ -37,6 +37,7 @@ final class NativeLandscapePanel extends LinearLayout {
         void createArea(int areaSqM);
         void uploadTexture();
         void chooseTexture(String key);
+        void neutralPreview(boolean neutral);
         void close();
     }
     private static final int[] AREAS={1000,2500,5000,10000,50000,250000,1000000,2000000};
@@ -70,7 +71,7 @@ final class NativeLandscapePanel extends LinearLayout {
 
     NativeLandscapePanel(Context ctx,Host host,int activeMode,int brushCm,
                          float strength,File[] userTiles,String selectedKey,
-                         Map<String,String> tileTitles){
+                         Map<String,String> tileTitles,boolean neutralPreview){
         super(ctx);
         this.ctx=ctx;this.host=host;
         setOrientation(VERTICAL);
@@ -86,6 +87,19 @@ final class NativeLandscapePanel extends LinearLayout {
         Button city=button("🏙 К городу",host::close);
         title.addView(city,new LayoutParams(px(118),px(46)));
         addView(title);
+        addView(label("СВЕТЛЫЙ ХОЛСТ • один палец — выбранная кисть; "+
+            "два пальца — камера и масштаб.",12,true));
+        LinearLayout modes=new LinearLayout(ctx);
+        modes.setOrientation(HORIZONTAL);
+        Button beige=button(neutralPreview?"✓ Бежевый":"🟨 Холст",
+            ()->host.neutralPreview(true));
+        Button textured=button(neutralPreview?"🎨 Текстуры":"✓ Текстуры",
+            ()->host.neutralPreview(false));
+        modes.addView(beige,new LayoutParams(0,px(46),1));
+        modes.addView(textured,new LayoutParams(0,px(46),1));
+        addView(modes,new LayoutParams(-1,px(48)));
+        addView(button("🖼 Загрузить сразу 10–32 PNG/JPG",host::uploadTexture),
+            new LayoutParams(-1,px(46)));
 
         addView(label("Размер территории",12,false));
         Spinner areas=spinner(AREA_NAMES);
@@ -99,9 +113,11 @@ final class NativeLandscapePanel extends LinearLayout {
         status.setTextColor(Color.rgb(117,217,192));
         addView(status,new LayoutParams(-1,px(52)));
 
-        addView(label("Инструмент кисти",12,false));
+        addView(label(selectedTool>0&&selectedTool<=5?
+            "✓ Кисть готова. Проведи пальцем по земле.":
+            "Инструмент кисти · выбери «Поднять», чтобы изменить землю",12,true));
         Spinner tools=spinner(TOOLS);
-        tools.setSelection(selectedTool);
+        tools.setSelection(selectedTool); // starts with Raise, not Look, on first entry
         addView(tools,new LayoutParams(-1,px(48)));
         sizeValue=label("",12,true);
         addView(sizeValue);
@@ -166,7 +182,7 @@ final class NativeLandscapePanel extends LinearLayout {
         addView(label("Выбери плитку ниже — кисть переключится на покраску. "
                 +"Текущий нативный материал OE имеет минимальный диаметр 1 м; "
                 +"сантиметровые маски UV56 пока переносим.",11,false));
-        addView(button("🖼 Добавить сразу 10–32 тайла PNG / JPG",host::uploadTexture),
+        addView(button("🖼 Добавить ещё PNG / JPG одним выбором",host::uploadTexture),
             new LayoutParams(-1,px(46)));
         addView(label("Мои материалы: "+(userTiles==null?0:userTiles.length)+
             " / 32 · миниатюры показывают повторение рисунка",12,true));

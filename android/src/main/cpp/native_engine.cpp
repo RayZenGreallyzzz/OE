@@ -126,8 +126,10 @@ static constexpr size_t MAX_TERRAIN_PAINT=48;
 static std::vector<TerrainBrush> gBrushes;
 static int gTerrainRevision=0;
 static oe::uv56::Terrain gUv56Terrain; // single native city GLES terrain
+static bool gNeutralLandPreview=false; // editor-only; not serialized
 static bool gUv56StrokeActive=false; // one touch gesture = one Undo action
 static int gUv56LastStrokeError=0; // 1 busy/args, 2 ground ray, 3 outside area, 4 brush rejected
+static int gUv56LastTouchHeightCm=0; // visual verification of native edits
 // R4 composited paint tiles: GPU cache is disposable; authoring bytes are portable.
 static oe::terrainpaint::Canvas gPaintTiles;
 static oe::terrainpaint::MaterialCanvas gMaterialCanvas;
@@ -927,7 +929,7 @@ void appendTerrainVertex(std::vector<float>&data,float x,float z,Color base,bool
   n=unit({-dx,1.f,-dz});
  }
  Color c=base;
- if(h>12.f){const float t=clampf((h-12.f)/36.f,0.f,1.f);
+ if(!gNeutralLandPreview&&h>12.f){const float t=clampf((h-12.f)/36.f,0.f,1.f);
    c={base.r*(1-t)+.42f*t,base.g*(1-t)+.42f*t,base.b*(1-t)+.40f*t};}
  data.insert(data.end(),{x,h-.14f,z,n.x,n.y,n.z,c.r,c.g,c.b});
 }
@@ -949,15 +951,9 @@ void updateTerrain(){
  const int radius=quality().terrainTileRadius;
  for(int tz=std::max(-half,gz-radius);tz<=std::min(half-1,gz+radius);tz++)
  for(int tx=std::max(-half,gx-radius);tx<=std::min(half-1,gx+radius);tx++){
+  // One beige base color across the entire editor canvas; no colored squares.
   const float x=(tx+.5f)*WORLD_TILE,z=(tz+.5f)*WORLD_TILE;
-  const float dxForest=x-256.f,dzForest=z,dxRuins=x+256.f,dzRuins=z+64.f;
-  const float dxCrypt=x-16.f,dzCrypt=z+256.f,dxWild=x-32.f,dzWild=z-256.f;
-  Color c{.18f,.29f,.23f};
-  if(dxForest*dxForest+dzForest*dzForest<170.f*170.f)c={.12f,.30f,.18f};
-  else if(dxRuins*dxRuins+dzRuins*dzRuins<164.f*164.f)c={.33f,.30f,.25f};
-  else if(dxCrypt*dxCrypt+dzCrypt*dzCrypt<170.f*170.f)c={.23f,.24f,.29f};
-  else if(dxWild*dxWild+dzWild*dzWild<160.f*160.f)c={.36f,.32f,.20f};
-  if((tx+tz)%3==0){c.r*=.96f;c.g*=.96f;c.b*=.96f;}
+  const Color c{.83f,.77f,.66f};
   bool detail=false;
   const float loX=x-WORLD_TILE*.5f,loZ=z-WORLD_TILE*.5f;
   for(const auto&b:gBrushes){
@@ -968,12 +964,13 @@ void updateTerrain(){
   }
   // One-metre UV56 geometry only where the native brush changed the land.
   // Existing R5.7 roads, paint layers and untouched low-LOD ground stay intact.
-  const int divisions=gUv56Terrain.affectsTile(tx,tz)?64:(detail?8:1);
+  const bool uv56Edited=gUv56Terrain.affectsTile(tx,tz);
+  const int divisions=uv56Edited?64:(detail?8:1);
   const float step=WORLD_TILE/divisions;
   for(int iz=0;iz<divisions;iz++)for(int ix=0;ix<divisions;ix++){
     const float x0=loX+ix*step,x1=x0+step,z0=loZ+iz*step,z1=z0+step;
-    terrainTriangle(vertices,x0,z0,x1,z0,x1,z1,c,detail);
-    terrainTriangle(vertices,x0,z0,x1,z1,x0,z1,c,detail);
+    terrainTriangle(vertices,x0,z0,x1,z0,x1,z1,c,detail||uv56Edited);
+    terrainTriangle(vertices,x0,z0,x1,z1,x0,z1,c,detail||uv56Edited);
   }
   ++tiles;
  }
@@ -2093,9 +2090,12 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDraw(JNIEnv*,jcl
  Mat4 vp=viewProjection();
  const Frustum frustum=makeFrustum(vp);
  drawWorld(vp);
- drawTerrainPaint(vp);
+ // Neutral preview is editor-only: existing paint textures are preserved.
+ if(!gNeutralLandPreview){
+  drawTerrainPaint(vp);
+  drawMaterialLayers(vp);
+ }
  drawPrecisionPaint(vp);
- drawMaterialLayers(vp);
  drawMapGuide(vp);
  drawRoads(vp);
  for(const auto&e:gEntities)drawEntity(vp,frustum,e);
@@ -3073,6 +3073,12 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeApplyTerrainBrus
 // UV56 video UX: continuous touch painting. Gesture begin records exactly
 // one reversible city snapshot; move samples the SAME original stroke baseline;
 // the native R5.7 walker, lakes and streets remain in this scene.
+// Editor-only view mode: never changes saved materials or gameplay geometry.
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeSetNeutralLandPreview(
+ JNIEnv*,jclass,jboolean enabled){
+ gNeutralLandPreview=enabled==JNI_TRUE;
+ ++gTerrainRevision;
+}
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeUv56Area(
  JNIEnv*,jclass){return gUv56Terrain.areaSqM();}
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeUv56ConfigureArea(
@@ -3125,6 +3131,8 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeUv56StrokeSt
  }
  recordEdit(); // one native R5.7 undo entry for the whole drag
  gUv56Terrain=std::move(proposal);
+ gUv56LastTouchHeightCm=static_cast<int>(
+     std::lround(terrainHeightAt(x,z)*100.f));
  gUv56StrokeActive=true;
  ++gTerrainRevision;++gRoadRevision;
  return JNI_TRUE;
@@ -3138,9 +3146,13 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeUv56StrokeMo
  if(!groundPoint(px,py,x,z)||!gUv56Terrain.valid(x,z))return JNI_FALSE;
  if(!gUv56Terrain.brushAt(x,z,static_cast<oe::uv56::Tool>(tool),radius,power))
     return JNI_FALSE;
+ gUv56LastTouchHeightCm=static_cast<int>(
+     std::lround(terrainHeightAt(x,z)*100.f));
  ++gTerrainRevision;++gRoadRevision;
  return JNI_TRUE;
 }
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeUv56LastTouchHeightCm(
+ JNIEnv*,jclass){return gUv56LastTouchHeightCm;}
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeUv56StrokeEnd(
  JNIEnv*,jclass){
  if(!gUv56StrokeActive)return;

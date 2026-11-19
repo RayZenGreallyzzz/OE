@@ -52,6 +52,7 @@ jobs:
         run: |
           python3 tests/uv56_native_video_panel_integration_smoke.py
           python3 tests/uv56_landscape_height_bulk_tiles_smoke.py
+          python3 tests/uv56_stage4_beige_sculpt_bulk_smoke.py
   device-quality:
     runs-on: ubuntu-latest
     steps:

@@ -34,7 +34,7 @@ for marker in (
     'json.put("version",11)',
     'sceneVersion>11',
     "sourceReferences!=null",
-    "if(!validEditorPlotName(label))",
+    "!validEditorPlotName(label)",
 ):
     assert marker in java, ("Android editor blueprint missing",marker)
 for marker in (

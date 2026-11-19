@@ -70,6 +70,8 @@ struct Asset {
  std::vector<TextureResource> textures;
  std::array<AssetLod,2> lods; // Tier 1/2, original remains tier 0.
  float centerY=0.f, radius=0.f;
+ // Metric bounds for imported-model picking, framing and size readout.
+ float minX=0.f,maxX=0.f,minY=0.f,maxY=0.f,minZ=0.f,maxZ=0.f;
 };
 static Mesh gMeshes[3];
 static Mesh gStaticMeshes[17];
@@ -289,7 +291,10 @@ Mat4 entityModelMatrix(const Entity&e){
             mul(translate({0.f,-pivot,0.f}),objectScale));
 }
 Mat4 perspective(float aspect){
- float f=1/std::tan(PI/6), near=.1f, far=560.f;Mat4 m;
+ // Move the far plane with the camera. 560m clipped 700m castles.
+ const float near=std::max(.1f,gDistance*.001f);
+ const float far=std::max(1800.f,gDistance*3.f+500.f);
+ float f=1/std::tan(PI/6);Mat4 m;
  m.m[0]=f/aspect;m.m[5]=f;
  m.m[10]=(far+near)/(near-far);m.m[11]=-1;
  m.m[14]=2*far*near/(near-far);return m;
@@ -916,9 +921,11 @@ void drawImported(const Mat4&vp,const Entity&e){
   const Vec3 difference=sub(center,cameraEye());
   const float distance=std::sqrt(dot(difference,difference));
   const float sizeScale=std::max(.5f,e.size*std::max({e.sx,e.sy,e.sz}));
-  // Larger objects retain LOD0 longer; no per-frame simplification.
-  const int preferred=distance>125.f*sizeScale*quality().lodDistanceFactor?2:
-   (distance>55.f*sizeScale*quality().lodDistanceFactor?1:0);
+  const float geometryScale=std::max(sizeScale,
+      asset.radius*sizeScale/10.f);
+  // Preserve details on giant landmarks rather than LOD based on the pivot.
+  const int preferred=distance>125.f*geometryScale*quality().lodDistanceFactor?2:
+   (distance>55.f*geometryScale*quality().lodDistanceFactor?1:0);
   for(int level=preferred;level>0;level--){
    const AssetLod&candidate=asset.lods[level-1];
    if(candidate.gpu.count>0&&candidate.gpu.vao!=0){
@@ -2257,14 +2264,16 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeGizmoEnd(JNIEnv*
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeOrbit(JNIEnv*,jclass,jfloat dx,jfloat dy,jfloat zoom){
  gYaw-=dx*.006f;
  gPitch=clampf(gPitch+dy*.006f,-1.16f,1.25f);
- gDistance=clampf(gDistance*clampf(zoom,.6f,1.5f),5,210);
+ gDistance=clampf(gDistance*clampf(zoom,.6f,1.5f),5,2400);
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativePan(JNIEnv*,jclass,jfloat dx,jfloat dy){
  const float speed=gDistance*.0035f;
  const float c=std::cos(gYaw),s=std::sin(gYaw);
+ const float elevation=std::max(0.f,
+   gTarget.y-(terrainHeightAt(gTarget.x,gTarget.z)+1.2f));
  gTarget.x=clampf(gTarget.x+(-dx*c+dy*s)*speed,-worldHalf()+4,worldHalf()-4);
  gTarget.z=clampf(gTarget.z+(dx*s+dy*c)*speed,-worldHalf()+4,worldHalf()-4);
- gTarget.y=terrainHeightAt(gTarget.x,gTarget.z)+1.2f;
+ gTarget.y=terrainHeightAt(gTarget.x,gTarget.z)+1.2f+elevation;
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeFocusLocation(JNIEnv*,jclass,jint index){
  if(index<0 || index>=static_cast<jint>(sizeof(LOCATIONS)/sizeof(LOCATIONS[0])))return;
@@ -2385,10 +2394,19 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePick(JNIEnv*,jcl
  for(const auto&e:gEntities){
   const float range=e.type<3||e.type==6?3.5f:2.0f;
   const float h=e.type<3||e.type==6?6.f:4.9f;
+  float loX=-range,hiX=range,loY=0.f,hiY=h,loZ=-range,hiZ=range;
+  if(e.type==6){
+   const auto a=gAssets.find(e.asset);
+   if(a!=gAssets.end()){
+    loX=a->second.minX;hiX=a->second.maxX;
+    loY=a->second.minY;hiY=a->second.maxY;
+    loZ=a->second.minZ;hiZ=a->second.maxZ;
+   }
+  }
   float left=1e9f,top=1e9f,right=-1e9f,bottom=-1e9f,minW=1e9f;
   int visible=0;
-  for(float xx:{-range,range})for(float zz:{-range,range})for(float yy:{0.f,h}){
-    const Mat4 model=entityModelMatrix(e);
+  const Mat4 model=entityModelMatrix(e);
+  for(float xx:{loX,hiX})for(float zz:{loZ,hiZ})for(float yy:{loY,hiY}){
     const Vec4 q=apply(vp,apply(model,{xx,yy,zz,1.f}));
     if(q.w<.1f)continue;visible++;
     float sx=(q.x/q.w*.5f+.5f)*gWidth, sy=(.5f-q.y/q.w*.5f)*gHeight;
@@ -2420,6 +2438,15 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePlaceAtScreen(JN
  if(!groundPoint(px,py,x,z)||blocked(x,z,type))return 0;
  return add(type,x,z,0,1);
 }
+void frameLargeImported(const Entity&e){
+ auto it=gAssets.find(e.asset);
+ if(it==gAssets.end())return;
+ const Asset&asset=it->second;
+ if(asset.radius<55.f)return;
+ const float scale=std::max({e.sx,e.sy,e.sz})*e.size;
+ gTarget={e.x,e.y+asset.centerY*e.size*e.sy,e.z};
+ gDistance=clampf(asset.radius*scale*2.6f,75.f,2400.f);
+}
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePlaceImportedAtScreen(JNIEnv*env,jclass,jstring key,jfloat px,jfloat py){
  if(!key)return 0;
  float x,z;
@@ -2429,7 +2456,8 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePlaceImportedAtS
  std::string asset(raw);env->ReleaseStringUTFChars(key,raw);
  if(gAssets.find(asset)==gAssets.end()||gEntities.size()>=MAX_ENTITIES)return 0;
  recordEdit();
- int id=gNextId++;gEntities.push_back({id,6,x,z,0,1,asset,terrainHeightAt(x,z)});gSelected=id;return id;
+ int id=gNextId++;gEntities.push_back({id,6,x,z,0,1,asset,terrainHeightAt(x,z)});
+ gSelected=id;frameLargeImported(gEntities.back());return id;
 }
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeAddPlaced(JNIEnv*,jclass,jint type,jfloat x,jfloat z,jfloat yaw,jfloat size){
  if(type<0||type>16||type==6 || !std::isfinite(x)||!std::isfinite(z)||!std::isfinite(yaw)||!std::isfinite(size) ||
@@ -2594,7 +2622,16 @@ JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSelectedInfo(
  <<e->x<<" Z "<<e->z<<" Y "<<e->y<<" | ↻ XYZ "
  <<std::setprecision(1)<<angles.x<<"°/"<<angles.y<<"°/"<<angles.z<<"°"
  <<" | Размер "<<std::setprecision(2)<<e->size;
-
+ if(e->type==6){
+  auto found=gAssets.find(e->asset);
+  if(found!=gAssets.end()){
+   const Asset&a=found->second;
+   out<<" | XYZ "<<std::setprecision(1)
+      <<(a.maxX-a.minX)*e->size*e->sx<<" × "
+      <<(a.maxY-a.minY)*e->size*e->sy<<" × "
+      <<(a.maxZ-a.minZ)*e->size*e->sz<<" м";
+  }
+ }
  return env->NewStringUTF(out.str().c_str());
 }
 JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSceneSnapshot(JNIEnv*env,jclass){
@@ -2708,7 +2745,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsse
  if(!key||!vertices||!batchData||!imageData||!imageInfo||
     !pbrTexData||!pbrFactorData||
     !std::isfinite(centerY)||!std::isfinite(radius)||
-    radius<.05f||radius>100.f||centerY<0.f||centerY>100.f)return JNI_FALSE;
+    radius<.05f||radius>8192.f||centerY<0.f||centerY>16384.f)return JNI_FALSE;
  const char*raw=env->GetStringUTFChars(key,nullptr);
  if(!raw)return JNI_FALSE;
  std::string assetKey(raw);env->ReleaseStringUTFChars(key,raw);
@@ -2738,8 +2775,17 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsse
  prepared.vertices.resize(static_cast<size_t>(valueCount));
  env->GetFloatArrayRegion(vertices,0,valueCount,prepared.vertices.data());
  if(env->ExceptionCheck())return JNI_FALSE;
- for(float value:prepared.vertices)
-  if(!std::isfinite(value)||std::abs(value)>10000.f)return JNI_FALSE;
+ prepared.minX=prepared.minY=prepared.minZ=std::numeric_limits<float>::infinity();
+ prepared.maxX=prepared.maxY=prepared.maxZ=-std::numeric_limits<float>::infinity();
+ for(size_t i=0;i<prepared.vertices.size();i+=11){
+  const float x=prepared.vertices[i],y=prepared.vertices[i+1],z=prepared.vertices[i+2];
+  for(size_t k=0;k<11;k++)
+   if(!std::isfinite(prepared.vertices[i+k])||
+      std::abs(prepared.vertices[i+k])>10000.f)return JNI_FALSE;
+  prepared.minX=std::min(prepared.minX,x);prepared.maxX=std::max(prepared.maxX,x);
+  prepared.minY=std::min(prepared.minY,y);prepared.maxY=std::max(prepared.maxY,y);
+  prepared.minZ=std::min(prepared.minZ,z);prepared.maxZ=std::max(prepared.maxZ,z);
+ }
  std::vector<jint> batches(static_cast<size_t>(batchLength));
  env->GetIntArrayRegion(batchData,0,batchLength,batches.data());
  if(env->ExceptionCheck())return JNI_FALSE;
@@ -3027,7 +3073,7 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeAddImportedPlace
  recordEdit();
  int id=gNextId++;
  gEntities.push_back({id,6,x,z,yaw,size,asset,terrainHeightAt(x,z)});
- gSelected=id;return id;
+ gSelected=id;frameLargeImported(gEntities.back());return id;
 }
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeUndo(JNIEnv*,jclass){
  return undoEdit()?JNI_TRUE:JNI_FALSE;

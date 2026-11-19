@@ -99,7 +99,8 @@ public class EditorActivity extends Activity {
             String[] objectPaintKeys, float[] painting, String[] terrainPaintKeys,
             long[] roadIds, String[] roadNames, String[] roadMaterials,
             double[] roadWidths, double[] roadTileMetres,double[][] roadPoints,int[] tileCoords,byte[][] tileData,
-            int[] layerCoords,String[] layerKeys,byte[][] layerMasks,float[] lakes);
+            int[] layerCoords,String[] layerKeys,byte[][] layerMasks,float[] lakes,
+            int uv56AreaSqM,int[] uv56Nodes);
     private static native boolean nativeRegisterPaintTexture(String key, byte[] rgba,int width,int height);
     private static native boolean nativePaintSelected(String key);
     private static native int nativePaintTerrainAtScreen(float x,float y,float radius,String key);
@@ -108,6 +109,8 @@ public class EditorActivity extends Activity {
     private static native void nativeSnapSelectedToGround();
     private static native int nativeApplyTerrainBrushAtScreen(float x,float y,float radius,float amount);
     private static native int nativeTerrainBrushCount();
+    private static native boolean nativeUv56SculptAtScreen(int tool,float x,float y,
+            float radius,float power);
     private static native int nativeLakePlaceAtScreen(float x,float y,float radius,float fillDepth);
     private static native String[] nativeLakeNames();
     private static native boolean nativeLakeSelect(int index);
@@ -182,6 +185,9 @@ public class EditorActivity extends Activity {
     private WalkJoystick walkJoystick;
     private Button walkJumpButton,walkStopButton;
     private boolean walkControlsActive=false,walkTickPending=false;
+    // Source: UV56 landscape-manager.js. No UV56 building/character code.
+    private volatile int uv56SculptTool=0; // 1 raise,2 lower,3 ridge,4 smooth,5 flatten
+    private volatile float uv56SculptRadius=4f,uv56SculptPower=2f;
     private boolean walkJumpQueued=false,walkAirborne=false;
     private float walkAxisX=0f,walkAxisZ=0f;
     private volatile int walkSessionGeneration=0;
@@ -513,7 +519,7 @@ public class EditorActivity extends Activity {
         Button b=button(label,()->{
             action.run();
             // Start placing directly on the exposed 3D world.
-            if(placingKind>=0||terrainMode!=0||paintTerrainMode||roadMode||precisionPaintMode)toggleDrawer(false);
+            if(placingKind>=0||terrainMode!=0||uv56SculptTool!=0||paintTerrainMode||roadMode||precisionPaintMode)toggleDrawer(false);
         });
         LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,dp(43));
         p.setMargins(dp(4),dp(2),dp(4),dp(2));
@@ -570,6 +576,13 @@ public class EditorActivity extends Activity {
             addPaletteOption("+ Лавка",()->enterPlaceMode(9,null));
             addPaletteOption("Импорт 3D: GLB / glTF / VOX",this::pickGlb);
         }else if("Рельеф".equals(category)){
+            addPaletteOption("🌿 UV56 · поднять (сетка 1 м)",()->enterUv56Sculpt(1));
+            addPaletteOption("🌿 UV56 · опустить",()->enterUv56Sculpt(2));
+            addPaletteOption("🌿 UV56 · хребет",()->enterUv56Sculpt(3));
+            addPaletteOption("🌿 UV56 · сгладить",()->enterUv56Sculpt(4));
+            addPaletteOption("🌿 UV56 · выровнять",()->enterUv56Sculpt(5));
+            addPaletteOption("🌿 UV56 · размер/сила кисти",this::chooseUv56SculptSize);
+            addPaletteOption("🌿 UV56 · завершить",this::cancelPlace);
             addPaletteOption("⛰ Поднять гору",()->enterTerrainMode(1));
             addPaletteOption("⛰ Опустить землю",()->enterTerrainMode(-1));
             addPaletteOption("📐 Радиус и сила кисти",this::chooseTerrainBrush);
@@ -694,6 +707,7 @@ public class EditorActivity extends Activity {
             .setNegativeButton("Отмена",null).show();
     }
     private void enterPlaceMode(int kind, String asset) {
+        uv56SculptTool=0; // exclusive tools; preserve R5.7 inputs
         if(importing) { message("Сначала дождись завершения импорта"); return; }
         terrainMode=0;lakeMode=false;paintTerrainMode=false;roadMode=false;roadMoveMode=false;precisionPaintMode=false;materialPaintMode=false;
         materialPaintMode=false;
@@ -705,6 +719,7 @@ public class EditorActivity extends Activity {
         message("Коснись места на карте для размещения");
     }
     private void cancelPlace() {
+        uv56SculptTool=0;
         paintTerrainMode=false;roadMode=false;roadMoveMode=false;precisionPaintMode=false;
         surface.queueEvent(()->{nativeRoadFinish();nativePaintStrokeEnd();nativeLayerStrokeEnd();});
         terrainMode=0;lakeMode=false;
@@ -779,7 +794,30 @@ public class EditorActivity extends Activity {
                 else message("Сначала выбери озеро в списке");
             })).setNegativeButton("Отмена",null).show();
     }
+    private void enterUv56Sculpt(int tool){
+        if(importing){message("Дождись окончания импорта");return;}
+        // Preserve all R5.7 road and lake modes, only one editor tool active.
+        cancelPlace();
+        uv56SculptTool=tool;
+        String[] names={"","Поднять","Опустить","Хребет","Сгладить","Выровнять"};
+        statusText.setText("UV56: "+names[tool]+" · касайся земли. "+
+            "Шаг узлов 1 метр, высота в сантиметрах. ↶ отменить.");
+        message("Инструмент UV56 включён. Сцена города остаётся прежней");
+    }
+    private void chooseUv56SculptSize(){
+        final String[] options={"Точно: 1 м / сила 1",
+            "Мало: 2,75 м / сила 1","Средне: 4 м / сила 2",
+            "Широко: 8 м / сила 3","Очень широко: 16 м / сила 5"};
+        final float[] radii={1f,2.75f,4f,8f,16f};
+        final float[] powers={1f,1f,2f,3f,5f};
+        new AlertDialog.Builder(this).setTitle("UV56: радиус и сила кисти")
+            .setItems(options,(dialog,index)->{
+                uv56SculptRadius=radii[index];uv56SculptPower=powers[index];
+                message("Кисть UV56: "+options[index]);
+            }).show();
+    }
     private void enterTerrainMode(int direction){
+        uv56SculptTool=0; // exclusive tools; preserve R5.7 inputs
         if(importing){message("Дождись завершения операции");return;}
         placingKind=-1;placingGlb=null;paintTerrainMode=false;roadMode=false;roadMoveMode=false;lakeMode=false;
         precisionPaintMode=false;materialPaintMode=false;
@@ -811,6 +849,7 @@ public class EditorActivity extends Activity {
     }
 
     private void beginNewRoad(){
+        uv56SculptTool=0; // exclusive tools; preserve R5.7 inputs
         if(importing){message("Дождись завершения импорта");return;}
         placingKind=-1;placingGlb=null;terrainMode=0;lakeMode=false;paintTerrainMode=false;precisionPaintMode=false;materialPaintMode=false;roadMoveMode=false;roadMode=true;
         surface.queueEvent(()->{nativeRoadBegin();surface.requestRender();});
@@ -824,6 +863,7 @@ public class EditorActivity extends Activity {
         statusText.setText("Дорога завершена · выбери другую или отредактируй ширину.");
     }
     private void continueExistingRoad(){
+        uv56SculptTool=0; // exclusive tools; preserve R5.7 inputs
         if(importing)return;
         surface.queueEvent(()->{
             if(nativeRoadContinue()){
@@ -895,6 +935,7 @@ public class EditorActivity extends Activity {
         });
     }
     private void onRoadPointChosen(int index,double oldX,double oldZ,boolean byTap){
+        uv56SculptTool=0; // exclusive tools; preserve R5.7 inputs
         if(byTap){
             roadMode=false;roadMoveMode=true;
             placingKind=-1;placingGlb=null;paintTerrainMode=false;
@@ -1391,6 +1432,13 @@ public class EditorActivity extends Activity {
             if(validTexture(key)||road.has("tileMetres")){
                 json.put("version",8);break;
             }
+        }
+        // New native terrain is an explicit v9 extension. Old v1–v8 city
+        // projects retain their historical version and complete feature sets.
+        if(json.has("uv56Terrain")){
+            if(json.optJSONObject("uv56Terrain")==null)
+                throw new Exception("Повреждены высоты UV56");
+            json.put("version",9);
         }
         String result=json.toString();
         if(result.getBytes(StandardCharsets.UTF_8).length>ProjectArchive.MAX_SCENE_BYTES)
@@ -2076,6 +2124,7 @@ public class EditorActivity extends Activity {
         });
     }
     private void activateTerrainPainting(){
+        uv56SculptTool=0; // exclusive tools; preserve R5.7 inputs
         if(activePaintKey.isEmpty()){
             message("Сначала загрузи и выбери PNG/JPG");return;
         }
@@ -2087,6 +2136,7 @@ public class EditorActivity extends Activity {
     }
 
     private void activatePrecisionPaint(boolean erase){
+        uv56SculptTool=0; // exclusive tools; preserve R5.7 inputs
         if(importing){message("Дождись окончания загрузки");return;}
         if(!erase&&activePaintKey.isEmpty()){
             message("Сначала загрузи и выбери текстуру PNG/JPG");return;
@@ -2101,6 +2151,7 @@ public class EditorActivity extends Activity {
     }
 
     private void activateMaterialPaint(boolean erase){
+        uv56SculptTool=0; // exclusive tools; preserve R5.7 inputs
         if(importing){message("Дождись окончания импорта");return;}
         if(activePaintKey.isEmpty()){
             message("Сначала выбери материал PNG/JPG в библиотеке текстур");return;
@@ -2348,12 +2399,49 @@ public class EditorActivity extends Activity {
             }
             JSONObject document=new JSONObject(new String(jsonBytes.toByteArray(),StandardCharsets.UTF_8));
             final int sceneVersion=document.optInt("version",-1);
-            if(sceneVersion<1||sceneVersion>8)
-                throw new Exception("Неверная версия сцены (нужна 1–8)");
+            if(sceneVersion<1||sceneVersion>9)
+                throw new Exception("Неверная версия сцены (нужна 1–9)");
             final boolean demoRoads=document.optBoolean("demoRoads",false);
             final int worldSize=document.optInt("worldSize",1024);
             if(worldSize!=1024&&worldSize!=2048&&worldSize!=4096&&worldSize!=8192&&worldSize!=16384)
                 throw new Exception("Неподдерживаемый размер карты");
+            final JSONObject uv56Json=document.optJSONObject("uv56Terrain");
+            if((sceneVersion==9&&uv56Json==null)||
+               (sceneVersion<9&&document.has("uv56Terrain")))
+                throw new Exception("Слой UV56 требует корректный формат сцены v9");
+            final int uv56Area=uv56Json==null?0:uv56Json.getInt("areaSqM");
+            final int[] uv56Nodes;
+            if(uv56Json!=null){
+                if(uv56Json.optInt("version",-1)!=1||
+                   !"m".equals(uv56Json.optString("unit",""))||
+                   uv56Json.optInt("step",-1)!=1||
+                   uv56Area<1000||uv56Area>2000000||
+                   Math.sqrt(uv56Area)>worldSize)
+                    throw new Exception("Неверный размер или формат UV56");
+                JSONArray raw=uv56Json.getJSONArray("nodes");
+                if(raw.length()<1||raw.length()>32768)
+                    throw new Exception("Превышено количество узлов UV56");
+                uv56Nodes=new int[raw.length()*4];
+                HashSet<String> unique=new HashSet<>();
+                for(int i=0;i<raw.length();i++){
+                    JSONArray rec=raw.getJSONArray(i);
+                    if(rec.length()!=4)throw new Exception("Повреждён узел UV56");
+                    for(int j=0;j<4;j++){
+                        double v=rec.getDouble(j);
+                        if(!Double.isFinite(v)||v!=Math.rint(v)||
+                           v<Integer.MIN_VALUE||v>Integer.MAX_VALUE)
+                            throw new Exception("Некорректная координата UV56");
+                        uv56Nodes[i*4+j]=(int)v;
+                    }
+                    int x=uv56Nodes[4*i],z=uv56Nodes[4*i+1],
+                        height=uv56Nodes[4*i+2],paint=uv56Nodes[4*i+3];
+                    if(Math.abs(x)>Math.sqrt(uv56Area)/2+1||
+                       Math.abs(z)>Math.sqrt(uv56Area)/2+1||
+                       height< -60000||height>60000||paint<0||paint>5||
+                       !unique.add(x+":"+z))
+                        throw new Exception("Некорректный узел UV56");
+                }
+            }else uv56Nodes=new int[0];
 
             JSONArray savedLakes=document.optJSONArray("lakes");
             if((sceneVersion==7&&(savedLakes==null||savedLakes.length()==0))||
@@ -2762,7 +2850,8 @@ public class EditorActivity extends Activity {
                             terrainBrushes,objectPaintKeys,paintBrushes,paintBrushKeys,
                             roadIds,roadNames,roadMaterials,roadWidths,roadTileMetres,roadPaths,
                             preciseTileCoords,preciseTileBytes,
-                            materialCoords,materialKeys,materialWeights,lakeData))
+                            materialCoords,materialKeys,materialWeights,lakeData,
+                            uv56Area,uv56Nodes))
                         throw new Exception("Сцена не прошла полную проверку в движке");
                     if(parsedGuide!=null){
                         if(!nativeMapCommit(parsedGuide.centerX,parsedGuide.centerZ,
@@ -2927,7 +3016,7 @@ public class EditorActivity extends Activity {
                 }
                 queueEvent(() -> {
                     nativeGizmoEnd();gizmoEditStarted=false;
-                    if(placingKind==-1&&terrainMode==0&&!lakeMode&&!paintTerrainMode&&!roadMode&&!roadMoveMode)
+                    if(placingKind==-1&&terrainMode==0&&uv56SculptTool==0&&!lakeMode&&!paintTerrainMode&&!roadMode&&!roadMoveMode)
                         touchedGizmoAxis=nativeGizmoHit(px,py);
                 });
                 return true;
@@ -3008,7 +3097,8 @@ public class EditorActivity extends Activity {
                     final float upX=e.getX(),upY=e.getY();
                     final float px=surfaceX(upX),py=surfaceY(upY);
                     final boolean tap=Math.hypot(upX-downX,upY-downY)<dp(8);
-                    final int kind=placingKind,brush=terrainMode;
+                    final int kind=placingKind,brush=terrainMode,uv56Brush=uv56SculptTool;
+                    final float uv56Radius=uv56SculptRadius,uv56Power=uv56SculptPower;
                     final boolean paint=paintTerrainMode;
                     final boolean roadDraw=roadMode;
                     final boolean lakePlace=lakeMode;
@@ -3049,6 +3139,10 @@ public class EditorActivity extends Activity {
                                     ui(()->statusText.setText(
                                         "Озеро создано · выбери его в разделе «Вода» для изменения уровня"));
                                 }else message("Невозможно залить: лимит 8 озёр, край карты или неверная высота");
+                            }else if(uv56Brush!=0){
+                                if(nativeUv56SculptAtScreen(uv56Brush,px,py,uv56Radius,uv56Power))
+                                    message("Высоты UV56 изменены · ↶ отменить · 💾 сохранить");
+                                else message("UV56: не удалось изменить землю (край карты или лимит)");
                             }else if(brush!=0){
                                 int count=nativeApplyTerrainBrushAtScreen(px,py,terrainRadius,
                                     brush*terrainStrength);

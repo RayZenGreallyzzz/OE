@@ -37,8 +37,8 @@ for needle in ["nativeWalkPreviewStart(", "nativeWalkPreviewStep(",
                "nativeWalkPreviewStop(", "nativeWalkPreviewState(",
                "gWalkPreview.clear(); // Stop demo before changing real authored geometry."]:
     assert needle in native,needle
-assert "version>=1&&version<=8" in archive
+assert "version>=1&&version<=9" in archive
 assert 'applicationIdSuffix' in (root/"android/build.gradle").read_text()
-assert 'OE TOUCH WALK R5.7 TEST' in manifest
+assert 'OE R5.7 UV56 LAND TEST' in manifest
 assert 'android:allowBackup="false"' in manifest
 print("OE_TOUCH_WALK_UI_OK: bounded frame scheduling, pointer reset, lifecycle and safe approach ramps")

@@ -23,10 +23,12 @@ import java.util.zip.ZipOutputStream;
  */
 public final class ProjectArchive {
     private ProjectArchive() {}
-    public static final long MAX_UNPACKED_BYTES=128L*1024*1024;
-    public static final int MAX_MODELS=12;
-    public static final int MAX_SCENE_BYTES=200000;
-    public static final int MAX_TEXTURES=8,MAX_TEXTURE_BYTES=8*1024*1024;
+    // Project files are streamed to disk; count unique content hashes, never
+    // copies of a house. Keep a bounded ZIP budget to prevent archive bombs.
+    public static final long MAX_UNPACKED_BYTES=512L*1024*1024;
+    public static final int MAX_MODELS=32;
+    public static final int MAX_SCENE_BYTES=512000;
+    public static final int MAX_TEXTURES=32,MAX_TEXTURE_BYTES=8*1024*1024;
 
     public static final class StagedProject {
         public final File root, sceneFile, modelDir, textureDir, sourceDir;
@@ -70,6 +72,22 @@ public final class ProjectArchive {
             if(!key.isEmpty()){
                 check(validTexture(key),"Недопустимая текстура объекта");keys.add(key);
             }
+            // Each style is just a tiny reference to a content-hashed
+            // texture. 50 houses sharing it cause ONE ZIP image entry.
+            JSONArray variants=objects.getJSONObject(i).optJSONArray("materialStyles");
+            if(objects.getJSONObject(i).has("materialStyles")){
+                check(variants!=null&&variants.length()<=64,
+                    "Неверные варианты материалов");
+                for(int v=0;v<variants.length();v++){
+                    JSONArray style=variants.getJSONArray(v);
+                    check(style.length()==5,"Неверный материал объекта");
+                    String image=style.getString(4);
+                    if(!image.isEmpty()){
+                        check(validTexture(image),"Недопустимая текстура материала");
+                        keys.add(image);
+                    }
+                }
+            }
         }
         JSONArray strokes=document.optJSONArray("terrainPaint");
         if(strokes!=null){
@@ -81,14 +99,15 @@ public final class ProjectArchive {
                 check(validTexture(key),"Недопустимая текстура земли");keys.add(key);
             }
         }
-        check(keys.size()<=MAX_TEXTURES,"Более 8 пользовательских текстур");
+        check(keys.size()<=MAX_TEXTURES,"Слишком много различных текстур (до 32)");
         return keys;
     }
     private static void check(boolean ok,String reason) throws IOException{
         if(!ok)throw new IOException(reason);
     }
     private static Set<String> referencedModels(String scene) throws Exception {
-        check(scene.getBytes(StandardCharsets.UTF_8).length<=MAX_SCENE_BYTES,"Сцена больше 200 КБ");
+        check(scene.getBytes(StandardCharsets.UTF_8).length<=MAX_SCENE_BYTES,
+            "Сцена превышает допустимую память для JSON (512 КБ)");
         JSONObject json=new JSONObject(scene);
         check(json.optInt("version",-1)==1,"Неподдерживаемая версия сцены");
         JSONArray items=json.getJSONArray("items");

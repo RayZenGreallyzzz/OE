@@ -14,6 +14,15 @@ jobs:
       - run: node --check src/engine.js
       - run: node --check src/editor.js
       - run: node --test tests/engine.test.cjs
+      - name: Guard Phoenix save/recovery bridge against regressions
+        run: python3 tests/phoenix_save_bridge_integration_smoke.py
+      - name: Verify real Phoenix export SHA-256 with byte-accurate JVM tests
+        run: |
+          mkdir -p /tmp/oe-phoenix-save-tests
+          javac -d /tmp/oe-phoenix-save-tests \
+            android/src/main/java/game/oe/editor/PhoenixFileVerifier.java \
+            tests/PhoenixFileVerifierTest.java
+          java -cp /tmp/oe-phoenix-save-tests PhoenixFileVerifierTest
   meshopt-codec:
     runs-on: ubuntu-latest
     steps:

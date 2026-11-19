@@ -54,6 +54,8 @@ public class EditorActivity extends Activity {
     private static native boolean nativeSetQualityProfile(int tier);
     private static native float nativeQualityScale(int tier);
     private static native String[] nativeGetGpuCapabilities();
+    private static native void nativeSetImportedLighting(boolean enabled);
+    private static native void nativeSetTextureSampling(int mode); // GPU preview only
     private static native void nativeOrbit(float dx, float dy, float zoom);
     private static native void nativePan(float dx, float dy);
     private static native void nativeFocusLocation(int index);
@@ -100,21 +102,28 @@ public class EditorActivity extends Activity {
     private static native boolean nativeRedo();
     private static native void nativeClearHistory();
     private static native int nativeDuplicateSelected();
+    private static native int nativeDuplicateSelectedGrid(int columns,int rows);
     private static native boolean nativeRegisterAsset(String key, float[] vertices, float centerY,
             float radius, int[] draws, byte[][] images, int[] imageInfo,
-            boolean preserveRig);
+            int[] pbrTextures, float[] pbrFactors,
+            int[] materialIds,String[] materialNames,boolean preserveRig);
     private static native String[] nativeLoadedAssetKeys();
     private static native boolean nativeCanRegisterMore(int newUniqueAssets);
     private static native void nativeDiscardUnusedAsset(String key);
     private static native int nativeTrimUnusedAssets();
     private static native boolean nativeReplaceScene(int size, boolean demoRoads,
             int[] kinds, float[] transforms, String[] modelKeys, float[] terrain,
-            String[] objectPaintKeys, float[] painting, String[] terrainPaintKeys,
+            String[] objectPaintKeys, int[] styleCounts,int[] styleIds,
+            float[] styleColors,String[] styleTextures,
+            float[] painting, String[] terrainPaintKeys,
             int[] roadIds, float[] roadWidths, boolean[] roadMarkings,
             int[] roadCounts, int[] roadMaterials, float[] roadCoordinates,
             boolean roadSidewalks, boolean roadCrosswalks);
     private static native boolean nativeRegisterPaintTexture(String key, byte[] rgba,int width,int height);
     private static native boolean nativePaintSelected(String key);
+    private static native String[] nativeSelectedMaterials();
+    private static native boolean nativeTintSelectedMaterial(int materialId,float red,float green,float blue);
+    private static native boolean nativeTextureSelectedMaterial(int materialId,String key);
     private static native int nativePaintTerrainAtScreen(float x,float y,float radius,String key);
     private static native void nativeChangeSelectedHeight(float dy);
     private static native void nativeScaleSelectedAxis(int axis,float factor);
@@ -133,7 +142,7 @@ public class EditorActivity extends Activity {
     private static native boolean nativeSetSelectedRotationEuler(double x,double y,double z);
     private static native int nativeAddImportedPlaced(String key, float x, float z, float yaw, float size);
     private static final int PICK_GLB = 702, PICK_PROJECT=703, SAVE_PROJECT=704, PICK_PAINT=705,
-            PICK_LIBRARY=AssetLibrary.PICK_LIBRARY;
+            PICK_LIBRARY=AssetLibrary.PICK_LIBRARY, PHOENIX_BUILDER=710;
     private static final int MAX_ASSETS = 32;
 
     private EditorSurface surface;
@@ -162,17 +171,21 @@ public class EditorActivity extends Activity {
     private volatile float terrainRadius=96f;
     private volatile float terrainStrength=20f;
     private volatile float moveStep=.001f,turnStep=5f,scaleStep=1.05f;
-    private volatile int textureLimit=1024; // Applies to newly imported GLB only.
+    private volatile int textureLimit=1024; // GPU preview ONLY; original saved GLB bytes are never changed.
+    private volatile boolean glbSoftLighting=true; // Imported GLB shading, not source data.
+    private volatile int textureSamplingMode=2; // 0 bilinear, 1 trilinear, 2 x4 anisotropic if supported
     private volatile int deviceRamMiB=4096;
     private volatile int qualityChoice=-1; // -1=conservative automatic recommendation
     private volatile int qualityActive=1;
     private volatile String[] gpuCapabilities=null;
+    // This list controls only the display resolution, NOT the imported
+    // geometry, GLB file, texture detail, culling, or native renderer tier.
     private static final String[] QUALITY_MODES={
-        "Авто — с учётом RAM/GPU",
-        "Экономия — 55% рендер",
-        "Низкое — 70% рендер",
-        "Баланс — 85% рендер",
-        "Высокое — 100% рендер"
+        "Авто — разрешение по возможностям планшета",
+        "55% — экономия энергии",
+        "70% — меньше нагрузка",
+        "85% — чёткое изображение",
+        "100% — разрешение экрана"
     };
     private final int gold = Color.rgb(240, 192, 113);
     private final int text = Color.rgb(234, 228, 218);
@@ -230,8 +243,17 @@ public class EditorActivity extends Activity {
     }
     @Override public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        qualityChoice=getPreferences(MODE_PRIVATE).getInt("oe_quality_tier",-1);
+        // Retain the owner's previous display choice when upgrading from v31,
+        // but keep new changes strictly separate from renderer/GLB quality.
+        android.content.SharedPreferences qualityPrefs=getPreferences(MODE_PRIVATE);
+        qualityChoice=qualityPrefs.getInt("oe_display_resolution",
+            qualityPrefs.getInt("oe_quality_tier",-1));
         if(qualityChoice<-1||qualityChoice>3)qualityChoice=-1;
+        textureLimit=getPreferences(MODE_PRIVATE).getInt("oe_glb_preview_texture_limit",1024);
+        if(textureLimit!=1024&&textureLimit!=2048)textureLimit=1024;
+        glbSoftLighting=getPreferences(MODE_PRIVATE).getBoolean("oe_glb_soft_lighting",true);
+        textureSamplingMode=getPreferences(MODE_PRIVATE).getInt("oe_glb_texture_sampling",2);
+        if(textureSamplingMode<0||textureSamplingMode>2)textureSamplingMode=2;
         ActivityManager manager=(ActivityManager)getSystemService(ACTIVITY_SERVICE);
         if(manager!=null){
             ActivityManager.MemoryInfo mem=new ActivityManager.MemoryInfo();
@@ -259,7 +281,7 @@ public class EditorActivity extends Activity {
         top.setPadding(dp(5),dp(2),dp(5),dp(2));
         top.setBackgroundColor(Color.argb(220,14,21,32));
         TextView title=new TextView(this);
-        title.setText("OE 0.7.13 / XYZ 360° SAFE TEST");
+        title.setText("OE 0.7.13 / режим Город");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
         title.setTextSize(12);
@@ -267,13 +289,21 @@ public class EditorActivity extends Activity {
         title.setPadding(dp(8),0,dp(5),0);
         top.addView(title,new LinearLayout.LayoutParams(0,dp(45),1f));
         Button menu=button("☰ Каталог",()->toggleDrawer(!drawerOpen));
-        top.addView(menu,new LinearLayout.LayoutParams(dp(110),dp(43)));
+        top.addView(menu,new LinearLayout.LayoutParams(dp(104),dp(43)));
+        Button builderMode=button("🏗 Стройка",this::openBuilderMode);
+        builderMode.setContentDescription("Режим Стройка · Phoenix Builder UV44");
+        top.addView(builderMode,new LinearLayout.LayoutParams(dp(103),dp(43)));
         Button save=button("💾 Сохранить",this::saveScene);
         top.addView(save,new LinearLayout.LayoutParams(dp(112),dp(43)));
         Button undo=button("↶",this::undoAction);
         top.addView(undo,new LinearLayout.LayoutParams(dp(45),dp(43)));
         Button redo=button("↷",this::redoAction);
         top.addView(redo,new LinearLayout.LayoutParams(dp(45),dp(43)));
+        // Rightmost, always-visible entry to graphics settings.
+        // Future preferences are added in showEngineSettings(), not the toolbar.
+        Button settingsButton=button("⚙️",this::showEngineSettings);
+        settingsButton.setContentDescription("Настройки Orvetra Engine");
+        top.addView(settingsButton,new LinearLayout.LayoutParams(dp(46),dp(43)));
         root.addView(top,new FrameLayout.LayoutParams(-1,dp(49),Gravity.TOP));
         roadDoneButton=button("✓ Завершить дорогу",this::finishRoadMode);
         FrameLayout.LayoutParams doneParams=new FrameLayout.LayoutParams(dp(175),dp(46),
@@ -291,7 +321,7 @@ public class EditorActivity extends Activity {
         HorizontalScrollView categoryScroll=new HorizontalScrollView(this);
         categoryScroll.setHorizontalScrollBarEnabled(false);
         LinearLayout categoryRow=row();
-        for(String category:new String[]{"Дома","Деревья","Крепость","Декорации","Окружение",
+        for(String category:new String[]{"🏗 Здание","Дома","Деревья","Крепость","Декорации","Окружение",
                 "Детали","Декор","Рельеф","Дороги","Текстуры","Проект"}){
             Button tab=button(category,()->showPalette(category));
             LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(dp(98),dp(44));
@@ -342,6 +372,10 @@ public class EditorActivity extends Activity {
 
         advancedInspector=new LinearLayout(this);
         advancedInspector.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout neighbourhoodRow=row();
+        addControl(neighbourhoodRow,"🏘 Ряд ×10",()->duplicateGridAction(10,1));
+        addControl(neighbourhoodRow,"🏙 Квартал ×50",()->duplicateGridAction(10,5));
+        advancedInspector.addView(neighbourhoodRow);
         advancedScroll=new android.widget.ScrollView(this);
         advancedScroll.setFillViewport(false);
         advancedScroll.setVerticalScrollBarEnabled(true);
@@ -375,6 +409,9 @@ public class EditorActivity extends Activity {
         addControl(uprightRow,"↥ Поставить на землю",()->
             edit(EditorActivity::nativeSnapSelectedToGround));
         advancedInspector.addView(uprightRow);
+        LinearLayout materialRow=row();
+        addControl(materialRow,"🏠 Материалы крыши/стен",this::chooseBuildingMaterial);
+        advancedInspector.addView(materialRow);
         LinearLayout scaleRow=row();
         addControl(scaleRow,"− Размер",()->edit(()->nativeScale(1f/scaleStep)));
         addControl(scaleRow,"+ Размер",()->edit(()->nativeScale(scaleStep)));
@@ -427,6 +464,15 @@ public class EditorActivity extends Activity {
         root.addView(info,infoParams);
         setContentView(root);
     }
+    // Shared app lifecycle: OE city remains the parent scene while the
+    // unchanged Phoenix UV44 builder is in its own construction mode.
+    // The existing builder JSON/GLB save bridge handles persistence.
+    private void openBuilderMode(){
+        if(importing){message("Заверши импорт перед переходом в Стройку");return;}
+        cancelPlace();
+        toggleDrawer(false);
+        startActivityForResult(new Intent(this,PhoenixBuilderActivity.class),PHOENIX_BUILDER);
+    }
     private void toggleDrawer(boolean open){
         drawerOpen=open;
         toolDrawer.setVisibility(open?View.VISIBLE:View.GONE);
@@ -443,7 +489,12 @@ public class EditorActivity extends Activity {
     }
     private void showPalette(String category){
         paletteItems.removeAllViews();
-        if("Дома".equals(category)||"Здания".equals(category)){
+        if("🏗 Здание".equals(category)){
+            addPaletteOption("🏗 Режим Стройка · Phoenix Builder UV44",this::openBuilderMode);
+            addPaletteOption("📥 Импорт готового GLB из Phoenix",this::pickGlb);
+            addPaletteOption("ℹ Редактор зданий отдельный от ландшафта и дорог",
+                ()->message("Строй здание в Phoenix, экспортируй GLB и импортируй в город"));
+        }else if("Дома".equals(category)||"Здания".equals(category)){
             addPaletteOption("+ Таверна",()->enterPlaceMode(0,null));
             addPaletteOption("+ Кузница",()->enterPlaceMode(1,null));
             addPaletteOption("+ Аукционный дом",()->enterPlaceMode(2,null));
@@ -508,7 +559,7 @@ public class EditorActivity extends Activity {
             addPaletteOption("📏 Радиус кисти земли",this::choosePaintRadius);
             addPaletteOption("✕ Завершить покраску",this::cancelPlace);
             addPaletteOption("Импорт модели: GLB / glTF / VOX",this::pickGlb);
-            addPaletteOption("Качество GLB 1024 / 2048 px",this::chooseTextureLimit);
+            addPaletteOption("Детализация текстур GLB при просмотре",this::chooseTextureLimit);
             addPaletteOption("Форматы и ограничения",()->new AlertDialog.Builder(this)
                 .setTitle("Текстуры OE")
                 .setMessage("Можно загружать PNG/JPG до 1024px и наносить на объекты или землю. "
@@ -516,7 +567,7 @@ public class EditorActivity extends Activity {
                     +"Draco пока не поддерживается. KTX2 BasisU ETC1S/UASTC LDR -> ETC2 включён в тестовом режиме.")
                 .setPositiveButton("Понятно",null).show());
         }else if("Проект".equals(category)){
-            addPaletteOption("⚡ Графика и качество",this::chooseDeviceProfile);
+            addPaletteOption("🖼 Разрешение показа (не меняет GLB)",this::chooseDeviceProfile);
             addPaletteOption("🖥 Информация о GPU",this::showDeviceCapabilities);
             addPaletteOption("💾 Сохранить локально",this::saveScene);
             addPaletteOption("📂 Загрузить локально",this::loadScene);
@@ -732,28 +783,54 @@ public class EditorActivity extends Activity {
         message("Коснись земли для деформации · максимум 64 мазка на карту");
     }
     private void selectDeviceQuality(int selected){
-        if(selected< -1||selected>3)return;
+        if(selected<-1||selected>3)return;
         qualityChoice=selected;
-        getPreferences(MODE_PRIVATE).edit().putInt("oe_quality_tier",selected).apply();
+        // Persist only DISPLAY RESOLUTION, never the source asset or its
+        // preview texture limit. Renderer geometry/culling remains independent.
+        getPreferences(MODE_PRIVATE).edit()
+            .putInt("oe_display_resolution",selected).apply();
         if(surface==null)return;
         surface.queueEvent(()->{
-            final int tier=selected<0?nativeRecommendQuality(deviceRamMiB):selected;
-            if(!nativeSetQualityProfile(tier))return;
-            qualityActive=tier;
-            textureLimit=tier==3?2048:1024;
-            final float scale=nativeQualityScale(tier);
+            final int displayTier=selected<0?
+                nativeRecommendQuality(deviceRamMiB):selected;
+            final float scale=nativeQualityScale(displayTier);
             ui(()->{
                 surface.applyRenderScale(scale);
-                if(statusText!=null)statusText.setText("Графика: "+
-                    QUALITY_MODES[tier+1]+(selected<0?" · автоподбор":" · вручную"));
+                if(statusText!=null)
+                    statusText.setText("Разрешение экрана: "+
+                        Math.round(scale*100.f)+"% · модель GLB не изменяется");
             });
-            surface.requestRender();
         });
+    }
+    private void showEngineSettings(){
+        // Use list content WITHOUT setMessage: on Android, setMessage combined
+        // with setItems hides the choices (the old Phoenix GLB dialog bug).
+        final String selected=qualityChoice<0?"Авто":
+            QUALITY_MODES[qualityChoice+1].split(" — ")[0];
+        final String[] sections={
+            "🖼 Разрешение изображения · "+selected,
+            "🧱 Детализация текстур GLB на экране · "+textureLimit+" px",
+            "🔍 Чёткость текстур под углом · "+
+                (textureSamplingMode==0?"Базовая":textureSamplingMode==1?"Сглаженная":"Высокая"),
+            "✨ Материалы GLB · "+(glbSoftLighting?"PBR":"Классика"),
+            "🖥 Видеочип и возможности"
+        };
+        new AlertDialog.Builder(this)
+            .setTitle("⚙️ Настройки OE")
+            .setItems(sections,(dialog,which)->{
+                if(which==0)chooseDeviceProfile();
+                else if(which==1)chooseTextureLimit();
+                else if(which==2)chooseTextureSampling();
+                else if(which==3)chooseGlbLighting();
+                else showDeviceCapabilities();
+            })
+            .setNegativeButton("Закрыть",null)
+            .show();
     }
     private void chooseDeviceProfile(){
         if(importing){message("Заверши импорт проекта");return;}
         new AlertDialog.Builder(this)
-            .setTitle("Качество графики OE")
+            .setTitle("🖼 Разрешение показа · исходная модель неизменна")
             .setSingleChoiceItems(QUALITY_MODES,qualityChoice+1,
                 (dialog,which)->{selectDeviceQuality(which-1);dialog.dismiss();})
             .setNeutralButton("Видеочип",(dialog,which)->showDeviceCapabilities())
@@ -783,16 +860,77 @@ public class EditorActivity extends Activity {
                 .show());
         });
     }
+    private void chooseGlbLighting(){
+        // This option modifies only the runtime appearance of imported
+        // GLBs. Original model geometry, embedded textures and saved city
+        // are never rewritten when the owner switches lighting.
+        final String[] choices={
+            "✨ PBR (экспериментально) · рельеф, шероховатость, металл",
+            "🔹 Классическое · прежний вид OE 0.7.13"
+        };
+        new AlertDialog.Builder(this)
+            .setTitle("✨ Материалы GLB · не меняет оригиналы")
+            .setSingleChoiceItems(choices,glbSoftLighting?0:1,(dialog,which)->{
+                glbSoftLighting=which==0;
+                getPreferences(MODE_PRIVATE).edit()
+                    .putBoolean("oe_glb_soft_lighting",glbSoftLighting).apply();
+                surface.queueEvent(()->{
+                    nativeSetImportedLighting(glbSoftLighting);
+                    surface.requestRender();
+                });
+                message(glbSoftLighting?
+                    "PBR освещение включено · исходный GLB не меняется":
+                    "Восстановлено классическое освещение OE");
+                dialog.dismiss();
+            })
+            .setNegativeButton("Отмена",null).show();
+    }
+    private void chooseTextureSampling(){
+        final String[] choices={
+            "Базовая · минимум видеопамяти, без дополнительных уровней",
+            "Сглаженная · плавные текстуры вдали (mipmaps)",
+            "Высокая · улучшенная чёткость под углом (до 4× на совместимых GPU)"};
+        new AlertDialog.Builder(this)
+            .setTitle("🔍 Чёткость текстур GLB · только GPU")
+            .setSingleChoiceItems(choices,textureSamplingMode,(dialog,which)->{
+                textureSamplingMode=which;
+                getPreferences(MODE_PRIVATE).edit()
+                    .putInt("oe_glb_texture_sampling",which).apply();
+                if(surface!=null)surface.queueEvent(()->{
+                    nativeSetTextureSampling(which);
+                    surface.requestRender();
+                });
+                message(which==0?"Базовая фильтрация текстур":
+                    which==1?"Плавная фильтрация mipmaps":
+                    "Высокая детализация там, где GPU поддерживает анизотропию");
+                dialog.dismiss();
+            })
+            .setNegativeButton("Отмена",null).show();
+    }
     private void chooseTextureLimit(){
         final String[] choices={
-            "1024 px · экономия памяти и энергии (рекомендуется)",
-            "2048 px · более чёткие детали, больше расход видеопамяти"};
-        new AlertDialog.Builder(this).setTitle("Лимит текстур для новых GLB")
+            "1024 px · экономия видеопамяти на планшете",
+            "2048 px · чёткие текстуры при просмотре (требует больше GPU-памяти)"};
+        new AlertDialog.Builder(this)
+            .setTitle("🧱 Текстуры GLB · только отображение")
             .setSingleChoiceItems(choices,textureLimit==1024?0:1,(dialog,which)->{
                 textureLimit=which==0?1024:2048;
-                message("Лимит: "+textureLimit+" px · уже загруженные модели не изменяются");
+                getPreferences(MODE_PRIVATE).edit()
+                    .putInt("oe_glb_preview_texture_limit",textureLimit).apply();
+                message("Просмотр новых GLB: "+textureLimit+
+                    " px · оригинальная модель и текстуры не изменяются");
                 dialog.dismiss();
-            }).setNegativeButton("Отмена",null).show();
+            })
+            .setNeutralButton("Оригиналы сохраняются", (dialog,which)->
+                new AlertDialog.Builder(this)
+                    .setTitle("Источник всегда в полном качестве")
+                    .setMessage("OE хранит исходный GLB без перекодирования. "+
+                        "1024/2048 px ограничивает только текстуры "+
+                        "видеокарты при просмотре. Смена разрешения экрана "+
+                        "не изменяет геометрию, материалы и сохранённый GLB. "+
+                        "Уже загруженные модели обновятся после полного перезапуска OE.")
+                    .setPositiveButton("Понятно",null).show())
+            .setNegativeButton("Отмена",null).show();
     }
     private void chooseTerrainBrush(){
         final String[] choices={"Небольшая · 32м / 8м","Средняя · 64м / 16м",
@@ -1023,6 +1161,17 @@ public class EditorActivity extends Activity {
             else message("Выбери объект: возможно достигнут лимит или край карты");
         });
     }
+    private void duplicateGridAction(int columns,int rows){
+        if(importing){message("Дождись завершения загрузки");return;}
+        if(placingKind!=-1)cancelPlace();
+        edit(()->{
+            int added=nativeDuplicateSelectedGrid(columns,rows);
+            if(added>0)message("✅ Добавлено "+added+" копий без новых GLB · "+
+                                  "исходные материалы и текстуры общие");
+            else message("Недостаточно места на карте или достигнут лимит объектов. "+
+                         "Увеличь карту или выбери другое место.");
+        });
+    }
     private void askDeleteSelected() {
         if(placingKind != -1)cancelPlace();
         new AlertDialog.Builder(this).setTitle("Удалить объект?")
@@ -1079,7 +1228,9 @@ public class EditorActivity extends Activity {
             byte[] buf = new byte[8192];
             int n;
             while ((n=stream.read(buf))!=-1) {
-                if (out.size() + n > GlbReader.MAX_BYTES) throw new Exception("GLB больше 24 МБ");
+                if ((long)out.size() + n > GlbReader.MAX_BYTES)
+                    throw new Exception("Файл превышает "+(GlbReader.MAX_BYTES/(1024*1024))+
+                        " МиБ для текущего импортёра. Оригинал не изменён.");
                 out.write(buf,0,n);
             }
             return out.toByteArray();
@@ -1122,6 +1273,112 @@ public class EditorActivity extends Activity {
             return out.toByteArray();
         }
     }
+    // Every house reuses the identical GPU geometry. These appearance edits
+    // affect only one placed instance and one glTF material, never Phoenix GLB.
+    private void chooseBuildingMaterial(){
+        if(importing){message("Дождись загрузки");return;}
+        surface.queueEvent(()->{
+            final String[] raw=nativeSelectedMaterials();
+            if(raw==null||raw.length==0){message("Выбери дом GLB в городе");return;}
+            final String[] labels=new String[raw.length];
+            final int[] ids=new int[raw.length];
+            for(int i=0;i<raw.length;i++){
+                final int split=raw[i].indexOf('|');
+                if(split<0){message("Ошибка списка материалов");return;}
+                try{ids[i]=Integer.parseInt(raw[i].substring(0,split));}
+                catch(NumberFormatException e){message("Неверный индекс материала");return;}
+                labels[i]="🎨 "+raw[i].substring(split+1);
+            }
+            ui(()->new AlertDialog.Builder(this)
+                .setTitle("🏠 Материалы этого дома · другие копии не изменятся")
+                .setItems(labels,(d,which)->editBuildingMaterial(ids[which],labels[which]))
+                .setNegativeButton("Закрыть",null).show());
+        });
+    }
+    private void editBuildingMaterial(int id,String label){
+        final String[] actions={
+            "🌈 Изменить оттенок / затемнить / осветлить",
+            "🧱 Использовать мою текстуру только здесь",
+            "↺ Восстановить исходный цвет",
+            "↺ Восстановить исходную текстуру"};
+        new AlertDialog.Builder(this)
+            .setTitle(label+" · только выбранный экземпляр")
+            .setItems(actions,(d,action)->{
+                if(action==0)chooseMaterialTint(id);
+                else if(action==1)chooseMaterialTexture(id);
+                else if(action==2)edit(()->{
+                    if(!nativeTintSelectedMaterial(id,1.f,1.f,1.f))
+                        message("Не удалось вернуть цвет материала");
+                });
+                else edit(()->{
+                    if(!nativeTextureSelectedMaterial(id,""))
+                        message("Не удалось вернуть текстуру материала");
+                });
+            }).setNegativeButton("Отмена",null).show();
+    }
+    private void chooseMaterialTint(int id){
+        final String[] colors={
+            "Исходный цвет","Темнее 30%","Темнее 50%","Светлее 20%",
+            "Светлее 50%","Красноватая черепица","Коричневый дуб",
+            "Светлый известняк","Тёмный сланец","Зелёная патина",
+            "Холодный камень"};
+        final float[][] rgb={
+            {1.f,1.f,1.f},{.7f,.7f,.7f},{.5f,.5f,.5f},{1.2f,1.2f,1.2f},
+            {1.5f,1.5f,1.5f},{1.35f,.74f,.65f},{.80f,.60f,.41f},
+            {1.30f,1.21f,1.10f},{.62f,.70f,.83f},{.65f,.95f,.63f},
+            {.83f,.93f,1.14f}};
+        new AlertDialog.Builder(this)
+            .setTitle("🌈 Цвет материала · другие дома без изменений")
+            .setItems(colors,(d,choice)->{
+                final float[] tint=rgb[choice];
+                edit(()->{
+                    if(nativeTintSelectedMaterial(id,tint[0],tint[1],tint[2]))
+                        message("Новый оттенок выбран только для этого дома");
+                    else message("Не получилось изменить материал");
+                });
+            }).setNegativeButton("Отмена",null).show();
+    }
+    private void chooseMaterialTexture(int materialId){
+        try{
+            File[] files=textureDir().listFiles((d,name)->validTexture(name));
+            if(files==null||files.length==0){
+                message("Добавь PNG/JPG через вкладку «Текстуры»");return;
+            }
+            Arrays.sort(files,(a,b)->a.getName().compareTo(b.getName()));
+            String[] labels=new String[files.length];
+            for(int i=0;i<files.length;i++)
+                labels[i]="🧱 "+files[i].getName().substring(3,15);
+            new AlertDialog.Builder(this).setTitle("Текстура только выбранного материала")
+                .setItems(labels,(d,which)->
+                    usePaintTextureForMaterial(files[which].getName(),materialId))
+                .setNegativeButton("Отмена",null).show();
+        }catch(Exception e){message("Не открыть текстуры: "+e.getMessage());}
+    }
+    private void usePaintTextureForMaterial(String key,int materialId){
+        if(importing)return;
+        importing=true;
+        new Thread(()->{
+            try{
+                if(!validTexture(key))throw new Exception("Неверный ключ текстуры");
+                File file=new File(textureDir(),key);
+                if(!file.isFile()||file.length()>ProjectArchive.MAX_TEXTURE_BYTES)
+                    throw new Exception("Текстура не найдена");
+                byte[] bytes=Files.readAllBytes(file.toPath());
+                String mime=textureType(bytes);
+                if(!key.equals(textureKey(bytes,mime)))
+                    throw new Exception("Повреждена текстура");
+                TextureReader.Image img=TextureReader.decode(bytes,mime,1024);
+                surface.queueEvent(()->{
+                    final boolean ok=nativeRegisterPaintTexture(key,img.bytes,img.width,img.height)
+                        &&nativeTextureSelectedMaterial(materialId,key);
+                    importing=false;
+                    if(ok)message("Текстура назначена этому материалу · другие дома без изменений");
+                    else message("Не применить материал: GPU-память или другой объект выбран");
+                    surface.requestRender();
+                });
+            }catch(Exception e){importing=false;message("Текстура: "+e.getMessage());}
+        },"oe-material-texture").start();
+    }
     private void pickPaintTexture(){
         if(importing){message("Дождись загрузки");return;}
         Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -1159,7 +1416,7 @@ public class EditorActivity extends Activity {
                         activePaintKey=key;
                         message("Текстура добавлена · теперь нанеси её на деталь или землю");
                         surface.requestRender();
-                    }else message("Лимит текстур/памяти GPU. Максимум 8 изображений.");
+                    }else message("Лимит памяти GPU или 32 разных текстуры.");
                 });
             }catch(Exception err){
                 importing=false;message("Текстура не добавлена: "+err.getMessage());
@@ -1358,23 +1615,8 @@ public class EditorActivity extends Activity {
     }
     private void selectLibraryObject(AssetLibrary.Entry entry){
         if(importing){message("Подожди: предыдущая модель загружается");return;}
-        // The original 53 MiB stylized-building GLB is a single multi-house
-        // scene, not a standalone house. Parsing/decoding the whole file plus
-        // uploading its textures can exhaust a 4 GiB tablet, causing a freeze.
-        // Keep the full byte-identical GLB safely in the APK for later offline
-        // splitting, but do not start a doomed import on the GLES tablet.
-        if(entry.path.toLowerCase(Locale.ROOT).endsWith(".glb")&&
-           entry.bytes>24L*1024*1024){
-            new AlertDialog.Builder(this)
-                .setTitle("Тяжёлая объединённая модель")
-                .setMessage("«"+entry.label()+"» — "+(entry.bytes/(1024*1024))+
-                    " МиБ. Это целая сцена домов одним GLB, а не отдельный дом. "+
-                    "Загрузка целиком может зависнуть на планшете. "+
-                    "Используй отдельные дома из раздела «Дома». "+
-                    "Исходная модель и все текстуры сохранены внутри APK без изменений.")
-                .setPositiveButton("Понятно",null).show();
-            return;
-        }
+        // Validate actual geometry, decoded textures and memory in the GLB
+        // importer instead of rejecting valid 26-64 MiB houses up front.
         importing=true;
         message("Загружаю отдельно: "+entry.label());
         new Thread(()->{
@@ -1414,7 +1656,8 @@ public class EditorActivity extends Activity {
                             surface.queueEvent(()->{
                                 final boolean ok=nativeRegisterAsset(key,mesh.vertices,
                                         mesh.boundCenterY,mesh.boundRadius,mesh.draws,
-                                        mesh.imageData,mesh.imageInfo,mesh.previewOmitsRig);
+                                        mesh.imageData,mesh.imageInfo,mesh.pbrTextures,mesh.pbrFactors,
+                                        mesh.materialIds,mesh.materialNames,mesh.previewOmitsRig);
                                 importing=false;
                                 if(ok){
                                     ui(()->enterPlaceMode(6,key));
@@ -1461,16 +1704,42 @@ public class EditorActivity extends Activity {
             }
             return;
         }
-        if(requestCode!=PICK_GLB || resultCode!=RESULT_OK || intent==null || intent.getData()==null)return;
+        if((requestCode!=PICK_GLB&&requestCode!=PHOENIX_BUILDER)||
+           resultCode!=RESULT_OK||intent==null||intent.getData()==null)return;
         final Uri uri=intent.getData();
+        final File phoenixTemp;
+        if(requestCode==PHOENIX_BUILDER){
+            try{
+                if(!"file".equals(uri.getScheme())||uri.getPath()==null)
+                    throw new Exception("Phoenix не передал GLB");
+                File candidate=new File(uri.getPath()).getCanonicalFile();
+                File allowed=new File(getCacheDir(),"phoenix-export").getCanonicalFile();
+                if(!candidate.getPath().startsWith(allowed.getPath()+File.separator)||
+                   !candidate.isFile()||candidate.length()<20||
+                   candidate.length()>GlbReader.MAX_BYTES)
+                    throw new Exception("Неподдерживаемый размер GLB для текущего импортёра (до "+
+                        (GlbReader.MAX_BYTES/(1024*1024))+" МиБ). "+
+                        "Большой оригинал можно сохранить отдельно.");
+                phoenixTemp=candidate;
+            }catch(Exception e){
+                message("Phoenix → OE: "+e.getMessage());return;
+            }
+        }else phoenixTemp=null;
         if(importing)return;
         importing=true;
         message("Распознаю GLB / glTF / VOX…");
         new Thread(() -> {
             try {
-                InputStream stream=getContentResolver().openInputStream(uri);
+                InputStream stream=phoenixTemp==null?
+                    getContentResolver().openInputStream(uri):
+                    new java.io.FileInputStream(phoenixTemp);
                 if(stream==null)throw new Exception("Не удалось открыть файл");
-                byte[] original=limitedRead(stream);
+                byte[] original;
+                try{original=limitedRead(stream);}
+                finally{
+                    if(phoenixTemp!=null&&!phoenixTemp.delete())
+                        android.util.Log.w("OE","Phoenix staging GLB cleanup failed");
+                }
                 UniversalModelReader.Converted converted=UniversalModelReader.convert(original);
                 byte[] bytes=converted.glb;
                 final String key=GlbReader.key(bytes);
@@ -1511,7 +1780,9 @@ public class EditorActivity extends Activity {
                                 surface.queueEvent(() -> {
                                     boolean success=nativeRegisterAsset(key,model.vertices,
                                             model.boundCenterY,model.boundRadius,
-                                            model.draws,model.imageData,model.imageInfo,model.previewOmitsRig);
+                                            model.draws,model.imageData,model.imageInfo,
+                                            model.pbrTextures,model.pbrFactors,
+                                            model.materialIds,model.materialNames,model.previewOmitsRig);
                                     importing=false;
                                     if(success){
                                         surface.requestRender();
@@ -1523,7 +1794,7 @@ public class EditorActivity extends Activity {
                                             final String alert=notice;
                                             ui(() -> statusText.setText(alert));
                                             message("Модель импортирована. "+notice);
-                                        }else message("Модель готова: "+model.triangles+" треугольников. Коснись карты.");
+                                        }else message("Модель готова: "+model.triangles+" треугольников. Коснись карты, затем 💾 Сохранить город.");
                                     }else message("Не удалось загрузить модель: память, лимит или GPU");
                                 });
                             }catch(Exception e){
@@ -1568,7 +1839,8 @@ public class EditorActivity extends Activity {
                 byte[] buffer=new byte[4096];
                 int count;
                 while((count=in.read(buffer))!=-1){
-                    if(jsonBytes.size()+count>200000)throw new Exception("Файл сцены слишком большой");
+                    if(jsonBytes.size()+count>ProjectArchive.MAX_SCENE_BYTES)
+                        throw new Exception("Файл сцены слишком большой");
                     jsonBytes.write(buffer,0,count);
                 }
             }catch(java.io.FileNotFoundException missing){
@@ -1660,6 +1932,10 @@ public class EditorActivity extends Activity {
             }
             String[] modelKeys=new String[arr.length()];
             String[] objectPaintKeys=new String[arr.length()];
+            final int[] styleCounts=new int[arr.length()];
+            final java.util.ArrayList<Integer> styleIdList=new java.util.ArrayList<>();
+            final java.util.ArrayList<Float> styleColorList=new java.util.ArrayList<>();
+            final java.util.ArrayList<String> styleTextureList=new java.util.ArrayList<>();
             HashSet<String> referencedPaint=new HashSet<>();
             JSONArray paintJson=document.optJSONArray("terrainPaint");
             int paintCount=paintJson==null?0:paintJson.length();
@@ -1716,6 +1992,35 @@ public class EditorActivity extends Activity {
                     referencedPaint.add(e.paint);
                 }
                 objectPaintKeys[i]=e.paint;
+                JSONArray styles=object.optJSONArray("materialStyles");
+                if(object.has("materialStyles")&&styles==null)
+                    throw new Exception("Неверные варианты материалов "+i);
+                if(styles!=null){
+                    if(e.type!=6||styles.length()>64)
+                        throw new Exception("Слишком много материалов у объекта "+i);
+                    styleCounts[i]=styles.length();
+                    final HashSet<Integer> seenStyleIds=new HashSet<>();
+                    for(int st=0;st<styles.length();st++){
+                        JSONArray style=styles.getJSONArray(st);
+                        if(style.length()!=5)throw new Exception("Неверная запись материала");
+                        int matId=style.getInt(0);
+                        if(matId<-1||matId>511||!seenStyleIds.add(matId))
+                            throw new Exception("Недопустимый или повторный материал "+matId);
+                        styleIdList.add(matId);
+                        for(int ch=1;ch<=3;ch++){
+                            double value=style.getDouble(ch);
+                            if(!Double.isFinite(value)||value<0||value>2)
+                                throw new Exception("Недопустимый цвет материала");
+                            styleColorList.add((float)value);
+                        }
+                        String tex=style.getString(4);
+                        if(!tex.isEmpty()){
+                            if(!validTexture(tex))throw new Exception("Неверная текстура материала");
+                            referencedPaint.add(tex);
+                        }
+                        styleTextureList.add(tex);
+                    }
+                }
                 if(e.type==6){
                     e.asset=object.getString("asset");
                     if(!validAsset(e.asset))throw new Exception("Неверная ссылка модели");
@@ -1737,8 +2042,13 @@ public class EditorActivity extends Activity {
                 transforms[i*12+11]=e.qw;
                 modelKeys[i]=e.asset;
             }
+            final int[] styleIds=new int[styleIdList.size()];
+            final float[] styleColors=new float[styleColorList.size()];
+            final String[] styleTextures=styleTextureList.toArray(new String[0]);
+            for(int i=0;i<styleIds.length;i++)styleIds[i]=styleIdList.get(i);
+            for(int i=0;i<styleColors.length;i++)styleColors[i]=styleColorList.get(i);
             if(assets.size()>MAX_ASSETS)throw new Exception("Слишком много разных GLB-моделей");
-            if(referencedPaint.size()>8)throw new Exception("Слишком много текстур (макс. 8)");
+            if(referencedPaint.size()>32)throw new Exception("Слишком много разных текстур (макс. 32)");
             Map<String,TextureReader.Image> paintImages=new LinkedHashMap<>();
             for(String key:referencedPaint){
                 File texture=new File(sourceTextures==null?textureDir():sourceTextures,key);
@@ -1837,17 +2147,19 @@ public class EditorActivity extends Activity {
                             throw new Exception("Лимит памяти пользовательских текстур: "+entry.getKey());
                     }
                     if(!nativeCanRegisterMore(missing.size()))
-                        throw new Exception("Недостаточно свободных слотов GLB (макс. 12)");
+                        throw new Exception("Недостаточно свободных слотов уникальных GLB (до 32)");
                     for(Map.Entry<String,GlbReader.Result> entry:missing.entrySet()){
                         GlbReader.Result mesh=entry.getValue();
                         if(!nativeRegisterAsset(entry.getKey(),mesh.vertices,
                                 mesh.boundCenterY,mesh.boundRadius,
-                                mesh.draws,mesh.imageData,mesh.imageInfo,mesh.previewOmitsRig))
+                                mesh.draws,mesh.imageData,mesh.imageInfo,mesh.pbrTextures,mesh.pbrFactors,
+                                        mesh.materialIds,mesh.materialNames,mesh.previewOmitsRig))
                             throw new Exception("Ошибка загрузки GPU: "+entry.getKey());
                         uploaded.add(entry.getKey());
                     }
                     if(!nativeReplaceScene(worldSize,demoRoads,kinds,transforms,modelKeys,
-                            terrainBrushes,objectPaintKeys,paintBrushes,paintBrushKeys,
+                            terrainBrushes,objectPaintKeys,styleCounts,styleIds,
+                            styleColors,styleTextures,paintBrushes,paintBrushKeys,
                             roadIds,roadWidths,roadMarkings,roadCounts,roadMaterials,roadCoordinates,
                             roadSidewalks,roadCrosswalks))
                         throw new Exception("Сцена не прошла полную проверку в движке");
@@ -1932,14 +2244,19 @@ public class EditorActivity extends Activity {
                 @Override public void onSurfaceCreated(javax.microedition.khronos.opengles.GL10 gl,
                                                         javax.microedition.khronos.egl.EGLConfig config) {
                     nativeInit();
+                    nativeSetImportedLighting(glbSoftLighting);
+                    nativeSetTextureSampling(textureSamplingMode);
                     gpuCapabilities=nativeGetGpuCapabilities();
-                    final int tier=qualityChoice<0?nativeRecommendQuality(deviceRamMiB):qualityChoice;
-                    if(nativeSetQualityProfile(tier)){
-                        qualityActive=tier;
-                        textureLimit=tier==3?2048:1024;
-                        final float scale=nativeQualityScale(tier);
-                        ui(()->applyRenderScale(scale));
-                    }
+                    // Stable native geometry/detail profile is chosen for the
+                    // tablet independently of the screen-resolution setting.
+                    // Moving the resolution slider MUST NOT regenerate LODs,
+                    // downsample GLB preview textures, or modify source GLBs.
+                    final int rendererTier=nativeRecommendQuality(deviceRamMiB);
+                    if(nativeSetQualityProfile(rendererTier))
+                        qualityActive=rendererTier;
+                    final int displayTier=qualityChoice<0?rendererTier:qualityChoice;
+                    final float scale=nativeQualityScale(displayTier);
+                    ui(()->applyRenderScale(scale));
                     refreshSelected();
                 }
                 @Override public void onSurfaceChanged(javax.microedition.khronos.opengles.GL10 gl, int w, int h) {

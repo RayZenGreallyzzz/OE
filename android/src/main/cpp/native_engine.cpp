@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <chrono>
 #include <mutex>
@@ -31,24 +32,37 @@ struct Vec3 {float x, y, z;};
 struct Vec4 {float x, y, z, w;};
 struct Mat4 {float m[16]{};};
 struct Mesh {GLuint vao=0, buffer=0; GLsizei count=0;};
+struct MaterialStyle {
+ Vec3 tint{1.f,1.f,1.f}; // linear multiplier, allows soft bright/dark variants
+ std::string texture;    // shared content-addressed texture key
+};
 struct Entity {int id=0, type=0; float x=0, z=0, yaw=0, size=1; std::string asset;
  float y=0.f, sx=1.f,sy=1.f,sz=1.f; std::string paint;
  // Extra world-space orientation is optional in v1 scenes. Existing yaw is
  // folded into this normalized quaternion on first 3-axis rotation.
  float qx=0.f,qy=0.f,qz=0.f,qw=1.f;
+ std::unordered_map<int,MaterialStyle> materialStyles; // local to this clone
 };
 struct Color {float r,g,b;};
 struct Shader {
  GLuint program=0;
  GLint locMvp=-1, locModel=-1, locColor=-1, locLight=-1;
- GLint locTexture=-1,locTextured=-1,locPaintOverride=-1,locOverlay=-1,locPaintCenter=-1,locPaintRadius=-1;
+ GLint locTexture=-1,locTextured=-1,locPaintOverride=-1,locOverlay=-1,locPaintCenter=-1,locPaintRadius=-1,locImportedLighting=-1;
+ GLint locNormalTexture=-1,locOrmTexture=-1,locUseNormalMap=-1,locUseOrmMap=-1;
+ GLint locMetallic=-1,locRoughness=-1,locNormalScale=-1,locCameraPos=-1;
 };
 struct TextureResource {
  GLuint id=0;
  int width=0,height=0,format=0; // 0 RGBA8, 1 ETC2 RGB, 2 ETC2 RGBA
+ bool mipmapsReady=false; // GPU-only: reset on EGL context recreation.
  std::vector<unsigned char> bytes; // Retained to restore an EGL context.
 };
-struct AssetBatch {int first=0,count=0,texture=-1;};
+struct AssetBatch {
+ int first=0,count=0,texture=-1;
+ int normalTexture=-1,metallicRoughnessTexture=-1;
+ float roughness=1.f,metallic=1.f,normalScale=1.f;
+ int materialId=-1;
+};
 struct AssetLod{
  Mesh gpu;
  std::vector<float> vertices;
@@ -59,9 +73,12 @@ struct Asset {
  int vertexStride=9;
  std::vector<float> vertices; // Retained for GPU context recreation.
  std::vector<AssetBatch> batches;
+ std::vector<std::string> materialNames;
  std::vector<TextureResource> textures;
  std::array<AssetLod,2> lods; // Tier 1/2, original remains tier 0.
  float centerY=0.f, radius=0.f;
+ // Metric bounds for imported-model picking, framing and size readout.
+ float minX=0.f,maxX=0.f,minY=0.f,maxY=0.f,minZ=0.f,maxZ=0.f;
 };
 static Mesh gMeshes[3];
 static Mesh gStaticMeshes[17];
@@ -78,12 +95,18 @@ struct TerrainGpu {
 static TerrainGpu gTerrain;
 static int gDrawCalls=0,gTriangles=0;
 static int gQualityTier=oe::Low;
+static bool gImportedSoftLighting=true; // Default for owner GLB models; can revert in OE settings.
+static int gTextureSampling=2; // 0 bilinear, 1 trilinear, 2 trilinear + 4x aniso if supported
+static bool gAnisotropicAvailable=false;
+static GLfloat gMaxAnisotropy=1.f;
+static constexpr GLenum kTextureMaxAnisotropy=0x84FE; // GL_TEXTURE_MAX_ANISOTROPY_EXT
+static constexpr GLenum kMaxTextureMaxAnisotropy=0x84FF; // GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT
 static float gSubmitCpuMs=0.f;
 const oe::QualityProfile&quality(){return oe::profile(gQualityTier);}
 static std::unordered_map<std::string,Asset> gAssets;
 static std::unordered_map<std::string,TextureResource> gPaintTextures;
-static constexpr size_t MAX_PAINT_TEXTURES=8,MAX_PAINT_CACHE_BYTES=32u*1024u*1024u;
-static constexpr size_t MAX_TEXTURE_CACHE_BYTES=96u*1024u*1024u;
+static constexpr size_t MAX_PAINT_TEXTURES=32,MAX_PAINT_CACHE_BYTES=96u*1024u*1024u;
+static constexpr size_t MAX_TEXTURE_CACHE_BYTES=128u*1024u*1024u;
 static constexpr size_t MAX_LOD_CACHE_BYTES=40u*1024u*1024u;
 static int gLodDrawCounts[3]={0,0,0};
 size_t lodCacheBytes(){
@@ -104,7 +127,7 @@ size_t textureCacheBytes(){
 // Up to 32 *distinct* meshes; many scene instances share one GPU asset.
 // Still bounded by MAX_TEXTURE_CACHE_BYTES and MAX_LOD_CACHE_BYTES.
 static constexpr int MAX_ASSETS=32;
-static constexpr int MAX_IMPORTED_TRIANGLES=90000;
+static constexpr int MAX_IMPORTED_TRIANGLES=240000;
 static Shader gShader;
 static std::vector<Entity> gEntities;
 static int gNextId=1, gSelected=0, gWidth=1, gHeight=1;
@@ -275,7 +298,10 @@ Mat4 entityModelMatrix(const Entity&e){
             mul(translate({0.f,-pivot,0.f}),objectScale));
 }
 Mat4 perspective(float aspect){
- float f=1/std::tan(PI/6), near=.1f, far=560.f;Mat4 m;
+ // Move the far plane with the camera. 560m clipped 700m castles.
+ const float near=std::max(.1f,gDistance*.001f);
+ const float far=std::max(1800.f,gDistance*3.f+500.f);
+ float f=1/std::tan(PI/6);Mat4 m;
  m.m[0]=f/aspect;m.m[5]=f;
  m.m[10]=(far+near)/(near-far);m.m[11]=-1;
  m.m[14]=2*far*near/(near-far);return m;
@@ -370,7 +396,8 @@ void buildStaticLods(Asset&asset){
    if(n<90||n%3!=0){
     const int first=static_cast<int>(lod.vertices.size()/11);
     lod.vertices.insert(lod.vertices.end(),src,src+n*11);
-    lod.batches.push_back({first,static_cast<int>(n),batch.texture});continue;
+    AssetBatch newBatch=batch;newBatch.first=first;newBatch.count=static_cast<int>(n);
+    lod.batches.push_back(newBatch);continue;
    }
    std::vector<unsigned int> remap(n),indices(n);
    const size_t unique=meshopt_generateVertexRemap(
@@ -397,7 +424,9 @@ void buildStaticLods(Asset&asset){
        welded.begin()+(index+1)*11);
     }
    }else lod.vertices.insert(lod.vertices.end(),src,src+n*11);
-   lod.batches.push_back({first,static_cast<int>(use?count:n),batch.texture});
+   AssetBatch newBatch=batch;newBatch.first=first;
+   newBatch.count=static_cast<int>(use?count:n);
+   lod.batches.push_back(newBatch);
   }
   // A tier must measurably reduce draw geometry, or it is disabled.
   const size_t limit=static_cast<size_t>(asset.vertices.size()*
@@ -407,9 +436,54 @@ void buildStaticLods(Asset&asset){
   }
  }
 }
+// All operations here execute on the GLES thread. Mip levels are GPU-only;
+// the original embedded model/PNG/KTX2 bytes are never resampled on disk.
+void detectTextureFilterCapabilities(){
+ gAnisotropicAvailable=false;
+ gMaxAnisotropy=1.f;
+ GLint count=0;
+ glGetIntegerv(GL_NUM_EXTENSIONS,&count);
+ for(GLint i=0;i<count&&i<2048;i++){
+  const GLubyte*value=glGetStringi(GL_EXTENSIONS,static_cast<GLuint>(i));
+  if(value&&std::strcmp(reinterpret_cast<const char*>(value),
+                         "GL_EXT_texture_filter_anisotropic")==0){
+   gAnisotropicAvailable=true;break;
+  }
+ }
+ if(gAnisotropicAvailable){
+  glGetFloatv(kMaxTextureMaxAnisotropy,&gMaxAnisotropy);
+  if(glGetError()!=GL_NO_ERROR||!std::isfinite(gMaxAnisotropy)||
+     gMaxAnisotropy<1.f){
+   gAnisotropicAvailable=false;gMaxAnisotropy=1.f;
+  }
+ }
+}
+void configureTextureFiltering(TextureResource&tex){
+ if(!tex.id)return;
+ glActiveTexture(GL_TEXTURE0);
+ glBindTexture(GL_TEXTURE_2D,tex.id);
+ // The supplied ETC2/KTX2 payload contains base level only. GLES drivers
+ // may reject mip generation for compressed ETC2, so keep it bilinear.
+ if(gTextureSampling>=1&&tex.format==0&&!tex.mipmapsReady){
+  glGenerateMipmap(GL_TEXTURE_2D);
+  const GLenum result=glGetError();
+  if(result==GL_NO_ERROR)tex.mipmapsReady=true;
+  else __android_log_print(ANDROID_LOG_WARN,"OE",
+       "GLB mipmap generation unavailable (0x%x); using bilinear",result);
+ }
+ glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,
+   gTextureSampling>=1&&tex.mipmapsReady?GL_LINEAR_MIPMAP_LINEAR:GL_LINEAR);
+ glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+ if(gAnisotropicAvailable){
+  const GLfloat aniso=(gTextureSampling>=2&&tex.mipmapsReady)?
+      std::min(4.f,gMaxAnisotropy):1.f;
+  glTexParameterf(GL_TEXTURE_2D,kTextureMaxAnisotropy,aniso);
+ }
+ glBindTexture(GL_TEXTURE_2D,0);
+}
 bool uploadTextures(Asset&asset){
  for(auto&tex:asset.textures){
-  tex.id=0;
+  tex.id=0;tex.mipmapsReady=false;
   glGenTextures(1,&tex.id);
   if(!tex.id)return false;
   glActiveTexture(GL_TEXTURE0);
@@ -428,6 +502,8 @@ bool uploadTextures(Asset&asset){
      static_cast<GLsizei>(tex.bytes.size()),tex.bytes.data());
   }
   glPixelStorei(GL_UNPACK_ALIGNMENT,4);
+  if(glGetError()!=GL_NO_ERROR)return false;
+  configureTextureFiltering(tex);
   if(glGetError()!=GL_NO_ERROR)return false;
  }
  glBindTexture(GL_TEXTURE_2D,0);
@@ -454,6 +530,7 @@ GLuint shader(GLenum kind,const char*src){
  return s;
 }
 void setupGL(){
+ detectTextureFilterCapabilities();
  const char*vert=R"(#version 300 es
  layout(location=0) in vec3 aPos;
  layout(location=1) in vec3 aNormal;
@@ -467,12 +544,129 @@ void setupGL(){
  out vec3 vWorldPos;
  void main(){
    gl_Position=uMvp*vec4(aPos,1.0);
-   vNormal=normalize(mat3(uModel)*aNormal);
+   // Inverse-transpose preserves correct lighting under non-uniform
+   // placement scaling (e.g. a tall medieval tower stretched on Y).
+   vNormal=normalize(transpose(inverse(mat3(uModel)))*aNormal);
    vColor=aColor;
    vUV=aUV;
    vWorldPos=(uModel*vec4(aPos,1.0)).xyz;
  })";
  const char*frag=R"(#version 300 es
+ precision highp float;
+ in vec3 vNormal;
+ in vec3 vColor;
+ in vec2 vUV;
+ in vec3 vWorldPos;
+ uniform vec3 uColor;
+ uniform sampler2D uTexture;
+ uniform sampler2D uNormalTexture;
+ uniform sampler2D uOrmTexture;
+ uniform float uUseTexture;
+ uniform float uUseNormalMap;
+ uniform float uUseOrmMap;
+ uniform float uMetallic;
+ uniform float uRoughness;
+ uniform float uNormalScale;
+ uniform vec3 uCameraPos;
+ uniform float uHighlight;
+ uniform float uPaintOverride;
+ uniform float uOverlay;
+ uniform vec2 uPaintCenter;
+ uniform float uPaintRadius;
+ uniform float uImportedLighting;
+ out vec4 fragColor;
+ vec3 srgbToLinear(vec3 v){
+   v=clamp(v,0.,1.);
+   vec3 low=v/12.92;
+   vec3 high=pow((v+.055)/1.055,vec3(2.4));
+   return mix(low,high,step(vec3(.04045),v));
+ }
+ vec3 linearToSrgb(vec3 v){
+   v=clamp(v,0.,1.);
+   vec3 low=v*12.92;
+   vec3 high=1.055*pow(v,vec3(1./2.4))-.055;
+   return mix(low,high,step(vec3(.0031308),v));
+ }
+ void main(){
+   float sun=max(dot(normalize(vNormal),normalize(vec3(-.55,1.,.5))),0.);
+   vec4 texel=uUseTexture>.5?texture(uTexture,vUV):vec4(1.);
+   if(uOverlay>.5){
+     float dist=length(vWorldPos.xz-uPaintCenter)/max(uPaintRadius,.001);
+     texel.a*=1.0-smoothstep(.82,1.0,dist);
+   }
+   if(texel.a<(uOverlay>.5?.01:.45))discard;
+   vec3 tint=mix(vColor,vec3(1.),uPaintOverride);
+   vec3 color=uColor*tint*texel.rgb*(.52+.48*sun);
+   if(uImportedLighting>.5){
+     // glTF metallic-roughness PBR preview; GLB source bytes stay immutable.
+     // Vertex/material factors are linear; baseColor texture is sRGB.
+     vec3 base=srgbToLinear(texel.rgb)*
+               max(uColor,vec3(0.))*clamp(tint,0.,1.);
+     float metallic=clamp(uMetallic,0.,1.);
+     float roughness=clamp(uRoughness,0.,1.);
+     if(uUseOrmMap>.5){
+       // glTF packed occlusion(R), roughness(G), metallic(B); no AO yet.
+       vec3 orm=texture(uOrmTexture,vUV).rgb;
+       roughness*=orm.g;
+       metallic*=orm.b;
+     }
+     roughness=clamp(roughness,.07,1.);
+     vec3 N=normalize(vNormal);
+     if(uUseNormalMap>.5){
+       // Derivative TBN works for static glTF UV0, including mirrored UVs,
+       // without changing the owner's original vertex format or source GLB.
+       vec3 dpdx=dFdx(vWorldPos),dpdy=dFdy(vWorldPos);
+       vec2 dtdx=dFdx(vUV),dtdy=dFdy(vUV);
+       float uvDet=dtdx.x*dtdy.y-dtdx.y*dtdy.x;
+       if(abs(uvDet)>0.0000001){
+         vec3 T=normalize((dpdx*dtdy.y-dpdy*dtdx.y)/uvDet);
+         T=normalize(T-N*dot(N,T));
+         vec3 B=normalize(cross(N,T))*sign(uvDet);
+         vec3 mapN=texture(uNormalTexture,vUV).xyz*2.-1.;
+         mapN.xy*=uNormalScale;
+         N=normalize(T*mapN.x+B*mapN.y+N*mapN.z);
+       }
+     }
+     vec3 L=normalize(vec3(-.55,1.,.5));
+     vec3 V=normalize(uCameraPos-vWorldPos);
+     vec3 H=normalize(L+V);
+     float NoL=max(dot(N,L),0.);
+     float NoV=max(dot(N,V),.001);
+     float NoH=max(dot(N,H),0.);
+     float VoH=max(dot(V,H),0.);
+     float alpha=roughness*roughness;
+     float alpha2=alpha*alpha;
+     float distribution=alpha2/
+       (3.14159265*pow(NoH*NoH*(alpha2-1.)+1.,2.)+.000001);
+     float k=pow(roughness+1.,2.)*.125;
+     float geometry=(NoV/(NoV*(1.-k)+k))*
+                    (NoL/(NoL*(1.-k)+k));
+     vec3 F0=mix(vec3(.04),base,metallic);
+     vec3 fresnel=F0+(1.-F0)*pow(1.-VoH,5.);
+     vec3 diffuse=(1.-fresnel)*(1.-metallic)*base/3.14159265;
+     vec3 specular=distribution*geometry*fresnel/
+                     max(4.*NoV*NoL,.001);
+     float sky=clamp(N.y*.5+.5,0.,1.);
+     vec3 ambient=base*(1.-metallic)*vec3(.22,.24,.28)*
+                 (.75+.25*sky)+F0*.035;
+     vec3 lit=ambient+(diffuse+specular)*vec3(2.35,2.12,1.90)*NoL;
+     color=linearToSrgb(lit);
+   }
+   color=mix(color,vec3(.99,.72,.30),uHighlight*.30);
+   fragColor=vec4(color,texel.a);
+ })";
+ GLuint v=shader(GL_VERTEX_SHADER,vert),f=shader(GL_FRAGMENT_SHADER,frag);
+ gShader.program=glCreateProgram();
+ glAttachShader(gShader.program,v);glAttachShader(gShader.program,f);
+ glLinkProgram(gShader.program);glDeleteShader(v);glDeleteShader(f);
+ GLint linked=GL_FALSE;glGetProgramiv(gShader.program,GL_LINK_STATUS,&linked);
+ if(!linked){
+  __android_log_print(ANDROID_LOG_ERROR,"OE",
+    "GLB PBR shader unsupported by this GLES device: falling back to legacy");
+  glDeleteProgram(gShader.program);
+  // GLES3 implementations differ. An unsupported optional PBR shader MUST
+  // NOT break terrain, editor gizmos, or the owner's loaded city.
+  const char*fallbackFrag=R"(#version 300 es
  precision mediump float;
  in vec3 vNormal;
  in vec3 vColor;
@@ -486,26 +680,61 @@ void setupGL(){
  uniform float uOverlay;
  uniform vec2 uPaintCenter;
  uniform float uPaintRadius;
+ uniform float uImportedLighting;
  out vec4 fragColor;
  void main(){
    float sun=max(dot(normalize(vNormal),normalize(vec3(-.55,1.,.5))),0.);
    vec4 texel=uUseTexture>.5?texture(uTexture,vUV):vec4(1.);
    if(uOverlay>.5){
      float dist=length(vWorldPos.xz-uPaintCenter)/max(uPaintRadius,.001);
-     texel.a*=1.0-smoothstep(.82,1.0,dist);
+     texel.a*=1.-smoothstep(.82,1.,dist);
    }
    if(texel.a<(uOverlay>.5?.01:.45))discard;
    vec3 tint=mix(vColor,vec3(1.),uPaintOverride);
    vec3 color=uColor*tint*texel.rgb*(.52+.48*sun);
+   if(uImportedLighting>.5){
+     vec3 n=normalize(vNormal);
+     float sky=clamp(n.y*.5+.5,0.,1.);
+     vec3 ambient=vec3(.36,.39,.45)*(.75+.25*sky);
+     vec3 daylight=vec3(.71,.67,.60)*sun;
+     vec3 linearTexture=pow(clamp(texel.rgb,0.,1.),vec3(2.2));
+     vec3 linearFactor=clamp(uColor*tint,0.,1.);
+     vec3 litLinear=clamp(linearTexture*linearFactor*(ambient+daylight),0.,1.);
+     color=pow(litLinear,vec3(1.0/2.2));
+   }
    color=mix(color,vec3(.99,.72,.30),uHighlight*.30);
    fragColor=vec4(color,texel.a);
  })";
- GLuint v=shader(GL_VERTEX_SHADER,vert),f=shader(GL_FRAGMENT_SHADER,frag);
- gShader.program=glCreateProgram();
- glAttachShader(gShader.program,v);glAttachShader(gShader.program,f);
- glLinkProgram(gShader.program);glDeleteShader(v);glDeleteShader(f);
- GLint linked=GL_FALSE;glGetProgramiv(gShader.program,GL_LINK_STATUS,&linked);
- if(!linked)__android_log_print(ANDROID_LOG_ERROR,"OE","GL shader link failed");
+  const char*fallbackVert=R"(#version 300 es
+ layout(location=0) in vec3 aPos;
+ layout(location=1) in vec3 aNormal;
+ layout(location=2) in vec3 aColor;
+ layout(location=3) in vec2 aUV;
+ uniform mat4 uMvp;
+ uniform mat4 uModel;
+ out vec3 vNormal;
+ out vec3 vColor;
+ out vec2 vUV;
+ out vec3 vWorldPos;
+ void main(){
+   gl_Position=uMvp*vec4(aPos,1.);
+   vNormal=normalize(mat3(uModel)*aNormal);
+   vColor=aColor;
+   vUV=aUV;
+   vWorldPos=(uModel*vec4(aPos,1.)).xyz;
+ })";
+  GLuint fallbackVertex=shader(GL_VERTEX_SHADER,fallbackVert);
+  GLuint fallbackFragment=shader(GL_FRAGMENT_SHADER,fallbackFrag);
+  gShader.program=glCreateProgram();
+  glAttachShader(gShader.program,fallbackVertex);
+  glAttachShader(gShader.program,fallbackFragment);
+  glLinkProgram(gShader.program);
+  glDeleteShader(fallbackVertex);
+  glDeleteShader(fallbackFragment);
+  glGetProgramiv(gShader.program,GL_LINK_STATUS,&linked);
+  if(!linked)__android_log_print(ANDROID_LOG_ERROR,"OE",
+    "Legacy GLSL fallback also failed: check GPU driver");
+ }
  gShader.locMvp=glGetUniformLocation(gShader.program,"uMvp");
  gShader.locModel=glGetUniformLocation(gShader.program,"uModel");
  gShader.locColor=glGetUniformLocation(gShader.program,"uColor");
@@ -516,11 +745,25 @@ void setupGL(){
  gShader.locOverlay=glGetUniformLocation(gShader.program,"uOverlay");
  gShader.locPaintCenter=glGetUniformLocation(gShader.program,"uPaintCenter");
  gShader.locPaintRadius=glGetUniformLocation(gShader.program,"uPaintRadius");
+ gShader.locImportedLighting=glGetUniformLocation(gShader.program,"uImportedLighting");
+ gShader.locNormalTexture=glGetUniformLocation(gShader.program,"uNormalTexture");
+ gShader.locOrmTexture=glGetUniformLocation(gShader.program,"uOrmTexture");
+ gShader.locUseNormalMap=glGetUniformLocation(gShader.program,"uUseNormalMap");
+ gShader.locUseOrmMap=glGetUniformLocation(gShader.program,"uUseOrmMap");
+ gShader.locMetallic=glGetUniformLocation(gShader.program,"uMetallic");
+ gShader.locRoughness=glGetUniformLocation(gShader.program,"uRoughness");
+ gShader.locNormalScale=glGetUniformLocation(gShader.program,"uNormalScale");
+ gShader.locCameraPos=glGetUniformLocation(gShader.program,"uCameraPos");
  glUseProgram(gShader.program);
  glUniform1i(gShader.locTexture,0);
+ glUniform1i(gShader.locNormalTexture,1);
+ glUniform1i(gShader.locOrmTexture,2);
+ glUniform1f(gShader.locUseNormalMap,0.f);
+ glUniform1f(gShader.locUseOrmMap,0.f);
  glUniform1f(gShader.locTextured,0.f);
  glUniform1f(gShader.locPaintOverride,0.f);
  glUniform1f(gShader.locOverlay,0.f);
+ glUniform1f(gShader.locImportedLighting,0.f);
  for(int kind=0;kind<3;kind++){
   std::vector<float> d=geometry(kind);Mesh &m=gMeshes[kind];m.count=(GLsizei)(d.size()/6);
   glGenVertexArrays(1,&m.vao);glBindVertexArray(m.vao);
@@ -657,7 +900,10 @@ bool importedInView(const Frustum&frustum,const Entity&e){
  const float radius=asset.radius*e.size*std::max({e.sx,e.sy,e.sz});
  const Vec3 center{e.x,e.y+asset.centerY*e.size*e.sy,e.z};
  const Vec3 delta=sub(center,cameraEye());
- const float maxDistance=quality().viewRangeMetres+radius;
+ // LOD culling for small props must not hide a 700m castle when the
+ // camera auto-frames it at ~2.6 bounding radii from its centre.
+ const float maxDistance=std::max(quality().viewRangeMetres+radius,
+     std::min(3200.f,radius*6.f));
  if(dot(delta,delta)>maxDistance*maxDistance)return false;
  return visibleSphere(frustum,center,radius);
 }
@@ -666,6 +912,9 @@ void bindPaint(const TextureResource*paint);
 void drawImported(const Mat4&vp,const Entity&e){
  auto it=gAssets.find(e.asset);
  if(it==gAssets.end()||it->second.gpu.count==0)return;
+ glUniform1f(gShader.locImportedLighting,gImportedSoftLighting?1.f:0.f);
+ const Vec3 eye=cameraEye();
+ glUniform3f(gShader.locCameraPos,eye.x,eye.y,eye.z);
  const Mat4 model=entityModelMatrix(e);
  const Mat4 mvp=mul(vp,model);
  glUniformMatrix4fv(gShader.locMvp,1,GL_FALSE,mvp.m);
@@ -682,9 +931,11 @@ void drawImported(const Mat4&vp,const Entity&e){
   const Vec3 difference=sub(center,cameraEye());
   const float distance=std::sqrt(dot(difference,difference));
   const float sizeScale=std::max(.5f,e.size*std::max({e.sx,e.sy,e.sz}));
-  // Larger objects retain LOD0 longer; no per-frame simplification.
-  const int preferred=distance>125.f*sizeScale*quality().lodDistanceFactor?2:
-   (distance>55.f*sizeScale*quality().lodDistanceFactor?1:0);
+  const float geometryScale=std::max(sizeScale,
+      asset.radius*sizeScale/10.f);
+  // Preserve details on giant landmarks rather than LOD based on the pivot.
+  const int preferred=distance>125.f*geometryScale*quality().lodDistanceFactor?2:
+   (distance>55.f*geometryScale*quality().lodDistanceFactor?1:0);
   for(int level=preferred;level>0;level--){
    const AssetLod&candidate=asset.lods[level-1];
    if(candidate.gpu.count>0&&candidate.gpu.vao!=0){
@@ -699,7 +950,27 @@ void drawImported(const Mat4&vp,const Entity&e){
   glDrawArrays(GL_TRIANGLES,0,gpu->count);
   ++gDrawCalls;gTriangles+=gpu->count/3;
  }else for(const auto&batch:*batches){
-  if(overridePaint&&overridePaint->id){bindPaint(overridePaint);}
+  const auto style=e.materialStyles.find(batch.materialId);
+  const MaterialStyle*variant=style==e.materialStyles.end()?nullptr:&style->second;
+  if(variant)glUniform3f(gShader.locColor,variant->tint.x,variant->tint.y,variant->tint.z);
+  else glUniform3f(gShader.locColor,1.f,1.f,1.f);
+  glUniform1f(gShader.locRoughness,batch.roughness);
+  glUniform1f(gShader.locMetallic,batch.metallic);
+  glUniform1f(gShader.locNormalScale,batch.normalScale);
+  const auto bindOptional=[&](int slot,int unit,GLint flag){
+   const bool ok=slot>=0&&static_cast<size_t>(slot)<asset.textures.size()&&
+                asset.textures[slot].id!=0;
+   glActiveTexture(GL_TEXTURE0+unit);
+   glBindTexture(GL_TEXTURE_2D,ok?asset.textures[slot].id:0);
+   glUniform1f(flag,ok?1.f:0.f);
+  };
+  bindOptional(batch.normalTexture,1,gShader.locUseNormalMap);
+  bindOptional(batch.metallicRoughnessTexture,2,gShader.locUseOrmMap);
+  glActiveTexture(GL_TEXTURE0);
+  const TextureResource*batchPaint=variant&&!variant->texture.empty()?
+      paintTexture(variant->texture):nullptr;
+  if(batchPaint&&batchPaint->id){bindPaint(batchPaint);}
+  else if(overridePaint&&overridePaint->id){bindPaint(overridePaint);}
   else if(batch.texture>=0&&static_cast<size_t>(batch.texture)<asset.textures.size()&&
      asset.textures[batch.texture].id){
    glActiveTexture(GL_TEXTURE0);
@@ -711,7 +982,13 @@ void drawImported(const Mat4&vp,const Entity&e){
   ++gDrawCalls;gTriangles+=batch.count/3;
  }
  bindPaint(nullptr);
- glBindTexture(GL_TEXTURE_2D,0);
+ glUniform3f(gShader.locColor,1.f,1.f,1.f);
+ glActiveTexture(GL_TEXTURE2);glBindTexture(GL_TEXTURE_2D,0);
+ glActiveTexture(GL_TEXTURE1);glBindTexture(GL_TEXTURE_2D,0);
+ glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,0);
+ glUniform1f(gShader.locUseNormalMap,0.f);
+ glUniform1f(gShader.locUseOrmMap,0.f);
+ glUniform1f(gShader.locImportedLighting,0.f); // Do not alter road/terrain/gizmos.
 }
 void part(const Mat4&vp,const Entity&e,int kind,float x,float y,float z,float sx,float sy,float sz,Color color){
  const float a=e.yaw*RAD,c=std::cos(a),s=std::sin(a),k=e.size;
@@ -1303,7 +1580,7 @@ bool groundPoint(float px,float py,float &x,float &z){
  if(gBrushes.empty()){
   if(ray.y>-.0001f)return false;
   const float t=-eye.y/ray.y;
-  if(t<=0||t>1500.f)return false;
+  if(t<=0||t>6200.f)return false;
   x=eye.x+ray.x*t;z=eye.z+ray.z*t;
   return x>=-worldHalf()&&x<=worldHalf()&&z>=-worldHalf()&&z<=worldHalf();
  }
@@ -1312,8 +1589,10 @@ bool groundPoint(float px,float py,float &x,float &z){
  float lo=0.f;
  float previous=eye.y-terrainHeightAt(eye.x,eye.z);
  if(previous<0)return false;
- for(int i=1;i<=190;i++){
-  const float hi=i*8.f;
+ // Ray is evaluated only on touch. Extend terrain hit tests for
+ // castle-scale camera distances without increasing per-frame rendering.
+ for(int i=1;i<=388;i++){
+  const float hi=i*16.f;
   const float pxHit=eye.x+ray.x*hi,pzHit=eye.z+ray.z*hi;
   const float cur=eye.y+ray.y*hi-terrainHeightAt(pxHit,pzHit);
   if(cur<=0&&previous>=0){
@@ -1670,6 +1949,87 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterPain
  else {if(present->second.id)glDeleteTextures(1,&present->second.id);present->second=std::move(prepared);}
  return JNI_TRUE;
 }
+// Material appearance belongs to each placed INSTANCE, never to the GLB.
+JNIEXPORT jobjectArray JNICALL Java_game_oe_editor_EditorActivity_nativeSelectedMaterials(
+ JNIEnv*env,jclass){
+ jclass klass=env->FindClass("java/lang/String");
+ if(!klass)return nullptr;
+ std::vector<int> ids;
+ const Entity*e=selected();
+ if(e&&e->type==6){
+  auto asset=gAssets.find(e->asset);
+  if(asset!=gAssets.end())for(const auto&batch:asset->second.batches)
+   if(std::find(ids.begin(),ids.end(),batch.materialId)==ids.end())
+    ids.push_back(batch.materialId);
+ }
+ std::sort(ids.begin(),ids.end());
+ jobjectArray names=env->NewObjectArray(static_cast<jsize>(ids.size()),klass,nullptr);
+ if(!names)return nullptr;
+ for(jsize i=0;i<static_cast<jsize>(ids.size());i++){
+  const int id=ids[static_cast<size_t>(i)];
+  std::string label=id<0?"Общий материал":
+   (id<static_cast<int>(gAssets.at(e->asset).materialNames.size())?
+     gAssets.at(e->asset).materialNames[static_cast<size_t>(id)]:"Материал");
+  std::replace(label.begin(),label.end(),'|',' ');
+  label=std::to_string(id)+"|"+label;
+  jstring name=env->NewStringUTF(label.c_str());
+  if(!name)return nullptr;
+  env->SetObjectArrayElement(names,i,name);
+  env->DeleteLocalRef(name);
+ }
+ return names;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeTintSelectedMaterial(
+ JNIEnv*,jclass,jint materialId,jfloat r,jfloat g,jfloat b){
+ Entity*e=selected();
+ if(!e||e->type!=6||materialId<-1||
+    !std::isfinite(r)||!std::isfinite(g)||!std::isfinite(b)||
+    r<0.f||r>2.f||g<0.f||g>2.f||b<0.f||b>2.f)return JNI_FALSE;
+ auto asset=gAssets.find(e->asset);
+ if(asset==gAssets.end())return JNI_FALSE;
+ bool hasMaterial=false;
+ for(const auto&batch:asset->second.batches)
+  if(batch.materialId==materialId){hasMaterial=true;break;}
+ if(!hasMaterial)return JNI_FALSE;
+ auto style=e->materialStyles.find(materialId);
+ if(style==e->materialStyles.end()&&e->materialStyles.size()>=64)return JNI_FALSE;
+ const bool neutral=r==1.f&&g==1.f&&b==1.f;
+ if(style==e->materialStyles.end()&&neutral)return JNI_TRUE;
+ if(style!=e->materialStyles.end()&&
+    style->second.tint.x==r&&style->second.tint.y==g&&style->second.tint.z==b)
+     return JNI_TRUE;
+ recordEdit();
+ if(neutral&&style!=e->materialStyles.end()&&style->second.texture.empty())
+  e->materialStyles.erase(style);
+ else e->materialStyles[materialId].tint={r,g,b};
+ return JNI_TRUE;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeTextureSelectedMaterial(
+ JNIEnv*env,jclass,jint materialId,jstring name){
+ Entity*e=selected();
+ if(!e||e->type!=6||!name||materialId<-1)return JNI_FALSE;
+ const char*raw=env->GetStringUTFChars(name,nullptr);
+ if(!raw)return JNI_FALSE;
+ std::string texture(raw);env->ReleaseStringUTFChars(name,raw);
+ if(!texture.empty()&&(!validPaintKey(texture)||
+     gPaintTextures.find(texture)==gPaintTextures.end()))return JNI_FALSE;
+ auto asset=gAssets.find(e->asset);
+ if(asset==gAssets.end())return JNI_FALSE;
+ bool hasMaterial=false;
+ for(const auto&batch:asset->second.batches)
+  if(batch.materialId==materialId){hasMaterial=true;break;}
+ if(!hasMaterial)return JNI_FALSE;
+ auto style=e->materialStyles.find(materialId);
+ if(style==e->materialStyles.end()&&e->materialStyles.size()>=64)return JNI_FALSE;
+ if(style==e->materialStyles.end()&&texture.empty())return JNI_TRUE;
+ if(style!=e->materialStyles.end()&&style->second.texture==texture)return JNI_TRUE;
+ recordEdit();
+ if(texture.empty()&&style!=e->materialStyles.end()&&
+    style->second.tint.x==1.f&&style->second.tint.y==1.f&&
+    style->second.tint.z==1.f)e->materialStyles.erase(style);
+ else e->materialStyles[materialId].texture=texture;
+ return JNI_TRUE;
+}
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativePaintSelected(
  JNIEnv*env,jclass,jstring name){
  if(!name||!selected())return JNI_FALSE;
@@ -2005,14 +2365,16 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeGizmoEnd(JNIEnv*
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeOrbit(JNIEnv*,jclass,jfloat dx,jfloat dy,jfloat zoom){
  gYaw-=dx*.006f;
  gPitch=clampf(gPitch+dy*.006f,-1.16f,1.25f);
- gDistance=clampf(gDistance*clampf(zoom,.6f,1.5f),5,210);
+ gDistance=clampf(gDistance*clampf(zoom,.6f,1.5f),5,2400);
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativePan(JNIEnv*,jclass,jfloat dx,jfloat dy){
  const float speed=gDistance*.0035f;
  const float c=std::cos(gYaw),s=std::sin(gYaw);
+ const float elevation=std::max(0.f,
+   gTarget.y-(terrainHeightAt(gTarget.x,gTarget.z)+1.2f));
  gTarget.x=clampf(gTarget.x+(-dx*c+dy*s)*speed,-worldHalf()+4,worldHalf()-4);
  gTarget.z=clampf(gTarget.z+(dx*s+dy*c)*speed,-worldHalf()+4,worldHalf()-4);
- gTarget.y=terrainHeightAt(gTarget.x,gTarget.z)+1.2f;
+ gTarget.y=terrainHeightAt(gTarget.x,gTarget.z)+1.2f+elevation;
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeFocusLocation(JNIEnv*,jclass,jint index){
  if(index<0 || index>=static_cast<jint>(sizeof(LOCATIONS)/sizeof(LOCATIONS[0])))return;
@@ -2035,6 +2397,22 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeRecommendQuality
 JNIEXPORT jfloat JNICALL Java_game_oe_editor_EditorActivity_nativeQualityScale(
  JNIEnv*,jclass,jint tier){
  return oe::profile(tier).resolutionScale;
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeSetImportedLighting(
+ JNIEnv*,jclass,jboolean enabled){
+ gImportedSoftLighting=(enabled==JNI_TRUE);
+}
+// Controls GPU sampling only. Rebind existing texture objects on GLES thread;
+// original GLBs, materials, geometry and city scene are never rewritten.
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeSetTextureSampling(
+ JNIEnv*,jclass,jint mode){
+ if(mode<0||mode>2)return;
+ gTextureSampling=mode;
+ for(auto&entry:gAssets){
+  for(auto&tex:entry.second.textures)configureTextureFiltering(tex);
+ }
+ for(auto&entry:gPaintTextures)configureTextureFiltering(entry.second);
+ glActiveTexture(GL_TEXTURE0);
 }
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeSetQualityProfile(
  JNIEnv*,jclass,jint tier){
@@ -2088,6 +2466,7 @@ JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeRenderStats(J
  std::ostringstream out;
  out<<"GPU-профиль: "<<quality().name<<" · CPU submit "<<std::fixed<<std::setprecision(2)
  <<gSubmitCpuMs<<" мс · "<<gDrawCalls<<" draw / "<<gTriangles<<" треуг."
+ <<" · моделей GPU "<<gAssets.size()<<" / объектов "<<gEntities.size()
  <<" · LOD "<<gLodDrawCounts[0]<<"/"<<gLodDrawCounts[1]<<"/"<<gLodDrawCounts[2];
  return env->NewStringUTF(out.str().c_str());
 }
@@ -2117,10 +2496,19 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePick(JNIEnv*,jcl
  for(const auto&e:gEntities){
   const float range=e.type<3||e.type==6?3.5f:2.0f;
   const float h=e.type<3||e.type==6?6.f:4.9f;
+  float loX=-range,hiX=range,loY=0.f,hiY=h,loZ=-range,hiZ=range;
+  if(e.type==6){
+   const auto a=gAssets.find(e.asset);
+   if(a!=gAssets.end()){
+    loX=a->second.minX;hiX=a->second.maxX;
+    loY=a->second.minY;hiY=a->second.maxY;
+    loZ=a->second.minZ;hiZ=a->second.maxZ;
+   }
+  }
   float left=1e9f,top=1e9f,right=-1e9f,bottom=-1e9f,minW=1e9f;
   int visible=0;
-  for(float xx:{-range,range})for(float zz:{-range,range})for(float yy:{0.f,h}){
-    const Mat4 model=entityModelMatrix(e);
+  const Mat4 model=entityModelMatrix(e);
+  for(float xx:{loX,hiX})for(float zz:{loZ,hiZ})for(float yy:{loY,hiY}){
     const Vec4 q=apply(vp,apply(model,{xx,yy,zz,1.f}));
     if(q.w<.1f)continue;visible++;
     float sx=(q.x/q.w*.5f+.5f)*gWidth, sy=(.5f-q.y/q.w*.5f)*gHeight;
@@ -2152,6 +2540,15 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePlaceAtScreen(JN
  if(!groundPoint(px,py,x,z)||blocked(x,z,type))return 0;
  return add(type,x,z,0,1);
 }
+void frameLargeImported(const Entity&e){
+ auto it=gAssets.find(e.asset);
+ if(it==gAssets.end())return;
+ const Asset&asset=it->second;
+ if(asset.radius<55.f)return;
+ const float scale=std::max({e.sx,e.sy,e.sz})*e.size;
+ gTarget={e.x,e.y+asset.centerY*e.size*e.sy,e.z};
+ gDistance=clampf(asset.radius*scale*2.6f,75.f,2400.f);
+}
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePlaceImportedAtScreen(JNIEnv*env,jclass,jstring key,jfloat px,jfloat py){
  if(!key)return 0;
  float x,z;
@@ -2161,7 +2558,8 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePlaceImportedAtS
  std::string asset(raw);env->ReleaseStringUTFChars(key,raw);
  if(gAssets.find(asset)==gAssets.end()||gEntities.size()>=MAX_ENTITIES)return 0;
  recordEdit();
- int id=gNextId++;gEntities.push_back({id,6,x,z,0,1,asset,terrainHeightAt(x,z)});gSelected=id;return id;
+ int id=gNextId++;gEntities.push_back({id,6,x,z,0,1,asset,terrainHeightAt(x,z)});
+ gSelected=id;frameLargeImported(gEntities.back());return id;
 }
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeAddPlaced(JNIEnv*,jclass,jint type,jfloat x,jfloat z,jfloat yaw,jfloat size){
  if(type<0||type>16||type==6 || !std::isfinite(x)||!std::isfinite(z)||!std::isfinite(yaw)||!std::isfinite(size) ||
@@ -2326,7 +2724,16 @@ JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSelectedInfo(
  <<e->x<<" Z "<<e->z<<" Y "<<e->y<<" | ↻ XYZ "
  <<std::setprecision(1)<<angles.x<<"°/"<<angles.y<<"°/"<<angles.z<<"°"
  <<" | Размер "<<std::setprecision(2)<<e->size;
-
+ if(e->type==6){
+  auto found=gAssets.find(e->asset);
+  if(found!=gAssets.end()){
+   const Asset&a=found->second;
+   out<<" | XYZ "<<std::setprecision(1)
+      <<(a.maxX-a.minX)*e->size*e->sx<<" × "
+      <<(a.maxY-a.minY)*e->size*e->sy<<" × "
+      <<(a.maxZ-a.minZ)*e->size*e->sz<<" м";
+  }
+ }
  return env->NewStringUTF(out.str().c_str());
 }
 JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSceneSnapshot(JNIEnv*env,jclass){
@@ -2340,6 +2747,20 @@ JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSceneSnapshot
      <<",\"qx\":"<<e.qx<<",\"qy\":"<<e.qy<<",\"qz\":"<<e.qz<<",\"qw\":"<<e.qw;
   if(e.type==6)out<<",\"asset\":\""<<e.asset<<"\"";
   if(!e.paint.empty())out<<",\"paint\":\""<<e.paint<<"\"";
+  if(!e.materialStyles.empty()){
+   out<<",\"materialStyles\":[";
+   std::vector<int> ids;ids.reserve(e.materialStyles.size());
+   for(const auto&entry:e.materialStyles)ids.push_back(entry.first);
+   std::sort(ids.begin(),ids.end());
+   bool first=true;
+   for(int id:ids){
+    const MaterialStyle&style=e.materialStyles.at(id);
+    if(!first)out<<",";first=false;
+    out<<"["<<id<<","<<style.tint.x<<","<<style.tint.y<<","
+       <<style.tint.z<<",\""<<style.texture<<"\"]";
+   }
+   out<<"]";
+  }
   out<<"}";
  }
  out<<"],\"terrain\":[";
@@ -2435,10 +2856,13 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDiscardUnusedAss
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsset(
  JNIEnv*env,jclass,jstring key,jfloatArray vertices,jfloat centerY,jfloat radius,
  jintArray batchData,jobjectArray imageData,jintArray imageInfo,
+ jintArray pbrTexData,jfloatArray pbrFactorData,
+ jintArray materialIdData,jobjectArray materialNameData,
  jboolean preserveOriginalRig){
  if(!key||!vertices||!batchData||!imageData||!imageInfo||
+    !pbrTexData||!pbrFactorData||!materialIdData||!materialNameData||
     !std::isfinite(centerY)||!std::isfinite(radius)||
-    radius<.05f||radius>100.f||centerY<0.f||centerY>100.f)return JNI_FALSE;
+    radius<.05f||radius>8192.f||centerY<0.f||centerY>16384.f)return JNI_FALSE;
  const char*raw=env->GetStringUTFChars(key,nullptr);
  if(!raw)return JNI_FALSE;
  std::string assetKey(raw);env->ReleaseStringUTFChars(key,raw);
@@ -2457,25 +2881,68 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsse
  const jsize vertexCount=valueCount/11;
  const jsize batchLength=env->GetArrayLength(batchData);
  if(batchLength<=0||batchLength>6144||batchLength%3!=0)return JNI_FALSE;
+ const jsize batchCount=batchLength/3;
+ const jsize materialCount=env->GetArrayLength(materialNameData);
+ if(materialCount<0||materialCount>512||
+    env->GetArrayLength(materialIdData)!=batchCount)return JNI_FALSE;
+ if(env->GetArrayLength(pbrTexData)!=batchCount*2||
+    env->GetArrayLength(pbrFactorData)!=batchCount*3)return JNI_FALSE;
  const jsize imageCount=env->GetArrayLength(imageData);
- if(imageCount<0||imageCount>8||env->GetArrayLength(imageInfo)!=imageCount*3)
+ if(imageCount<0||imageCount>16||env->GetArrayLength(imageInfo)!=imageCount*3)
   return JNI_FALSE;
  Asset prepared;
  prepared.vertexStride=11;prepared.centerY=centerY;prepared.radius=radius;
  prepared.vertices.resize(static_cast<size_t>(valueCount));
  env->GetFloatArrayRegion(vertices,0,valueCount,prepared.vertices.data());
  if(env->ExceptionCheck())return JNI_FALSE;
- for(float value:prepared.vertices)
-  if(!std::isfinite(value)||std::abs(value)>10000.f)return JNI_FALSE;
+ prepared.minX=prepared.minY=prepared.minZ=std::numeric_limits<float>::infinity();
+ prepared.maxX=prepared.maxY=prepared.maxZ=-std::numeric_limits<float>::infinity();
+ for(size_t i=0;i<prepared.vertices.size();i+=11){
+  const float x=prepared.vertices[i],y=prepared.vertices[i+1],z=prepared.vertices[i+2];
+  for(size_t k=0;k<11;k++)
+   if(!std::isfinite(prepared.vertices[i+k])||
+      std::abs(prepared.vertices[i+k])>10000.f)return JNI_FALSE;
+  prepared.minX=std::min(prepared.minX,x);prepared.maxX=std::max(prepared.maxX,x);
+  prepared.minY=std::min(prepared.minY,y);prepared.maxY=std::max(prepared.maxY,y);
+  prepared.minZ=std::min(prepared.minZ,z);prepared.maxZ=std::max(prepared.maxZ,z);
+ }
  std::vector<jint> batches(static_cast<size_t>(batchLength));
  env->GetIntArrayRegion(batchData,0,batchLength,batches.data());
  if(env->ExceptionCheck())return JNI_FALSE;
+ std::vector<jint> pbrTextures(static_cast<size_t>(batchCount*2));
+ std::vector<jfloat> pbrFactors(static_cast<size_t>(batchCount*3));
+ env->GetIntArrayRegion(pbrTexData,0,batchCount*2,pbrTextures.data());
+ env->GetFloatArrayRegion(pbrFactorData,0,batchCount*3,pbrFactors.data());
+ if(env->ExceptionCheck())return JNI_FALSE;
+ std::vector<jint> materialIds(static_cast<size_t>(batchCount));
+ env->GetIntArrayRegion(materialIdData,0,batchCount,materialIds.data());
+ if(env->ExceptionCheck())return JNI_FALSE;
+ for(jsize mi=0;mi<materialCount;mi++){
+  jstring raw=static_cast<jstring>(env->GetObjectArrayElement(materialNameData,mi));
+  if(!raw||env->ExceptionCheck())return JNI_FALSE;
+  const char*name=env->GetStringUTFChars(raw,nullptr);
+  if(!name){env->DeleteLocalRef(raw);return JNI_FALSE;}
+  std::string label(name);env->ReleaseStringUTFChars(raw,name);env->DeleteLocalRef(raw);
+  if(label.size()>300)return JNI_FALSE;
+  prepared.materialNames.push_back(label);
+ }
  jint consumed=0;
  for(jsize i=0;i<batchLength;i+=3){
   const jint first=batches[i],count=batches[i+1],texture=batches[i+2];
   if(first!=consumed||count<=0||count%3!=0||
      count>vertexCount-consumed||texture< -1||texture>=imageCount)return JNI_FALSE;
-  prepared.batches.push_back({first,count,texture});
+  const jsize batch=i/3;
+  const jint normalMap=pbrTextures[batch*2],ormMap=pbrTextures[batch*2+1];
+  const jint materialId=materialIds[batch];
+  if(materialId<-1||materialId>=materialCount)return JNI_FALSE;
+  const float roughness=pbrFactors[batch*3],metallic=pbrFactors[batch*3+1],
+              normalScale=pbrFactors[batch*3+2];
+  if(normalMap< -1||normalMap>=imageCount||ormMap< -1||ormMap>=imageCount||
+     !std::isfinite(roughness)||roughness<0.f||roughness>1.f||
+     !std::isfinite(metallic)||metallic<0.f||metallic>1.f||
+     !std::isfinite(normalScale)||normalScale<0.f||normalScale>2.f)return JNI_FALSE;
+  prepared.batches.push_back({first,count,texture,normalMap,ormMap,
+                              roughness,metallic,normalScale,materialId});
   consumed+=count;
  }
  if(consumed!=vertexCount)return JNI_FALSE;
@@ -2509,7 +2976,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsse
   env->DeleteLocalRef(bytes);
   if(env->ExceptionCheck())return JNI_FALSE;
   totalNew+=expected;
-  if(totalNew>32u*1024u*1024u)return JNI_FALSE;
+  if(totalNew>64u*1024u*1024u)return JNI_FALSE;
   prepared.textures.push_back(std::move(tex));
  }
  const size_t oldBytes=existing==gAssets.end()?0:[&](){
@@ -2566,18 +3033,41 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsse
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene(
  JNIEnv*env,jclass,jint size,jboolean demo,jintArray kinds,jfloatArray transforms,
  jobjectArray modelKeys,jfloatArray terrainData,jobjectArray objectPaintKeys,
+ jintArray styleCountData,jintArray styleIdData,jfloatArray styleColorData,
+ jobjectArray styleTextureData,
  jfloatArray painting,jobjectArray terrainPaintKeys,
  jintArray roadIds,jfloatArray roadWidths,jbooleanArray roadMarkings,
  jintArray roadCounts,jintArray roadMaterials,jfloatArray roadCoordinates,
  jboolean roadSidewalks,jboolean roadCrosswalks){
  if(!allowedWorldSize(size)||!kinds||!transforms||!modelKeys||!terrainData||
-    !objectPaintKeys||!painting||!terrainPaintKeys||
+    !objectPaintKeys||!styleCountData||!styleIdData||!styleColorData||
+    !styleTextureData||!painting||!terrainPaintKeys||
     !roadIds||!roadWidths||!roadMarkings||!roadCounts||!roadMaterials||
     !roadCoordinates)
     return JNI_FALSE;
  const jsize n=env->GetArrayLength(kinds);
  if(n<0||n>MAX_ENTITIES||env->GetArrayLength(transforms)!=n*12||
-    env->GetArrayLength(modelKeys)!=n||env->GetArrayLength(objectPaintKeys)!=n)return JNI_FALSE;
+    env->GetArrayLength(modelKeys)!=n||env->GetArrayLength(objectPaintKeys)!=n||
+    env->GetArrayLength(styleCountData)!=n)return JNI_FALSE;
+ const jsize styleTotal=env->GetArrayLength(styleIdData);
+ if(styleTotal<0||styleTotal>n*64||
+    env->GetArrayLength(styleColorData)!=styleTotal*3||
+    env->GetArrayLength(styleTextureData)!=styleTotal)return JNI_FALSE;
+ std::vector<jint> styleCounts(static_cast<size_t>(n)),styleIds(static_cast<size_t>(styleTotal));
+ std::vector<jfloat> styleColors(static_cast<size_t>(styleTotal*3));
+ if(n)env->GetIntArrayRegion(styleCountData,0,n,styleCounts.data());
+ if(styleTotal){
+  env->GetIntArrayRegion(styleIdData,0,styleTotal,styleIds.data());
+  env->GetFloatArrayRegion(styleColorData,0,styleTotal*3,styleColors.data());
+ }
+ if(env->ExceptionCheck())return JNI_FALSE;
+ jsize styleExpected=0;
+ for(jsize i=0;i<n;i++){
+  if(styleCounts[static_cast<size_t>(i)]<0||
+     styleCounts[static_cast<size_t>(i)]>64)return JNI_FALSE;
+  styleExpected+=styleCounts[static_cast<size_t>(i)];
+ }
+ if(styleExpected!=styleTotal)return JNI_FALSE;
  const jsize paintFloats=env->GetArrayLength(painting);
  if(paintFloats<0||paintFloats%3!=0||
     paintFloats>static_cast<jsize>(MAX_TERRAIN_PAINT*3)||
@@ -2627,6 +3117,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  }
  std::vector<Entity> staged;
  staged.reserve(static_cast<size_t>(n));
+ jsize styleAt=0;
  for(jsize i=0;i<n;i++){
   const int type=types[i];
   const float x=matrix[i*12],z=matrix[i*12+1],yaw=matrix[i*12+2],
@@ -2669,6 +3160,35 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
   Entity restored{static_cast<int>(i)+1,type,x,z,yaw,scl,key,y,sx,sy,sz,paintName};
   const auto q=oe::gizmo::normalized({qx,qy,qz,qw});
   restored.qx=q.x;restored.qy=q.y;restored.qz=q.z;restored.qw=q.w;
+  if(styleCounts[static_cast<size_t>(i)]>0&&type!=6)return JNI_FALSE;
+  for(jint k=0;k<styleCounts[static_cast<size_t>(i)];k++){
+   const jint id=styleIds[static_cast<size_t>(styleAt)];
+   const float r=styleColors[static_cast<size_t>(styleAt*3)],
+               g=styleColors[static_cast<size_t>(styleAt*3+1)],
+               b=styleColors[static_cast<size_t>(styleAt*3+2)];
+   if(id<-1||id>511||
+      !std::isfinite(r)||!std::isfinite(g)||!std::isfinite(b)||
+      r<0.f||r>2.f||g<0.f||g>2.f||b<0.f||b>2.f||
+      restored.materialStyles.find(id)!=restored.materialStyles.end())
+     return JNI_FALSE;
+   auto asset=gAssets.find(key);
+   if(asset==gAssets.end())return JNI_FALSE;
+   bool hasMaterial=false;
+   for(const auto&batch:asset->second.batches)
+    if(batch.materialId==id){hasMaterial=true;break;}
+   if(!hasMaterial)return JNI_FALSE;
+   jstring rawTexture=static_cast<jstring>(
+      env->GetObjectArrayElement(styleTextureData,styleAt));
+   if(!rawTexture||env->ExceptionCheck())return JNI_FALSE;
+   const char*tex=env->GetStringUTFChars(rawTexture,nullptr);
+   if(!tex){env->DeleteLocalRef(rawTexture);return JNI_FALSE;}
+   std::string texture(tex);
+   env->ReleaseStringUTFChars(rawTexture,tex);env->DeleteLocalRef(rawTexture);
+   if(!texture.empty()&&(!validPaintKey(texture)||
+        gPaintTextures.find(texture)==gPaintTextures.end()))return JNI_FALSE;
+   restored.materialStyles[id]={{r,g,b},texture};
+   ++styleAt;
+  }
   staged.push_back(std::move(restored));
  }
   // Validate staged road data before changing any scene or terrain.
@@ -2740,7 +3260,7 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeAddImportedPlace
  recordEdit();
  int id=gNextId++;
  gEntities.push_back({id,6,x,z,yaw,size,asset,terrainHeightAt(x,z)});
- gSelected=id;return id;
+ gSelected=id;frameLargeImported(gEntities.back());return id;
 }
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeUndo(JNIEnv*,jclass){
  return undoEdit()?JNI_TRUE:JNI_FALSE;
@@ -2751,19 +3271,67 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRedo(JNIEnv*
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeClearHistory(JNIEnv*,jclass){
  gUndo.clear();gRedo.clear();
 }
+// Every duplicated building reuses the same GPU asset and content-addressed
+// textures; only transform and per-instance MaterialStyle entries are copied.
+Vec3 cloneSpacing(const Entity&e){
+ if(e.type!=6){
+  const float gap=(e.type<=2?7.5f:2.5f)*e.size;
+  return {gap,0.f,gap};
+ }
+ auto it=gAssets.find(e.asset);
+ if(it==gAssets.end())return {8.f*e.size,0.f,8.f*e.size};
+ const Asset&a=it->second;
+ const float width=(a.maxX-a.minX)*e.size*e.sx;
+ const float depth=(a.maxZ-a.minZ)*e.size*e.sz;
+ // Conservative bounding square: no overlap when yaw/XYZ rotations are set.
+ const float gap=std::max(2.5f,std::hypot(width,depth)+2.f);
+ return {gap,0.f,gap};
+}
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeDuplicateSelected(JNIEnv*,jclass){
- Entity*original=selected();
+ const Entity*original=selected();
  if(!original||gEntities.size()>=MAX_ENTITIES)return 0;
  Entity copy=*original;
- const float offset=(copy.type<=2||copy.type==6?7.5f:2.5f)*copy.size;
- float nx=copy.x+offset;
- if(nx>worldHalf()-2.f)nx=copy.x-offset;
- if(nx<-worldHalf()+2.f)return 0;
- copy.x=nx;
+ const float step=cloneSpacing(copy).x;
+ const float half=worldHalf()-2.f;
+ if(copy.x+step<=half)copy.x+=step;
+ else if(copy.x-step>=-half)copy.x-=step;
+ else if(copy.z+step<=half)copy.z+=step;
+ else if(copy.z-step>=-half)copy.z-=step;
+ else return 0;
  recordEdit();
  copy.id=gNextId++;
- gEntities.push_back(copy);gSelected=copy.id;
- return copy.id;
+ gEntities.push_back(std::move(copy));
+ gSelected=gEntities.back().id;
+ return gSelected;
+}
+// A 1×10 row or 5×10 block includes the selected original. All-or-nothing
+// bounds checks and one undo entry prevent half-created neighbourhoods.
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeDuplicateSelectedGrid(
+ JNIEnv*,jclass,jint columns,jint rows){
+ const Entity*original=selected();
+ if(!original||columns<1||rows<1||columns>10||rows>10||
+    columns*rows<2||gEntities.size()+static_cast<size_t>(columns*rows-1)>MAX_ENTITIES)
+    return 0;
+ const Entity prototype=*original;
+ const Vec3 step=cloneSpacing(prototype);
+ const float half=worldHalf()-2.f;
+ for(int z=0;z<rows;z++)for(int x=0;x<columns;x++){
+  const float px=prototype.x+x*step.x,pz=prototype.z+z*step.z;
+  if(!std::isfinite(px)||!std::isfinite(pz)||std::abs(px)>half||
+     std::abs(pz)>half)return 0;
+ }
+ recordEdit();
+ int added=0;
+ for(int z=0;z<rows;z++)for(int x=0;x<columns;x++){
+  if(x==0&&z==0)continue;
+  Entity copy=prototype;
+  copy.id=gNextId++;
+  copy.x+=x*step.x;copy.z+=z*step.z;
+  copy.y=terrainHeightAt(copy.x,copy.z);
+  gEntities.push_back(std::move(copy));++added;
+ }
+ gSelected=gEntities.back().id;
+ return added;
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeReset(JNIEnv*,jclass,jboolean withDemo){reset(withDemo==JNI_TRUE);}
 } // extern C

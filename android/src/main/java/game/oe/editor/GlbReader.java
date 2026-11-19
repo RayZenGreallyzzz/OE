@@ -20,7 +20,8 @@ import java.util.Set;
  * Supports: GLB 2; float32 or quantized POSITION/COLOR_0; binary bufferViews
  * compressed with EXT_meshopt_compression / KHR_meshopt_compression;
  * uint8/uint16/uint32 indices, node TRS hierarchy and baseColorFactor.
- * Builds static face normals. Meshopt is decoded OFFLINE by vendored C++.
+ * Uses glTF NORMAL and PBR material factors/maps when present; falls back
+ * to face normals when missing. Meshopt is decoded OFFLINE by vendored C++.
  * GPU-native ETC2/RGBA8 KTX2 and embedded PNG/JPG baseColor are supported.
  * Draco, BasisU ETC1S/UASTC, skinning and animation remain unsupported.
  * No original source data is rewritten by this reader.
@@ -28,7 +29,7 @@ import java.util.Set;
  */
 public final class GlbReader {
     public static final int MAX_BYTES = 64 * 1024 * 1024;
-    public static final int MAX_TRIANGLES = 90000;
+    public static final int MAX_TRIANGLES = 240000;
     public static final int MAX_NODES = 1024;
     private static final int MAX_DECODED_VIEW = 32 * 1024 * 1024;
     private static final int MAX_DECODED_TOTAL = 48 * 1024 * 1024;
@@ -37,7 +38,11 @@ public final class GlbReader {
 
     public static final class Result {
         public final float[] vertices; // [pos.xyz, normal.xyz, color.rgb, uv.xy] per vertex
-        public final int[] draws; // consecutive triplets [firstVertex,vertexCount,textureSlot] (-1 = plain color)
+        public final int[] draws; // [firstVertex, vertexCount, baseColorTextureSlot] per batch
+        public final int[] materialIds; // glTF material index per batch; shared across all copies
+        public final String[] materialNames; // source material labels, never rewritten
+        public final int[] pbrTextures; // [normalSlot, metallicRoughnessSlot] per batch
+        public final float[] pbrFactors; // [roughness, metallic, normalScale] per batch
         public final byte[][] imageData; // RGBA8 or ETC2, indexed by textureSlot
         public final int[] imageInfo; // [width,height,pixelFormat] per textureSlot
         public final int triangles;
@@ -49,7 +54,9 @@ public final class GlbReader {
         public final boolean previewOmitsTextures, previewOmitsRig;
         Result(float[] vertices, int triangles, float boundCenterY, float boundRadius,
                boolean previewOmitsTextures, boolean previewOmitsRig,
-               int[] draws, byte[][] imageData, int[] imageInfo) {
+               int[] draws,int[] materialIds,String[] materialNames,
+               int[] pbrTextures,float[] pbrFactors,
+               byte[][] imageData,int[] imageInfo) {
             this.vertices = vertices;
             this.triangles = triangles;
             this.boundCenterY = boundCenterY;
@@ -57,6 +64,10 @@ public final class GlbReader {
             this.previewOmitsTextures=previewOmitsTextures;
             this.previewOmitsRig=previewOmitsRig;
             this.draws=draws;
+            this.materialIds=materialIds;
+            this.materialNames=materialNames;
+            this.pbrTextures=pbrTextures;
+            this.pbrFactors=pbrFactors;
             this.imageData=imageData;
             this.imageInfo=imageInfo;
         }
@@ -68,8 +79,10 @@ public final class GlbReader {
         ByteBuffer data;
     }
     private static final class Job {
-        Access positions, indices, uv, colors;
-        int triangles, textureIndex=-1;
+        Access positions, indices, uv, colors, normals;
+        int triangles, materialId=-1, textureIndex=-1, normalTextureIndex=-1,
+            metallicRoughnessTextureIndex=-1;
+        float roughness=1.f,metallic=1.f,normalScale=1.f;
         float[] matrix, color;
     }
     private static final class State {
@@ -272,16 +285,65 @@ public final class GlbReader {
     }
     private static float[] color(State st,JSONObject primitive) throws Exception {
         int index=primitive.optInt("material",-1);
-        if(index<0)return new float[]{.8f,.76f,.69f};
+        // glTF 2.0 default baseColorFactor is [1,1,1,1], not beige.
+        if(index<0)return new float[]{1.f,1.f,1.f};
         JSONArray materials=st.gltf.optJSONArray("materials");
-        if(materials==null||index>=materials.length())return new float[]{.8f,.76f,.69f};
+        if(materials==null||index>=materials.length())return new float[]{1.f,1.f,1.f};
         JSONObject material=materials.getJSONObject(index);
         JSONArray factor=material.optJSONObject("pbrMetallicRoughness")==null?null:
                 material.getJSONObject("pbrMetallicRoughness").optJSONArray("baseColorFactor");
-        float[] rgba=numbers(factor,4,new float[]{.85f,.80f,.73f,1});
+        float[] rgba=numbers(factor,4,new float[]{1,1,1,1});
         return new float[]{Math.max(0,Math.min(1,rgba[0])),
                 Math.max(0,Math.min(1,rgba[1])),
                 Math.max(0,Math.min(1,rgba[2]))};
+    }
+    private static float materialFactor(JSONObject pbr,String key,float fallback) throws Exception {
+        if(pbr==null||!pbr.has(key))return fallback;
+        double raw=pbr.getDouble(key);
+        require(Double.isFinite(raw)&&raw>=0&&raw<=1,
+                "GLB: неверный параметр PBR "+key);
+        return (float)raw;
+    }
+    private static int textureIndex(JSONObject textureInfo) throws Exception {
+        if(textureInfo==null)return -1;
+        require(textureInfo.optInt("texCoord",0)==0,
+                "GLB: поддерживается только UV TEXCOORD_0");
+        JSONObject extensions=textureInfo.optJSONObject("extensions");
+        require(extensions==null||!extensions.has("KHR_texture_transform"),
+                "GLB: трансформация UV пока не поддерживается");
+        return textureInfo.getInt("index");
+    }
+    // Normal is transformed by inverse-transpose of the node's upper 3x3.
+    // With non-uniform node scale, using the position matrix would distort it.
+    private static float[] normal(Access normals,int vertex,float[] m) throws Exception {
+        require(vertex>=0&&vertex<normals.count,"NORMAL: индекс за пределами GLB");
+        int stride=normals.component==5120||normals.component==5121?1:
+                   (normals.component==5122||normals.component==5123?2:4);
+        int off=normals.offset+vertex*normals.step;
+        float x=positionComponent(normals,off);
+        float y=positionComponent(normals,off+stride);
+        float z=positionComponent(normals,off+2*stride);
+        require(Float.isFinite(x)&&Float.isFinite(y)&&Float.isFinite(z),
+                "NORMAL: неверный вектор GLB");
+        float ax=m[0],ay=m[1],az=m[2], bx=m[4],by=m[5],bz=m[6],
+              cx=m[8],cy=m[9],cz=m[10];
+        float nx=x*(by*cz-bz*cy)+y*(cy*az-cz*ay)+z*(ay*bz-az*by);
+        float ny=x*(bz*cx-bx*cz)+y*(cz*ax-cx*az)+z*(az*bx-ax*bz);
+        float nz=x*(bx*cy-by*cx)+y*(cx*ay-cy*ax)+z*(ax*by-ay*bx);
+        float det=ax*(by*cz-bz*cy)+ay*(bz*cx-bx*cz)+az*(bx*cy-by*cx);
+        float len=(float)Math.sqrt(nx*nx+ny*ny+nz*nz);
+        if(len<.000001f||Math.abs(det)<.000001f)return null;
+        float scale=Math.signum(det)/len;
+        return new float[]{nx*scale,ny*scale,nz*scale};
+    }
+    private static int slot(Map<Integer,Integer> used,int textureIndex) throws Exception {
+        if(textureIndex<0)return -1;
+        Integer found=used.get(textureIndex);
+        if(found!=null)return found;
+        require(used.size()<16,"В GLB больше 16 текстур для GPU");
+        int index=used.size();
+        used.put(textureIndex,index);
+        return index;
     }
     private static float[] vertexColor(Access colors,int vertex) throws Exception {
         require(colors!=null&&vertex>=0&&vertex<colors.count,"Индекс цвета за пределами GLB");
@@ -381,26 +443,40 @@ public final class GlbReader {
                 Access indices=p.has("indices")?accessor(st,p.getInt("indices"),0):null;
                 Access uv=attrs.has("TEXCOORD_0")?accessor(st,attrs.getInt("TEXCOORD_0"),2):null;
                 Access colors=attrs.has("COLOR_0")?accessor(st,attrs.getInt("COLOR_0"),3):null;
+                Access normals=attrs.has("NORMAL")?accessor(st,attrs.getInt("NORMAL"),1):null;
+                if(normals!=null)require(normals.count==positions.count,
+                    "GLB: число NORMAL не совпадает с POSITION");
                 int count=indices==null?positions.count:indices.count;
                 int triangles=count/3;
                 if(triangles==0)continue;
-                require((long)st.triangles+triangles<=MAX_TRIANGLES,"Модель больше 90 000 треугольников");
+                require((long)st.triangles+triangles<=MAX_TRIANGLES,"Слишком сложная единая модель (свыше 240 000 треугольников): нужен потоковый импорт");
                 Job j=new Job();j.positions=positions;j.indices=indices;j.uv=uv;
-                j.colors=colors;
+                j.colors=colors;j.normals=normals;
                 j.triangles=triangles;j.matrix=matrix;j.color=color(st,p);
                 int materialIndex=p.optInt("material",-1);
                 JSONArray materials=st.gltf.optJSONArray("materials");
-                if(materialIndex>=0&&materials!=null&&materialIndex<materials.length()&&uv!=null){
+                require(materialIndex==-1||(materials!=null&&
+                        materialIndex>=0&&materialIndex<materials.length()),
+                    "GLB: неправильный индекс материала");
+                j.materialId=materialIndex;
+                if(materialIndex>=0&&materials!=null&&materialIndex<materials.length()){
                     JSONObject mat=materials.getJSONObject(materialIndex);
                     JSONObject pbr=mat.optJSONObject("pbrMetallicRoughness");
-                    JSONObject textureInfo=pbr==null?null:pbr.optJSONObject("baseColorTexture");
-                    if(textureInfo!=null){
-                        require(textureInfo.optInt("texCoord",0)==0,
-                            "GLB: поддерживается только UV TEXCOORD_0");
-                        JSONObject ex=textureInfo.optJSONObject("extensions");
-                        require(ex==null||!ex.has("KHR_texture_transform"),
-                            "GLB: трансформация UV пока не поддерживается");
-                        j.textureIndex=textureInfo.getInt("index");
+                    j.metallic=materialFactor(pbr,"metallicFactor",1.f);
+                    j.roughness=materialFactor(pbr,"roughnessFactor",1.f);
+                    if(uv!=null){
+                        j.textureIndex=textureIndex(
+                            pbr==null?null:pbr.optJSONObject("baseColorTexture"));
+                        j.metallicRoughnessTextureIndex=textureIndex(
+                            pbr==null?null:pbr.optJSONObject("metallicRoughnessTexture"));
+                        JSONObject normalInfo=mat.optJSONObject("normalTexture");
+                        j.normalTextureIndex=textureIndex(normalInfo);
+                        if(normalInfo!=null){
+                            double scale=normalInfo.optDouble("scale",1.);
+                            require(Double.isFinite(scale)&&scale>=0&&scale<=2,
+                                "GLB: неверная сила карты нормалей");
+                            j.normalScale=(float)scale;
+                        }
                     }
                 }
                 st.jobs.add(j);st.triangles+=triangles;
@@ -415,7 +491,9 @@ public final class GlbReader {
     }
     public static Result decode(byte[] data,int textureLimit) throws Exception {
         require(textureLimit==1024||textureLimit==2048,"Укажи 1024 или 2048 px");
-        require(data!=null && data.length>=20 && data.length<=MAX_BYTES,"Размер GLB должен быть до 24 МБ");
+        require(data!=null && data.length>=20 && data.length<=MAX_BYTES,
+                "Размер GLB превышает безопасный предел "+(MAX_BYTES/(1024*1024))+
+                " МиБ для текущего импортёра. Оригинальный файл сохранён.");
         ByteBuffer src=ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
         require(u32(src,0)==0x46546c67 && u32(src,4)==2 && Integer.toUnsignedLong(u32(src,8))==data.length,
                 "Нужен бинарный файл GLB версии 2.0");
@@ -458,30 +536,43 @@ public final class GlbReader {
         require(st.triangles>0,"В GLB нет доступной треугольной геометрии");
         float[] verts=new float[st.triangles*33];
         int[] draws=new int[st.jobs.size()*3];
+        int[] materialIds=new int[st.jobs.size()];
+        JSONArray gltfMaterials=gltf.optJSONArray("materials");
+        String[] materialNames=new String[gltfMaterials==null?0:gltfMaterials.length()];
+        for(int mi=0;mi<materialNames.length;mi++){
+            String label=gltfMaterials.getJSONObject(mi).optString("name","").trim();
+            materialNames[mi]=label.isEmpty()?"Материал "+(mi+1):
+                label.substring(0,Math.min(label.length(),90));
+        }
+        int[] pbrTextures=new int[st.jobs.size()*2];
+        float[] pbrFactors=new float[st.jobs.size()*3];
         Map<Integer,Integer> usedTextures=new LinkedHashMap<>();
         int drawIndex=0;
         int out=0;float minX=Float.POSITIVE_INFINITY,minY=minX,minZ=minX;
         float maxX=Float.NEGATIVE_INFINITY,maxY=maxX,maxZ=maxX;
         for(Job j:st.jobs){
-            int slot=-1;
-            if(j.textureIndex>=0&&j.uv!=null){
-                Integer previous=usedTextures.get(j.textureIndex);
-                if(previous==null){
-                    require(usedTextures.size()<8,"В GLB больше восьми базовых текстур");
-                    slot=usedTextures.size();
-                    usedTextures.put(j.textureIndex,slot);
-                }else slot=previous;
-            }
+            int base=slot(usedTextures,j.textureIndex);
+            int normalMap=slot(usedTextures,j.normalTextureIndex);
+            int metalMap=slot(usedTextures,j.metallicRoughnessTextureIndex);
+            final int batch=drawIndex/3;
+            materialIds[batch]=j.materialId;
             draws[drawIndex++]=out/11;
             draws[drawIndex++]=j.triangles*3;
-            draws[drawIndex++]=slot;
+            draws[drawIndex++]=base;
+            pbrTextures[batch*2]=normalMap;
+            pbrTextures[batch*2+1]=metalMap;
+            pbrFactors[batch*3]=j.roughness;
+            pbrFactors[batch*3+1]=j.metallic;
+            pbrFactors[batch*3+2]=j.normalScale;
             for(int t=0;t<j.triangles;t++){
                 float[][] v=new float[3][],uvs=new float[3][],colors=new float[3][];
+                float[][] smooth=j.normals==null?null:new float[3][];
                 for(int k=0;k<3;k++){
                     int vertex=readIndex(st,j.indices,t*3+k);
                     v[k]=position(st,j.positions,vertex,j.matrix);
                     uvs[k]=j.uv==null?new float[]{0,0}:texCoord(j.uv,vertex);
                     colors[k]=j.colors==null?new float[]{1,1,1}:vertexColor(j.colors,vertex);
+                    if(smooth!=null)smooth[k]=normal(j.normals,vertex,j.matrix);
                 }
                 float ax=v[1][0]-v[0][0],ay=v[1][1]-v[0][1],az=v[1][2]-v[0][2];
                 float bx=v[2][0]-v[0][0],by=v[2][1]-v[0][1],bz=v[2][2]-v[0][2];
@@ -495,27 +586,32 @@ public final class GlbReader {
                     minX=Math.min(minX,p[0]);minY=Math.min(minY,p[1]);minZ=Math.min(minZ,p[2]);
                     maxX=Math.max(maxX,p[0]);maxY=Math.max(maxY,p[1]);maxZ=Math.max(maxZ,p[2]);
                     verts[out++]=p[0];verts[out++]=p[1];verts[out++]=p[2];
-                    verts[out++]=nx;verts[out++]=ny;verts[out++]=nz;
+                    float[] face=smooth==null?null:smooth[k];
+                    verts[out++]=face==null?nx:face[0];
+                    verts[out++]=face==null?ny:face[1];
+                    verts[out++]=face==null?nz:face[2];
                     for(int c=0;c<3;c++)verts[out++]=j.color[c]*colors[k][c];
                     verts[out++]=uvs[k][0];verts[out++]=uvs[k][1];
                 }
             }
         }
-        float extent=Math.max(.001f,Math.max(maxX-minX,Math.max(maxY-minY,maxZ-minZ)));
-        float normalized=6.0f/extent,centerX=(maxX+minX)*.5f,centerZ=(maxZ+minZ)*.5f;
+        // glTF 2.0 uses meters. Preserve physical dimensions *exactly*:
+        // a 700-meter castle MUST be 700 meters wide in the OE city.
+        // Recenter X/Z around the footprint and ground minY at zero; these
+        // translations do NOT resize, decimate or modify the owner's GLB.
+        float centerX=(maxX+minX)*.5f,centerZ=(maxZ+minZ)*.5f;
         for(int i=0;i<verts.length;i+=11){
-            verts[i]=(verts[i]-centerX)*normalized;
-            verts[i+1]=(verts[i+1]-minY)*normalized;
-            verts[i+2]=(verts[i+2]-centerZ)*normalized;
+            verts[i]-=centerX;
+            verts[i+1]-=minY;
+            verts[i+2]-=centerZ;
         }
         // Every transformed vertex lies inside these axis-aligned bounds.
         // The enclosing sphere can only OVER-estimate visibility, never
         // incorrectly omit a valid triangle due to a too-small bounding box.
-        float dx=(maxX-minX)*normalized;
-        float dy=(maxY-minY)*normalized;
-        float dz=(maxZ-minZ)*normalized;
+        float dx=maxX-minX,dy=maxY-minY,dz=maxZ-minZ;
         float sphere=(float)(.5*Math.sqrt((double)dx*dx+(double)dy*dy+(double)dz*dz));
-        require(Float.isFinite(sphere)&&sphere>=0&&sphere<100,"Неверные границы GLB");
+        require(Float.isFinite(sphere)&&sphere>=0&&sphere<=8192,
+                "Некорректный размер модели в метрах (радиус более 8 км)");
         JSONArray images=gltf.optJSONArray("images"),skins=gltf.optJSONArray("skins");
         JSONArray animations=gltf.optJSONArray("animations"),textures=gltf.optJSONArray("textures");
         boolean rigged=(skins!=null&&skins.length()>0)||
@@ -536,7 +632,7 @@ public final class GlbReader {
         for(Map.Entry<Integer,Integer> item:usedTextures.entrySet()){
             TextureReader.Image image=readTexture(st,item.getKey(),textureLimit);
             memoryUsed+=image.bytes.length;
-            require(memoryUsed<=32*1024*1024,"Слишком много памяти для текстур GLB");
+            require(memoryUsed<=64*1024*1024,"Текстуры GLB требуют больше 64 МиБ видеопамяти: нужны потоковые материалы");
             decoded[item.getValue()]=image;
         }
         byte[][] dataOut=new byte[decoded.length][];
@@ -550,6 +646,6 @@ public final class GlbReader {
         }
         boolean omitted=(images!=null&&images.length()>0&&usedTextures.isEmpty());
         return new Result(verts,st.triangles,dy*.5f,sphere+.05f,omitted,rigged,
-            draws,dataOut,imageInfo);
+            draws,materialIds,materialNames,pbrTextures,pbrFactors,dataOut,imageInfo);
     }
 }

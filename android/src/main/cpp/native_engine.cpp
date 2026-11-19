@@ -86,7 +86,7 @@ static float gSubmitCpuMs=0.f;
 const oe::QualityProfile&quality(){return oe::profile(gQualityTier);}
 static std::unordered_map<std::string,Asset> gAssets;
 static std::unordered_map<std::string,TextureResource> gPaintTextures;
-static constexpr size_t MAX_PAINT_TEXTURES=8,MAX_PAINT_CACHE_BYTES=32u*1024u*1024u;
+static constexpr size_t MAX_PAINT_TEXTURES=32,MAX_PAINT_CACHE_BYTES=128u*1024u*1024u;
 static constexpr size_t MAX_TEXTURE_CACHE_BYTES=96u*1024u*1024u;
 static constexpr size_t MAX_LOD_CACHE_BYTES=40u*1024u*1024u;
 static int gLodDrawCounts[3]={0,0,0};
@@ -127,6 +127,7 @@ static std::vector<TerrainBrush> gBrushes;
 static int gTerrainRevision=0;
 static oe::uv56::Terrain gUv56Terrain; // single native city GLES terrain
 static bool gUv56StrokeActive=false; // one touch gesture = one Undo action
+static int gUv56LastStrokeError=0; // 1 busy/args, 2 ground ray, 3 outside area, 4 brush rejected
 // R4 composited paint tiles: GPU cache is disposable; authoring bytes are portable.
 static oe::terrainpaint::Canvas gPaintTiles;
 static oe::terrainpaint::MaterialCanvas gMaterialCanvas;
@@ -232,7 +233,7 @@ void restoreScene(const SceneSnapshot&s){
  gWalkPreview.clear(); // Undo/Redo invalidates derived physical surfaces.
  gEntities=s.entities;gNextId=s.nextId;gSelected=s.selected;gWorldSize=s.worldSize;
  gDemoRoads=s.demoRoads;gTarget=s.target;gDistance=s.cameraDistance;
- gUv56StrokeActive=false;
+ gUv56StrokeActive=false;gUv56LastStrokeError=0;
  gBrushes=s.terrain;gTerrainPaint=s.paints;gUv56Terrain=s.uv56;
  gTerrainRevision++;gSceneInitialized=true;
  gLakes=s.lakes;gSelectedLake=s.selectedLake;++gLakeRevision;
@@ -1151,7 +1152,7 @@ void drawMaterialLayers(const Mat4& vp){
  glUniform1f(gShader.locMaterialLayer,1.f);
  glBindVertexArray(gPaintMesh.vao);
  std::vector<float> verts;
- verts.reserve(16*16*6*11);
+ verts.reserve(64*64*6*11);
  for(const auto& tile:gMaterialCanvas.tiles()){
   const float ox=tile.x*oe::terrainpaint::kTileMetres,
               oz=tile.z*oe::terrainpaint::kTileMetres;
@@ -1159,13 +1160,26 @@ void drawMaterialLayers(const Mat4& vp){
      std::abs(oz+32.f-gTarget.z)>range)continue;
   verts.clear();
   auto append=[&](float x,float z){
-   verts.insert(verts.end(),{x,terrainHeightAt(x,z)+.084f,z,
-     0.f,1.f,0.f,1.f,1.f,1.f,
+   // Lighting follows the hill's actual slope, not a hard-coded flat normal.
+  const float dx=(terrainHeightAt(x+1.f,z)-terrainHeightAt(x-1.f,z))*.5f;
+  const float dz=(terrainHeightAt(x,z+1.f)-terrainHeightAt(x,z-1.f))*.5f;
+  const Vec3 n=unit({-dx,1.f,-dz});
+  verts.insert(verts.end(),{x,terrainHeightAt(x,z)+.084f,z,
+     n.x,n.y,n.z,1.f,1.f,1.f,
      (x-ox)/oe::terrainpaint::kTileMetres,
      (z-oz)/oe::terrainpaint::kTileMetres});
   };
-  for(int z=0;z<16;z++)for(int x=0;x<16;x++){
-   const float x0=ox+x*4.f,x1=x0+4.f,z0=oz+z*4.f,z1=z0+4.f;
+  // Height displacement is stored at 1m in UV56. 4m R5.7 material
+  // vertices clipped into hills or floated above the real surface.
+  // Adapt the overlay mesh to raised tiles, preserving low-RAM far LOD.
+  const bool uv56Edited=gUv56Terrain.affectsTile(tile.x,tile.z);
+  const int divisions=uv56Edited?
+      ((std::abs(ox+32.f-gTarget.x)<100.f&&
+        std::abs(oz+32.f-gTarget.z)<100.f)?64:32):16;
+  const float matStep=oe::terrainpaint::kTileMetres/static_cast<float>(divisions);
+  for(int z=0;z<divisions;z++)for(int x=0;x<divisions;x++){
+   const float x0=ox+x*matStep,x1=x0+matStep,
+               z0=oz+z*matStep,z1=z0+matStep;
    append(x0,z0);append(x0,z1);append(x1,z0);
    append(x1,z0);append(x0,z1);append(x1,z1);
   }
@@ -1564,7 +1578,10 @@ bool groundPoint(float px,float py,float &x,float &z){
  const float u=(px*2.f/gWidth-1.f)*half*aspect,v=(1.f-py*2.f/gHeight)*half;
  Vec3 ray=unit({forward.x+right.x*u+up.x*v,forward.y+right.y*u+up.y*v,
                  forward.z+right.z*u+up.z*v});
- if(gBrushes.empty()){
+ // Native UV56 height nodes are independent from legacy R5.7 brushes.
+ // Plane picking must be disabled after the FIRST UV56 hill is sculpted.
+ // Otherwise the cursor hits an invisible y=0 plane behind raised ground.
+ if(gBrushes.empty()&&gUv56Terrain.nodeCount()==0){
   if(ray.y>-.0001f)return false;
   const float t=-eye.y/ray.y;
   if(t<=0||t>1500.f)return false;
@@ -1639,7 +1656,8 @@ void reset(bool demo){
  const bool wasMuted=gSuspendHistory;
  gSuspendHistory=true;
  gEntities.clear();gBrushes.clear();gTerrainPaint.clear();
- gUv56StrokeActive=false;gUv56Terrain=oe::uv56::Terrain();gTerrainRevision++;gNextId=1;gSelected=0;
+ gUv56StrokeActive=false;gUv56LastStrokeError=0;
+ gUv56Terrain=oe::uv56::Terrain();gTerrainRevision++;gNextId=1;gSelected=0;
  gLakes.clear();gSelectedLake=-1;++gLakeRevision;
  gRoads.clear();gSelectedRoad=0;gActiveRoad=0;gSelectedRoadPoint=-1;gRoadPending=false;++gRoadRevision;
  gPaintTiles.clear();gMaterialCanvas.clear();
@@ -3068,27 +3086,43 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeUv56Configur
  recordEdit();
  gUv56Terrain=std::move(next);
  ++gTerrainRevision;++gRoadRevision;
+ // UV56 areas are centred at world origin. Re-centre the camera ONLY when
+ // its current focus is outside the new visible editable territory.
+ const float half=std::sqrt(static_cast<float>(area))*.5f;
+ if(gTarget.x< -half+2.f||gTarget.x>half-2.f||
+    gTarget.z< -half+2.f||gTarget.z>half-2.f){
+  gTarget.x=0.f;gTarget.z=0.f;
+ }
  gTarget.y=terrainHeightAt(gTarget.x,gTarget.z)+1.2f;
  return JNI_TRUE;
 }
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeUv56LastStrokeError(
+ JNIEnv*,jclass){return gUv56LastStrokeError;}
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeUv56StrokeStart(
  JNIEnv*,jclass,jint tool,jfloat px,jfloat py,jfloat radius,jfloat power){
+ gUv56LastStrokeError=0;
  if(gUv56StrokeActive||tool<1||tool>5||!std::isfinite(radius)||
-    !std::isfinite(power)||radius<.5f||radius>24.f||power<.2f||power>8.f)
-    return JNI_FALSE;
+    !std::isfinite(power)||radius<.5f||radius>24.f||power<.2f||power>8.f){
+    gUv56LastStrokeError=1;return JNI_FALSE;
+ }
  float x=0,z=0;
- if(!groundPoint(px,py,x,z))return JNI_FALSE;
+ if(!groundPoint(px,py,x,z)){
+    gUv56LastStrokeError=2;return JNI_FALSE;
+ }
  oe::uv56::Terrain proposal=gUv56Terrain;
  if(!proposal.active()){
   // Stage 1-compatible default. Explicit selection uses ConfigureArea.
   const int area=std::min(2000000,static_cast<int>(
        static_cast<long long>(gWorldSize)*gWorldSize));
-  if(!proposal.create(area))return JNI_FALSE;
+  if(!proposal.create(area)){gUv56LastStrokeError=1;return JNI_FALSE;}
  }
- if(!proposal.valid(x,z))return JNI_FALSE;
+ if(!proposal.valid(x,z)){
+  gUv56LastStrokeError=3;return JNI_FALSE;
+ }
  proposal.beginStroke(x,z);
- if(!proposal.brushAt(x,z,static_cast<oe::uv56::Tool>(tool),radius,power))
-  return JNI_FALSE;
+ if(!proposal.brushAt(x,z,static_cast<oe::uv56::Tool>(tool),radius,power)){
+  gUv56LastStrokeError=4;return JNI_FALSE;
+ }
  recordEdit(); // one native R5.7 undo entry for the whole drag
  gUv56Terrain=std::move(proposal);
  gUv56StrokeActive=true;
@@ -3662,7 +3696,8 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  // Commit: no validation or allocation failures below this point.
  gWalkPreview.clear();
  gEntities.swap(staged);gBrushes.swap(stagedBrushes);
- gUv56StrokeActive=false;gUv56Terrain=std::move(stagedUv56);
+ gUv56StrokeActive=false;gUv56LastStrokeError=0;
+ gUv56Terrain=std::move(stagedUv56);
  gLakes.swap(stagedLakes);gSelectedLake=-1;++gLakeRevision;
  gTerrainPaint.swap(stagedPaint);gTerrainRevision++;
  gRoads=std::move(nextRoads);gSelectedRoad=0;gActiveRoad=0;gRoadPending=false;

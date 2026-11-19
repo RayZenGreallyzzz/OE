@@ -32,11 +32,16 @@ struct Vec3 {float x, y, z;};
 struct Vec4 {float x, y, z, w;};
 struct Mat4 {float m[16]{};};
 struct Mesh {GLuint vao=0, buffer=0; GLsizei count=0;};
+struct MaterialStyle {
+ Vec3 tint{1.f,1.f,1.f}; // linear multiplier, allows soft bright/dark variants
+ std::string texture;    // shared content-addressed texture key
+};
 struct Entity {int id=0, type=0; float x=0, z=0, yaw=0, size=1; std::string asset;
  float y=0.f, sx=1.f,sy=1.f,sz=1.f; std::string paint;
  // Extra world-space orientation is optional in v1 scenes. Existing yaw is
  // folded into this normalized quaternion on first 3-axis rotation.
  float qx=0.f,qy=0.f,qz=0.f,qw=1.f;
+ std::unordered_map<int,MaterialStyle> materialStyles; // local to this clone
 };
 struct Color {float r,g,b;};
 struct Shader {
@@ -56,6 +61,7 @@ struct AssetBatch {
  int first=0,count=0,texture=-1;
  int normalTexture=-1,metallicRoughnessTexture=-1;
  float roughness=1.f,metallic=1.f,normalScale=1.f;
+ int materialId=-1;
 };
 struct AssetLod{
  Mesh gpu;
@@ -67,6 +73,7 @@ struct Asset {
  int vertexStride=9;
  std::vector<float> vertices; // Retained for GPU context recreation.
  std::vector<AssetBatch> batches;
+ std::vector<std::string> materialNames;
  std::vector<TextureResource> textures;
  std::array<AssetLod,2> lods; // Tier 1/2, original remains tier 0.
  float centerY=0.f, radius=0.f;
@@ -594,7 +601,7 @@ void setupGL(){
      // glTF metallic-roughness PBR preview; GLB source bytes stay immutable.
      // Vertex/material factors are linear; baseColor texture is sRGB.
      vec3 base=srgbToLinear(texel.rgb)*
-               clamp(uColor*tint,0.,1.);
+               max(uColor,vec3(0.))*clamp(tint,0.,1.);
      float metallic=clamp(uMetallic,0.,1.);
      float roughness=clamp(uRoughness,0.,1.);
      if(uUseOrmMap>.5){
@@ -943,6 +950,10 @@ void drawImported(const Mat4&vp,const Entity&e){
   glDrawArrays(GL_TRIANGLES,0,gpu->count);
   ++gDrawCalls;gTriangles+=gpu->count/3;
  }else for(const auto&batch:*batches){
+  const auto style=e.materialStyles.find(batch.materialId);
+  const MaterialStyle*variant=style==e.materialStyles.end()?nullptr:&style->second;
+  if(variant)glUniform3f(gShader.locColor,variant->tint.x,variant->tint.y,variant->tint.z);
+  else glUniform3f(gShader.locColor,1.f,1.f,1.f);
   glUniform1f(gShader.locRoughness,batch.roughness);
   glUniform1f(gShader.locMetallic,batch.metallic);
   glUniform1f(gShader.locNormalScale,batch.normalScale);
@@ -956,7 +967,10 @@ void drawImported(const Mat4&vp,const Entity&e){
   bindOptional(batch.normalTexture,1,gShader.locUseNormalMap);
   bindOptional(batch.metallicRoughnessTexture,2,gShader.locUseOrmMap);
   glActiveTexture(GL_TEXTURE0);
-  if(overridePaint&&overridePaint->id){bindPaint(overridePaint);}
+  const TextureResource*batchPaint=variant&&!variant->texture.empty()?
+      paintTexture(variant->texture):nullptr;
+  if(batchPaint&&batchPaint->id){bindPaint(batchPaint);}
+  else if(overridePaint&&overridePaint->id){bindPaint(overridePaint);}
   else if(batch.texture>=0&&static_cast<size_t>(batch.texture)<asset.textures.size()&&
      asset.textures[batch.texture].id){
    glActiveTexture(GL_TEXTURE0);
@@ -968,6 +982,7 @@ void drawImported(const Mat4&vp,const Entity&e){
   ++gDrawCalls;gTriangles+=batch.count/3;
  }
  bindPaint(nullptr);
+ glUniform3f(gShader.locColor,1.f,1.f,1.f);
  glActiveTexture(GL_TEXTURE2);glBindTexture(GL_TEXTURE_2D,0);
  glActiveTexture(GL_TEXTURE1);glBindTexture(GL_TEXTURE_2D,0);
  glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,0);
@@ -2746,9 +2761,10 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsse
  JNIEnv*env,jclass,jstring key,jfloatArray vertices,jfloat centerY,jfloat radius,
  jintArray batchData,jobjectArray imageData,jintArray imageInfo,
  jintArray pbrTexData,jfloatArray pbrFactorData,
+ jintArray materialIdData,jobjectArray materialNameData,
  jboolean preserveOriginalRig){
  if(!key||!vertices||!batchData||!imageData||!imageInfo||
-    !pbrTexData||!pbrFactorData||
+    !pbrTexData||!pbrFactorData||!materialIdData||!materialNameData||
     !std::isfinite(centerY)||!std::isfinite(radius)||
     radius<.05f||radius>8192.f||centerY<0.f||centerY>16384.f)return JNI_FALSE;
  const char*raw=env->GetStringUTFChars(key,nullptr);
@@ -2770,6 +2786,9 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsse
  const jsize batchLength=env->GetArrayLength(batchData);
  if(batchLength<=0||batchLength>6144||batchLength%3!=0)return JNI_FALSE;
  const jsize batchCount=batchLength/3;
+ const jsize materialCount=env->GetArrayLength(materialNameData);
+ if(materialCount<0||materialCount>512||
+    env->GetArrayLength(materialIdData)!=batchCount)return JNI_FALSE;
  if(env->GetArrayLength(pbrTexData)!=batchCount*2||
     env->GetArrayLength(pbrFactorData)!=batchCount*3)return JNI_FALSE;
  const jsize imageCount=env->GetArrayLength(imageData);
@@ -2799,6 +2818,18 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsse
  env->GetIntArrayRegion(pbrTexData,0,batchCount*2,pbrTextures.data());
  env->GetFloatArrayRegion(pbrFactorData,0,batchCount*3,pbrFactors.data());
  if(env->ExceptionCheck())return JNI_FALSE;
+ std::vector<jint> materialIds(static_cast<size_t>(batchCount));
+ env->GetIntArrayRegion(materialIdData,0,batchCount,materialIds.data());
+ if(env->ExceptionCheck())return JNI_FALSE;
+ for(jsize mi=0;mi<materialCount;mi++){
+  jstring raw=static_cast<jstring>(env->GetObjectArrayElement(materialNameData,mi));
+  if(!raw||env->ExceptionCheck())return JNI_FALSE;
+  const char*name=env->GetStringUTFChars(raw,nullptr);
+  if(!name){env->DeleteLocalRef(raw);return JNI_FALSE;}
+  std::string label(name);env->ReleaseStringUTFChars(raw,name);env->DeleteLocalRef(raw);
+  if(label.size()>300)return JNI_FALSE;
+  prepared.materialNames.push_back(label);
+ }
  jint consumed=0;
  for(jsize i=0;i<batchLength;i+=3){
   const jint first=batches[i],count=batches[i+1],texture=batches[i+2];
@@ -2806,6 +2837,8 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsse
      count>vertexCount-consumed||texture< -1||texture>=imageCount)return JNI_FALSE;
   const jsize batch=i/3;
   const jint normalMap=pbrTextures[batch*2],ormMap=pbrTextures[batch*2+1];
+  const jint materialId=materialIds[batch];
+  if(materialId<-1||materialId>=materialCount)return JNI_FALSE;
   const float roughness=pbrFactors[batch*3],metallic=pbrFactors[batch*3+1],
               normalScale=pbrFactors[batch*3+2];
   if(normalMap< -1||normalMap>=imageCount||ormMap< -1||ormMap>=imageCount||
@@ -2813,7 +2846,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsse
      !std::isfinite(metallic)||metallic<0.f||metallic>1.f||
      !std::isfinite(normalScale)||normalScale<0.f||normalScale>2.f)return JNI_FALSE;
   prepared.batches.push_back({first,count,texture,normalMap,ormMap,
-                              roughness,metallic,normalScale});
+                              roughness,metallic,normalScale,materialId});
   consumed+=count;
  }
  if(consumed!=vertexCount)return JNI_FALSE;

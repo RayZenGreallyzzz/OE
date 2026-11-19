@@ -31,10 +31,12 @@ silently turn a 700-meter-long castle into a tiny ornament.
   silently risking Android out-of-memory. Separate streaming / multi-mesh
   loading for 170 MiB+ full GLBs is a future architecture change; the editor
   can already keep 170 MiB Phoenix project backups independently of city import.
-- Existing geometric triangle ceilings, GPU texture budgets and Android
-  memory checks still apply; an export larger than 24MiB is not guaranteed to
-  load if it exceeds real complexity limits. Make failure explicit and keep
-  the original model available. These are safety limits, not model rescaling.
+- Import preview budgets are increased in lockstep to **240,000 triangles**
+  and **64 MiB decoded textures per model**, with a 128 MiB GPU texture-cache
+  budget. Those are device-safety memory budgets, not rescaling limits. An
+  export larger than 24MiB is not automatically guaranteed to load if it
+  exceeds real complexity limits. Make failure explicit and keep the original
+  model available. Models larger than these budgets require streaming.
 
 ## Exact test on tablet
 1. Build a 700m long castle in Phoenix and export GLB; place it in OE.

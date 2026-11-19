@@ -54,6 +54,7 @@ jobs:
           python3 tests/uv56_landscape_height_bulk_tiles_smoke.py
           python3 tests/uv56_stage4_beige_sculpt_bulk_smoke.py
           python3 tests/uv56_snow_gl_context_camera_smoke.py
+          python3 tests/editor_only_plots_stage6_smoke.py
   device-quality:
     runs-on: ubuntu-latest
     steps:

@@ -51,7 +51,7 @@ public final class ProjectArchive {
         JSONObject json=new JSONObject(scene);
         int version=json.optInt("version",-1);
         JSONObject guide=json.optJSONObject("mapReference");
-        check(version>=1&&version<=9,"Неподдерживаемая версия сцены");
+        check(version>=1&&version<=10,"Неподдерживаемая версия сцены");
         if(version<3){
             check(!json.has("mapReference"),"Подложка требует сцену версии 3+");
             return null;
@@ -211,7 +211,9 @@ public final class ProjectArchive {
     // Previous v1-v8 cities continue to be read exactly as before.
     private static void validateNativeUv56(JSONObject doc,int version) throws Exception {
         JSONObject field=doc.optJSONObject("uv56Terrain");
-        check((version==9&&field!=null)||(version<9&&!doc.has("uv56Terrain")),
+        check((version==9&&field!=null)||
+              (version<9&&!doc.has("uv56Terrain"))||
+              (version>=10&&(!doc.has("uv56Terrain")||field!=null)),
             "Повреждённое расширение UV56 / неправильная версия");
         if(field==null)return;
         check(field.optInt("version",-1)==1&&
@@ -244,14 +246,43 @@ public final class ProjectArchive {
                   unique.add(ints[0]+":"+ints[1]),"Неверные узлы UV56");
         }
     }
+    // The frame layer never enters Runtime Core or the game scene.
+    // v10 is required only when at least one authoring site is saved.
+    private static void validateEditorPlots(JSONObject doc,int version) throws Exception {
+        JSONArray plots=doc.optJSONArray("editorPlots");
+        check((version==10&&plots!=null&&plots.length()>0)||
+              (version<10&&!doc.has("editorPlots")),
+              "Рамки участков доступны только в сцене v10");
+        if(plots==null)return;
+        check(plots.length()<=32,"Допускается до 32 участков в одном секторе");
+        final double world=doc.getDouble("worldSize")*.5;
+        java.util.HashSet<Integer> ids=new java.util.HashSet<>();
+        for(int i=0;i<plots.length();i++){
+            JSONObject p=plots.getJSONObject(i);
+            int id=p.getInt("id"),size=p.getInt("size");
+            String label=p.getString("name");
+            double x=p.getDouble("x"),z=p.getDouble("z");
+            check(id>0&&id<=1000000&&ids.add(id),
+                  "Некорректный идентификатор участка");
+            check(label!=null&&!label.trim().isEmpty()&&label.length()<=80&&
+                  label.getBytes(StandardCharsets.UTF_8).length<=100&&
+                  label.indexOf('|')<0&&label.chars().noneMatch(c->Character.isISOControl((char)c)),
+                  "Некорректное название участка");
+            check((size==500||size==1000)&&Double.isFinite(x)&&
+                  Double.isFinite(z)&&Math.abs(x)+size*.5<=world&&
+                  Math.abs(z)+size*.5<=world,
+                  "Участок выходит за пределы мира");
+        }
+    }
     private static Set<String> referencedModels(String scene) throws Exception {
         check(scene.getBytes(StandardCharsets.UTF_8).length<=MAX_SCENE_BYTES,"Сцена превышает безопасный лимит");
         JSONObject json=new JSONObject(scene);
         int version=json.optInt("version",-1);
-        check(version>=1&&version<=9,"Неподдерживаемая версия сцены");
+        check(version>=1&&version<=10,"Неподдерживаемая версия сцены");
         check(version==1||json.optJSONArray("roads")!=null,"Нет дорожной сети");
         validateLakes(json,version);
         validateNativeUv56(json,version);
+        validateEditorPlots(json,version);
         referenceName(scene);
         JSONArray tileData=json.optJSONArray("paintTiles");
         if(version>=4){

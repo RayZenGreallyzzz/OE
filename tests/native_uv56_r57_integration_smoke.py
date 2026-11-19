@@ -12,7 +12,7 @@ for marker in (
     '#include "terrain/uv56_landscape_core.h"',
     'static oe::uv56::Terrain gUv56Terrain;',
     'float h=gUv56Terrain.heightAt(x,z);',
-    'const int divisions=uv56Edited?64:(detail?8:1)',
+    'const int divisions=uv56Edited?(gDistance>250.f?8:64):(detail?8:1)',
     'gUv56Terrain=s.uv56;',
     'gUv56Terrain=std::move(stagedUv56)',
     'nativeUv56SculptAtScreen',
@@ -35,14 +35,14 @@ for marker in (
     'private void chooseUv56SculptSize()',
     'final int kind=placingKind,brush=terrainMode,uv56Brush=uv56SculptTool;',
     'json.put("version",9)',
-    'sceneVersion>9',
-    'uv56Area,uv56Nodes))',
+    'sceneVersion>10',
+    'uv56Area,uv56Nodes,',
     'savedLakes=document.optJSONArray("lakes")',
     'snapshotWithGuide()'
 ):
     assert marker in java, ("java",marker)
 for marker in (
-    'version>=1&&version<=9',
+    'version>=1&&version<=10',
     'validateNativeUv56(json,version)',
     'validateLakes(json,version)',
     'MAX_SCENE_BYTES=8*1024*1024'

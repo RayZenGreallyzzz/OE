@@ -50,9 +50,9 @@ assert 'showUv56LandscapePanel();' in terrain_section
 assert '⛰ Поднять гору' not in terrain_section
 assert 'chooseTerrainBrush' not in terrain_section
 assert 'enterTerrainMode' not in terrain_section
-assert 'version>=1&&version<=9' in archive
-assert 'sceneVersion>9' in java
-assert "applicationId 'game.oe.editor.r57glfix'" in gradle
+assert 'version>=1&&version<=10' in archive
+assert 'sceneVersion>10' in java
+assert "applicationId 'game.oe.editor.r57plots'" in gradle
 assert "applicationIdSuffix '.dev'" in gradle
 assert "import android.webkit" not in panel and "new WebView(" not in panel
 print("UV56_NATIVE_VIDEO_PANEL_OK: persistent native 3D sidebar, cm keypad, "

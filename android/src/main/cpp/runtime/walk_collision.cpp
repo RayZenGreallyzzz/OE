@@ -67,9 +67,11 @@ bool WalkController::inBounds(double x,double z) const noexcept{
         std::abs(z)<=worldHalf_-1.0;
 }
 bool WalkController::configure(const roads::TraversalGraph&g,
-                              roads::TerrainHeight terrain,double worldHalf){
+                              roads::TerrainHeight terrain,double worldHalf,
+                              const std::vector<WalkBarrier>&barriers){
  if(!terrain||!finite(worldHalf)||worldHalf<32.||worldHalf>8192.||
-    g.surfaces.size()>kWalkMaxSurfaces||g.bridges.size()>roads::kMaxTraversalBridges)
+    g.surfaces.size()>kWalkMaxSurfaces||g.bridges.size()>roads::kMaxTraversalBridges||
+    barriers.size()>kMaxWalkBarriers)
   return false;
  double sample=0.;
  if(!validTerrain(terrain,0.,0.,sample))return false;
@@ -83,9 +85,13 @@ bool WalkController::configure(const roads::TraversalGraph&g,
   if(s.bridge&&!connected.count(s.ownerId))continue;
   next.push_back(s);
  }
+ std::set<std::uint64_t> barrierIds;
+ for(const auto&w:barriers)if(!validWalkBarrier(w,worldHalf)||
+   !barrierIds.insert(w.id).second)return false;
  // All potentially failing work above finishes before any old session
  // can be replaced. The previous session survives a malformed graph.
  terrain_=std::move(terrain);surfaces_=std::move(next);
+ barriers_=barriers;
  worldHalf_=worldHalf;state_={};active_=false;
  return true;
 }
@@ -163,7 +169,16 @@ bool WalkController::advance(double dx,double dz,bool jump,std::size_t ticks){
   // Prevent a centre-difference cliff detector from trapping the actor
   // on the high bank just because nearby terrain drops sharply.
   const bool uphill=newTerrain>oldTerrain+.0001;
-  const bool blocked=(steep&&uphill)||
+  bool collisionWall=false;
+  for(const auto&wall:barriers_){
+   const double groundY=terrain_( (wall.ax+wall.bx)*.5,
+                                  (wall.az+wall.bz)*.5 );
+   if(walkBarrierStops(wall,next.feet.x,next.feet.z,
+                       desiredX,desiredZ,next.feet.y,groundY)){
+    collisionWall=true;break;
+   }
+  }
+  const bool blocked=collisionWall||(steep&&uphill)||
       (next.grounded&&elevation>kWalkStepHeight);
   if(!blocked){
    next.feet.x=desiredX;next.feet.z=desiredZ;
@@ -205,7 +220,7 @@ bool WalkController::advance(double dx,double dz,bool jump,std::size_t ticks){
  return true;
 }
 void WalkController::clear() noexcept{
- terrain_={};surfaces_.clear();state_={};active_=false;
+ terrain_={};surfaces_.clear();barriers_.clear();state_={};active_=false;
 }
 bool WalkController::applyToWorld(World&world,EntityId actor) const noexcept{
  if(!active_||!world.alive(actor))return false;

@@ -131,6 +131,9 @@ struct EditorPlot {int id;std::string label;float x,z,size;};
 static std::vector<EditorPlot> gEditorPlots;
 static int gNextEditorPlotId=1;
 static bool gEditorPlotsVisible=true;
+static std::vector<oe::runtime::WalkBarrier> gWalkBarriers;
+static int gNextWalkBarrierId=1;
+static bool gWalkBarriersVisible=true; // only magenta rendering is editor-only
 static constexpr size_t MAX_EDITOR_PLOTS=32;
 static bool gNeutralLandPreview=false; // editor-only; not serialized
 static bool gUv56StrokeActive=false; // one touch gesture = one Undo action
@@ -233,12 +236,14 @@ struct SceneSnapshot {
  oe::uv56::Terrain uv56; // preserve sculpted hills across city Undo/Redo
  std::vector<EditorPlot> editorPlots;
  int nextEditorPlotId=1;
+ std::vector<oe::runtime::WalkBarrier> barriers;
+ int nextBarrierId=1;
 };
 static std::vector<SceneSnapshot> gUndo,gRedo;
 static bool gSuspendHistory=false;
 static constexpr size_t HISTORY_LIMIT=12; // bounded undo when 2x paint canvases are present
 SceneSnapshot captureScene(){return {gEntities,gNextId,gSelected,gWorldSize,gDemoRoads,
-    gTarget,gDistance,gBrushes,gTerrainPaint,gRoads.all(),gSelectedRoad,gPaintTiles,gMaterialCanvas,gLakes,gSelectedLake,gUv56Terrain,gEditorPlots,gNextEditorPlotId};}
+    gTarget,gDistance,gBrushes,gTerrainPaint,gRoads.all(),gSelectedRoad,gPaintTiles,gMaterialCanvas,gLakes,gSelectedLake,gUv56Terrain,gEditorPlots,gNextEditorPlotId,gWalkBarriers,gNextWalkBarrierId};}
 void restoreScene(const SceneSnapshot&s){
  gWalkPreview.clear(); // Undo/Redo invalidates derived physical surfaces.
  gEntities=s.entities;gNextId=s.nextId;gSelected=s.selected;gWorldSize=s.worldSize;
@@ -246,6 +251,7 @@ void restoreScene(const SceneSnapshot&s){
  gUv56StrokeActive=false;gUv56LastStrokeError=0;
  gBrushes=s.terrain;gTerrainPaint=s.paints;gUv56Terrain=s.uv56;
  gEditorPlots=s.editorPlots;gNextEditorPlotId=s.nextEditorPlotId;
+ gWalkBarriers=s.barriers;gNextWalkBarrierId=s.nextBarrierId;
  gEditorPlotsVisible=true;
  gTerrainRevision++;gSceneInitialized=true;
  gLakes=s.lakes;gSelectedLake=s.selectedLake;++gLakeRevision;
@@ -1309,6 +1315,53 @@ void drawEditorPlots(const Mat4&vp){
  }
  glBindVertexArray(0);
 }
+// Visual guides for authored physical barriers; no renderer geometry is
+// ever used in the collision solver. Hidden in the actual game export.
+void drawCollisionBarrierGuides(const Mat4&vp){
+ if(!gWalkBarriersVisible||gWalkBarriers.empty()||!gPaintMesh.vao)return;
+ glUniform1f(gShader.locMaterialLayer,0.f);
+ glUniform1f(gShader.locTextured,0.f);
+ glUniform1f(gShader.locGuide,0.f);
+ glUniform1f(gShader.locOpacity,1.f);
+ glUniform1f(gShader.locPaintOverride,0.f);
+ glUniform1f(gShader.locOverlay,0.f);
+ const Mat4 model=identity();
+ glUniformMatrix4fv(gShader.locMvp,1,GL_FALSE,vp.m);
+ glUniformMatrix4fv(gShader.locModel,1,GL_FALSE,model.m);
+ glUniform3f(gShader.locColor,1.f,1.f,1.f);
+ glUniform1f(gShader.locLight,0.f);
+ std::vector<float> vertices;
+ for(const auto&w:gWalkBarriers){
+  const float ax=static_cast<float>(w.ax),az=static_cast<float>(w.az),
+              bx=static_cast<float>(w.bx),bz=static_cast<float>(w.bz);
+  const float len=std::hypot(bx-ax,bz-az);
+  if(len<1.f)continue;
+  if(std::hypot((ax+bx)*.5f-gTarget.x,
+                (az+bz)*.5f-gTarget.z)>gDistance*2+len)continue;
+  const int count=std::max(1,static_cast<int>(std::ceil(len/8.f)));
+  vertices.clear();vertices.reserve(static_cast<size_t>(count)*6*11);
+  auto push=[&](float x,float y,float z){
+   vertices.insert(vertices.end(),{x,y,z,0.f,1.f,0.f,
+      .98f,.18f,.80f,0.f,0.f});
+  };
+  for(int i=0;i<count;++i){
+   const float a=static_cast<float>(i)/count,b=static_cast<float>(i+1)/count;
+   const float x0=ax+(bx-ax)*a,z0=az+(bz-az)*a;
+   const float x1=ax+(bx-ax)*b,z1=az+(bz-az)*b;
+   const float y0=terrainHeightAt(x0,z0)+.3f,
+               y1=terrainHeightAt(x1,z1)+.3f;
+   push(x0,y0,z0);push(x0,y0+.65f,z0);push(x1,y1,z1);
+   push(x1,y1,z1);push(x0,y0+.65f,z0);push(x1,y1+.65f,z1);
+  }
+  glBindVertexArray(gPaintMesh.vao);
+  glBindBuffer(GL_ARRAY_BUFFER,gPaintMesh.buffer);
+  glBufferData(GL_ARRAY_BUFFER,static_cast<GLsizeiptr>(vertices.size()*sizeof(float)),
+     vertices.data(),GL_DYNAMIC_DRAW);
+  glDrawArrays(GL_TRIANGLES,0,static_cast<GLsizei>(vertices.size()/11));
+  ++gDrawCalls;gTriangles+=static_cast<int>(vertices.size()/33);
+ }
+ glBindVertexArray(0);
+}
 void drawPrecisionCursor(const Mat4& vp){
  if(!gPaintCursorVisible||!gPaintMesh.vao)return;
  constexpr int segments=48;
@@ -1737,6 +1790,7 @@ void reset(bool demo){
  gUv56StrokeActive=false;gUv56LastStrokeError=0;
  gUv56Terrain=oe::uv56::Terrain();gTerrainRevision++;gNextId=1;gSelected=0;
  gEditorPlots.clear();gNextEditorPlotId=1;gEditorPlotsVisible=true;
+ gWalkBarriers.clear();gNextWalkBarrierId=1;gWalkBarriersVisible=true;
  gLakes.clear();gSelectedLake=-1;++gLakeRevision;
  gRoads.clear();gSelectedRoad=0;gActiveRoad=0;gSelectedRoadPoint=-1;gRoadPending=false;++gRoadRevision;
  gPaintTiles.clear();gMaterialCanvas.clear();
@@ -2192,6 +2246,7 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDraw(JNIEnv*,jcl
  for(const auto&e:gEntities)drawEntity(vp,frustum,e);
  drawLakes(vp);
  drawEditorPlots(vp); // authoring overlay, never a game collision
+ drawCollisionBarrierGuides(vp); // magenta authoring guide only
  if(gWalkPreview.active()){
   const auto&state=gWalkPreview.state();
   const Vec3 place{static_cast<float>(state.feet.x),
@@ -2771,7 +2826,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeWalkPreviewS
   return terrainHeightAt(static_cast<float>(x),static_cast<float>(z));
  };
  oe::runtime::WalkController demo;
- if(!demo.configure(traversal,ground,worldHalf()))return JNI_FALSE;
+ if(!demo.configure(traversal,ground,worldHalf(),gWalkBarriers))return JNI_FALSE;
  double x=gTarget.x,z=gTarget.z;
  if(const auto* selected=gRoads.find(gSelectedRoad)){
   if(!selected->controlPoints.empty()){
@@ -2991,6 +3046,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeSetWorldSize
  for(const auto&e:gEntities)if(std::abs(e.x)>half-1.f||std::abs(e.z)>half-1.f)return JNI_FALSE;
  for(const auto&p:gEditorPlots)if(std::abs(p.x)+p.size*.5f>half||
     std::abs(p.z)+p.size*.5f>half)return JNI_FALSE;
+ for(const auto&w:gWalkBarriers)if(!oe::runtime::validWalkBarrier(w,half))return JNI_FALSE;
  if(!roadBudget(gRoads.all(),newSize))return JNI_FALSE;
  oe::terrainpaint::Canvas nextTiles;
  if(!nextTiles.replaceAll(gPaintTiles.tiles(),newSize))return JNI_FALSE;
@@ -3402,6 +3458,71 @@ JNIEXPORT jobjectArray JNICALL Java_game_oe_editor_EditorActivity_nativePlotList
  }
  return result;
 }
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeBarrierAdd(
+ JNIEnv*,jclass,jdouble ax,jdouble az,jdouble bx,jdouble bz,
+ jdouble thickness,jdouble height){
+ if(gWalkBarriers.size()>=oe::runtime::kMaxWalkBarriers||
+    gNextWalkBarrierId>1000000)return 0;
+ oe::runtime::WalkBarrier w{static_cast<std::uint64_t>(gNextWalkBarrierId),
+   ax,az,bx,bz,thickness,height};
+ if(!oe::runtime::validWalkBarrier(w,worldHalf()))return 0;
+ recordEdit();
+ gWalkBarriers.push_back(w);return gNextWalkBarrierId++;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeBarrierDelete(
+ JNIEnv*,jclass,jint id){
+ for(size_t i=0;i<gWalkBarriers.size();i++)if(
+    gWalkBarriers[i].id==static_cast<std::uint64_t>(id)){
+  recordEdit();
+  gWalkBarriers.erase(gWalkBarriers.begin()+static_cast<long>(i));
+  return JNI_TRUE;
+ }
+ return JNI_FALSE;
+}
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeBarrierCutAtScreen(
+ JNIEnv*,jclass,jint id,jfloat px,jfloat py,jfloat radius){
+ float x=0,z=0;
+ if(!groundPoint(px,py,x,z))return 0;
+ for(size_t i=0;i<gWalkBarriers.size();i++){
+  const auto old=gWalkBarriers[i];
+  if(old.id!=static_cast<std::uint64_t>(id))continue;
+  std::vector<oe::runtime::WalkBarrier> parts;
+  if(!oe::runtime::cutWalkBarrier(old,x,z,radius,parts))return 0;
+  if(gWalkBarriers.size()-1+parts.size()>oe::runtime::kMaxWalkBarriers)
+   return 0;
+  if(parts.size()==2){
+   if(gNextWalkBarrierId>1000000)return 0;
+   parts[1].id=static_cast<std::uint64_t>(gNextWalkBarrierId);
+  }
+  recordEdit();
+  gWalkBarriers.erase(gWalkBarriers.begin()+static_cast<long>(i));
+  for(const auto&part:parts)gWalkBarriers.push_back(part);
+  if(parts.size()==2)++gNextWalkBarrierId;
+  return 1; // one Undo opens/restores an entire gap
+ }
+ return 0;
+}
+JNIEXPORT jobjectArray JNICALL Java_game_oe_editor_EditorActivity_nativeBarrierList(
+ JNIEnv*env,jclass){
+ jclass str=env->FindClass("java/lang/String");
+ if(!str)return nullptr;
+ jobjectArray result=env->NewObjectArray(
+    static_cast<jsize>(gWalkBarriers.size()),str,nullptr);
+ if(!result)return nullptr;
+ for(size_t i=0;i<gWalkBarriers.size();i++){
+  const auto&w=gWalkBarriers[i];
+  std::ostringstream ss;
+  ss<<w.id<<"|"<<w.ax<<"|"<<w.az<<"|"<<w.bx<<"|"<<w.bz
+    <<"|"<<w.thickness<<"|"<<w.height;
+  jstring row=env->NewStringUTF(ss.str().c_str());
+  if(!row)return nullptr;
+  env->SetObjectArrayElement(result,static_cast<jsize>(i),row);
+  env->DeleteLocalRef(row);
+ }
+ return result;
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeBarrierShow(
+ JNIEnv*,jclass,jboolean visible){gWalkBarriersVisible=visible==JNI_TRUE;}
 std::string plotJsonEscaped(const std::string&in){
  std::ostringstream out;
  for(unsigned char c:in){
@@ -3468,7 +3589,17 @@ JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSceneSnapshot
   }
   out<<"]}";
  }
- out<<"],\"lakes\":[";
+ if(!gWalkBarriers.empty()){
+  out<<"],\"collisionWalls\":[";
+  for(size_t i=0;i<gWalkBarriers.size();++i){
+   if(i)out<<",";
+   const auto&w=gWalkBarriers[i];
+   out<<"["<<w.id<<","<<w.ax<<","<<w.az<<","<<w.bx<<","
+      <<w.bz<<","<<w.thickness<<","<<w.height<<"]";
+  }
+  out<<"],\"lakes\":[";
+ }else out<<"],\"lakes\":[";
+
  for(std::size_t i=0;i<gLakes.size();++i){
   if(i)out<<",";
   const auto&lake=gLakes[i];
@@ -3650,10 +3781,11 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  jdoubleArray roadTileMetres,jobjectArray roadPoints,jintArray tileCoords,jobjectArray tileData,
  jintArray layerCoords,jobjectArray layerKeys,jobjectArray layerMasks,
  jfloatArray lakeData,jint uv56Area,jintArray uv56NodeData,
- jintArray plotIds,jobjectArray plotNames,jfloatArray plotValues){
+ jintArray plotIds,jobjectArray plotNames,jfloatArray plotValues,
+ jdoubleArray wallRecords){
  if(!allowedWorldSize(size)||!kinds||!transforms||!modelKeys||!terrainData||
     !objectPaintKeys||!painting||!terrainPaintKeys||!roadIds||!roadNames||
-    !roadMaterials||!roadWidths||!roadTileMetres||!roadPoints||!tileCoords||!tileData||!layerCoords||!layerKeys||!layerMasks||!lakeData||!uv56NodeData||!plotIds||!plotNames||!plotValues)
+    !roadMaterials||!roadWidths||!roadTileMetres||!roadPoints||!tileCoords||!tileData||!layerCoords||!layerKeys||!layerMasks||!lakeData||!uv56NodeData||!plotIds||!plotNames||!plotValues||!wallRecords)
     return JNI_FALSE;
  const jsize n=env->GetArrayLength(kinds);
  if(n<0||n>MAX_ENTITIES||env->GetArrayLength(transforms)!=n*8||
@@ -3939,12 +4071,37 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
   nextPlotId=std::max(nextPlotId,plot.id+1);
   stagedPlots.push_back(std::move(plot));
  }
+ // Stage v12 wall records before touching any city geometry.
+ const jsize wallFloats=env->GetArrayLength(wallRecords);
+ if(wallFloats<0||wallFloats%7!=0||
+    wallFloats>static_cast<jsize>(oe::runtime::kMaxWalkBarriers*7))return JNI_FALSE;
+ std::vector<jdouble> rawWalls(static_cast<size_t>(wallFloats));
+ if(wallFloats){
+  env->GetDoubleArrayRegion(wallRecords,0,wallFloats,rawWalls.data());
+  if(env->ExceptionCheck())return JNI_FALSE;
+ }
+ std::vector<oe::runtime::WalkBarrier> stagedWalls;
+ stagedWalls.reserve(static_cast<size_t>(wallFloats/7));
+ int nextWallId=1;
+ for(jsize i=0;i<wallFloats;i+=7){
+  const double id=rawWalls[i];
+  if(!std::isfinite(id)||id<1||id>1000000||std::floor(id)!=id)return JNI_FALSE;
+  oe::runtime::WalkBarrier w{
+   static_cast<std::uint64_t>(id),rawWalls[i+1],rawWalls[i+2],
+   rawWalls[i+3],rawWalls[i+4],rawWalls[i+5],rawWalls[i+6]};
+  if(!oe::runtime::validWalkBarrier(w,size*.5))return JNI_FALSE;
+  for(const auto&old:stagedWalls)if(old.id==w.id)return JNI_FALSE;
+  nextWallId=std::max(nextWallId,static_cast<int>(w.id)+1);
+  stagedWalls.push_back(w);
+ }
  // Commit: no validation or allocation failures below this point.
  gWalkPreview.clear();
  gEntities.swap(staged);gBrushes.swap(stagedBrushes);
  gUv56StrokeActive=false;gUv56LastStrokeError=0;
  gUv56Terrain=std::move(stagedUv56);
  gEditorPlots=std::move(stagedPlots);gNextEditorPlotId=nextPlotId;
+ gWalkBarriers=std::move(stagedWalls);gNextWalkBarrierId=nextWallId;
+ gWalkBarriersVisible=true;
  gEditorPlotsVisible=true;
  gLakes.swap(stagedLakes);gSelectedLake=-1;++gLakeRevision;
  gTerrainPaint.swap(stagedPaint);gTerrainRevision++;

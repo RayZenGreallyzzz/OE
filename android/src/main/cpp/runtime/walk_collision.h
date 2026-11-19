@@ -3,6 +3,7 @@
 // collision. Editor preview and future Game Runtime share the SAME solver.
 #include "oe_runtime.h"
 #include "../roads/traversal_graph.h"
+#include "walk_barriers.h"
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -35,7 +36,8 @@ public:
  // Validates bounded walk data atomically. A bridge without BOTH true
  // road approaches is *not* registered as a walkable platform.
  bool configure(const roads::TraversalGraph& graph,
-                roads::TerrainHeight terrain,double worldHalf=512.);
+                roads::TerrainHeight terrain,double worldHalf=512.,
+                const std::vector<WalkBarrier>& barriers={});
  // Place feet on the reachable ground/road in a bounded world. Cannot
  // teleport a test player from UNDER a bridge onto its roof.
  bool spawn(double x,double z);
@@ -47,6 +49,7 @@ public:
  bool active() const noexcept{return active_;}
  const WalkState& state() const noexcept{return state_;}
  std::size_t collisionQuads() const noexcept{return surfaces_.size();}
+ std::size_t barrierCount() const noexcept{return barriers_.size();}
  void clear() noexcept;
  // Safe adapter for OE's existing runtime ECS World: commits ONLY player
  // transform on success, never editor objects or authored scenery.
@@ -61,6 +64,7 @@ private:
  bool inBounds(double x,double z) const noexcept;
  roads::TerrainHeight terrain_{};
  std::vector<roads::WalkSurface> surfaces_;
+ std::vector<WalkBarrier> barriers_;
  double worldHalf_=512.;
  WalkState state_{};
  bool active_=false;

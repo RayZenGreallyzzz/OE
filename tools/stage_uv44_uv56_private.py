@@ -7,6 +7,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import shutil
+import tempfile
 from pathlib import Path, PurePosixPath
 import zipfile
 
@@ -39,6 +42,18 @@ def verify_deltas(uv44: dict[str,bytes],uv56: dict[str,bytes]) -> dict:
         raise ValueError(f"UV56 missing delta files: {sorted(UV56_DELTA-uv56.keys())}")
     if set(uv44)-set(uv56):
         raise ValueError("UV56 removed original UV44 assets")
+    # Both functions MUST share one UV56 CleanBuilder instance and one canvas,
+    # not two separate WebView pages for building and terrain.
+    html=uv56["assets/index.html"]
+    js=uv56["assets/js/clean-app.js"]
+    for marker in (b'id="modeBuild"',b'id="modeLandscape"'):
+        if marker not in html:
+            raise ValueError("UV56 unified scene tab missing: "+marker.decode())
+    for marker in (b"$('modeBuild')",b"$('modeLandscape')",
+                   b'this.bindLandscape()',b'this.landscape.restore('):
+        if marker not in js:
+            raise ValueError("UV56 integrated CleanBuilder marker missing: "+
+                             marker.decode())
     unexpected=[name for name in uv56 if name not in UV56_DELTA and
                 (name not in uv44 or uv44[name]!=uv56[name])]
     if unexpected:
@@ -53,18 +68,48 @@ def stage(uv44_apk:Path,uv56_apk:Path,assets_root:Path) -> dict:
     uv44=files_from_apk(uv44_apk)
     uv56=files_from_apk(uv56_apk)
     info=verify_deltas(uv44,uv56)  # validate before writing private files
-    for name,data in uv44.items():
-        target=assets_root/"phoenix"/name
-        target.parent.mkdir(parents=True,exist_ok=True)
-        target.write_bytes(data)
-        if target.read_bytes()!=data:
-            raise IOError(f"UV44 SHA byte-identity lost: {name}")
-    for name in UV56_DELTA:
-        target=assets_root/"phoenix-uv56-overlay"/name
-        target.parent.mkdir(parents=True,exist_ok=True)
-        target.write_bytes(uv56[name])
-        if target.read_bytes()!=uv56[name]:
-            raise IOError(f"UV56 delta byte-identity lost: {name}")
+    assets_root.mkdir(parents=True,exist_ok=True)
+    # Build complete replacements in a temporary directory. Replacing old
+    # embedded Phoenix staging MUST NOT leave stale scripts/models behind.
+    # On any failure, restore the previous private staging unchanged.
+    with tempfile.TemporaryDirectory(prefix=".oe-uv-stage-",dir=assets_root) as tmp:
+        staging=Path(tmp)
+        for name,data in uv44.items():
+            target=staging/"phoenix"/name
+            target.parent.mkdir(parents=True,exist_ok=True)
+            target.write_bytes(data)
+            if hashlib.sha256(target.read_bytes()).digest()!=hashlib.sha256(data).digest():
+                raise IOError(f"UV44 byte identity failed: {name}")
+        for name in UV56_DELTA:
+            target=staging/"phoenix-uv56-overlay"/name
+            target.parent.mkdir(parents=True,exist_ok=True)
+            target.write_bytes(uv56[name])
+            if hashlib.sha256(target.read_bytes()).digest()!=hashlib.sha256(uv56[name]).digest():
+                raise IOError(f"UV56 delta byte identity failed: {name}")
+        installed=[]
+        backups={}
+        try:
+            for folder in ("phoenix","phoenix-uv56-overlay"):
+                dest=assets_root/folder
+                if dest.is_symlink() or (dest.exists() and not dest.is_dir()):
+                    raise ValueError("Refuse to replace unsafe Phoenix staging: "+str(dest))
+                if dest.exists():
+                    old=staging/("old-"+folder)
+                    os.replace(dest,old)
+                    backups[folder]=old
+                os.replace(staging/folder,dest)
+                installed.append(folder)
+        except Exception:
+            for folder in reversed(installed):
+                dest=assets_root/folder
+                if dest.is_dir():
+                    shutil.rmtree(dest)
+            for folder,old in backups.items():
+                if old.exists():
+                    os.replace(old,assets_root/folder)
+            raise
+        # Previous assets are discarded ONLY after both private staging
+        # directories have been replaced successfully. Never installed data.
     return info
 
 def main():

@@ -327,7 +327,8 @@ public final class ProjectArchive {
     private static void validateCollisionWalls(JSONObject doc,int version)
         throws Exception {
         JSONArray walls=doc.optJSONArray("collisionWalls");
-        check((version==12&&(walls==null||walls.length()>0))||
+        check((version==12&&((walls==null&&!doc.has("collisionWalls"))||
+                  (walls!=null&&walls.length()>0)))||
               (version<12&&!doc.has("collisionWalls")),
               "Физические коллизии доступны только в сцене v12");
         if(walls==null)return;

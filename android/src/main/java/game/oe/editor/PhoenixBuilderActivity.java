@@ -17,6 +17,9 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.TextView;
+import android.widget.Button;
+import android.widget.FrameLayout;
+import android.view.Gravity;
 import android.widget.Toast;
 import java.io.ByteArrayInputStream;
 import java.io.File;
@@ -48,7 +51,13 @@ import java.util.Locale;
  */
 public final class PhoenixBuilderActivity extends Activity {
     private static final String ORIGIN="https://appassets.androidplatform.net";
+    // Two modes of ONE OE app. Original UV44 assets are NEVER rewritten.
+    public static final String EXTRA_MODE="oe_phoenix_mode";
+    public static final String MODE_BUILD="build";
+    public static final String MODE_LANDSCAPE="landscape";
     private static final String PREFIX="/phoenix/";
+    private static final String LANDSCAPE_PREFIX="/phoenix-landscape/";
+    private boolean landscapeMode=false;
     private static final int PICK_FILE=7241,SAVE_FILE=7242;
     private static final long MAX_EXPORT_BYTES=1024L*1024*1024;
     private static final long DISK_RESERVE=16L*1024*1024;
@@ -129,14 +138,19 @@ public final class PhoenixBuilderActivity extends Activity {
 
     @Override public void onCreate(Bundle savedState) {
         super.onCreate(savedState);
+        landscapeMode=MODE_LANDSCAPE.equals(getIntent().getStringExtra(EXTRA_MODE));
         getWindow().getDecorView().setSystemUiVisibility(
             View.SYSTEM_UI_FLAG_FULLSCREEN|View.SYSTEM_UI_FLAG_HIDE_NAVIGATION|
             View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
-        try(InputStream ignored=getAssets().open("phoenix/assets/index.html")){
+        // Private packaging overlays ONLY UV56's seven changed/new web files.
+        // The complete, byte-identical UV44 bundle remains the immutable base.
+        String entry=landscapeMode?"phoenix-uv56-overlay/assets/index.html":
+            "phoenix/assets/index.html";
+        try(InputStream ignored=getAssets().open(entry)){
             // The CI code-only APK deliberately omits the owner's UV44 assets.
         }catch(IOException unavailable) {
             TextView label=new TextView(this);
-            label.setText("Phoenix Builder UV44\n\nВ этой сборке пока нет частных " +
+            label.setText("Phoenix Builder UV44 / UV56\n\nВ этой сборке пока нет частных " +
                 "веб-ресурсов Phoenix. В полной сборке они вшиты в APK. " +
                 "Вернись назад в город Orvetra Engine.");
             label.setTextSize(18);label.setPadding(25,40,25,25);
@@ -154,6 +168,17 @@ public final class PhoenixBuilderActivity extends Activity {
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setMediaPlaybackRequiresUserGesture(true);
         web.setWebViewClient(new WebViewClient(){
+            @Override public void onPageFinished(WebView view,String url){
+                // Shared origin keeps WebView IndexedDB texture/GLB references
+                // available between UV44 and UV56. Load only a saved project,
+                // never clear the editor or overwrite unsaved data on startup.
+                if(url!=null && (url.startsWith(ORIGIN+PREFIX) ||
+                    url.startsWith(ORIGIN+LANDSCAPE_PREFIX))){
+                    view.evaluateJavascript(
+                        "if(window.PhoenixClean&&typeof window.PhoenixClean.load==='function')"+
+                        "{window.PhoenixClean.load();}",null);
+                }
+            }
             @Override public boolean shouldOverrideUrlLoading(WebView view,
                     WebResourceRequest request) {
                 return !isPhoenix(request.getUrl());
@@ -236,14 +261,75 @@ public final class PhoenixBuilderActivity extends Activity {
                 runOnUiThread(PhoenixBuilderActivity.this::confirmExit);
             }
         },"OEHost");
-        setContentView(web);
-        web.loadUrl(ORIGIN+PREFIX+"index.html");
+        // A single Android Activity/WebView hosts both modes. Switching mode
+        // reopens the shared Phoenix scene after a verified atomic JSON save.
+        FrameLayout container=new FrameLayout(this);
+        container.addView(web,new FrameLayout.LayoutParams(-1,-1));
+        Button modeButton=new Button(this);
+        modeButton.setText("OE ▾");
+        modeButton.setTextSize(11f);
+        modeButton.setAllCaps(false);
+        modeButton.setContentDescription("Режимы OE: стройка, ландшафт, город");
+        modeButton.setOnClickListener(v->showModeMenu());
+        FrameLayout.LayoutParams mp=new FrameLayout.LayoutParams(64,48,
+            Gravity.TOP|Gravity.RIGHT);
+        mp.topMargin=2;mp.rightMargin=2;
+        container.addView(modeButton,mp);
+        setContentView(container);
+        web.loadUrl(ORIGIN+(landscapeMode?LANDSCAPE_PREFIX:PREFIX)+"index.html");
     }
 
+    private void showModeMenu(){
+        String[] items={"🏗 Стройка — оригинал UV44",
+            "🌿 Ландшафт + дороги — UV56","🏙 Вернуться в город OE",
+            "🛟 Копии проекта"};
+        new AlertDialog.Builder(this).setTitle("Режимы единого OE")
+            .setItems(items,(d,i)->{
+                if(i==0)requestModeSwitch(false);
+                else if(i==1)requestModeSwitch(true);
+                else if(i==2)confirmExit();
+                else showProjectRecovery();
+            }).show();
+    }
+    private void requestModeSwitch(boolean targetLandscape){
+        if(targetLandscape==landscapeMode)return;
+        if(pendingSave!=null||fileCopyInProgress||!pendingQueue.isEmpty()){
+            Toast.makeText(this,"Заверши экспорт, прежде чем менять режим",
+                Toast.LENGTH_LONG).show();
+            return;
+        }
+        new AlertDialog.Builder(this).setTitle("Сохранить перед переключением?")
+            .setMessage("Сохраним текущий редактируемый JSON с безопасными копиями. "+
+                "Здания и рельеф останутся в одном проекте. Полный переносимый "+
+                "JSON с изображениями и GLB экспортируй в режиме Ландшафт.")
+            .setPositiveButton("💾 Сохранить и перейти",(d,w)->saveAndSwitch(targetLandscape))
+            .setNegativeButton("Остаться",null).show();
+    }
+    private void saveAndSwitch(boolean targetLandscape){
+        if(web==null)return;
+        final String js="(function(){try{"+
+            "if(!window.PhoenixClean||!window.PhoenixClean.project)return 'not_ready';"+
+            "return window.NativeBridge.saveCleanProject(JSON.stringify(window.PhoenixClean.project()))"+
+            "?'ok':'save_failed: '+window.NativeBridge.getLastSaveError();"+
+            "}catch(e){return 'exception: '+String(e.message||e);}})();";
+        web.evaluateJavascript(js,result->{
+            if(!"\"ok\"".equals(result)){
+                new AlertDialog.Builder(this).setTitle("Проект не сохранён")
+                    .setMessage("Переключение отменено. Данные оставлены в текущем "+
+                        "режиме. Причина: "+result)
+                    .setPositiveButton("Понятно",null).show();
+                return;
+            }
+            landscapeMode=targetLandscape;
+            web.loadUrl(ORIGIN+(landscapeMode?LANDSCAPE_PREFIX:PREFIX)+"index.html");
+        });
+    }
     private static boolean isPhoenix(Uri uri){
         return "https".equals(uri.getScheme())&&
             "appassets.androidplatform.net".equals(uri.getHost())&&
-            uri.getPath()!=null&&uri.getPath().startsWith(PREFIX);
+            uri.getPath()!=null&&
+            (uri.getPath().startsWith(PREFIX)||
+             uri.getPath().startsWith(LANDSCAPE_PREFIX));
     }
 
     private static String mime(String path) {
@@ -266,11 +352,25 @@ public final class PhoenixBuilderActivity extends Activity {
         byte[] empty=new byte[0];
         if(!isPhoenix(uri))return new WebResourceResponse("text/plain","UTF-8",
             403,"Forbidden",Collections.emptyMap(),new ByteArrayInputStream(empty));
-        String relative=uri.getPath().substring(PREFIX.length());
+        boolean overlay=uri.getPath().startsWith(LANDSCAPE_PREFIX);
+        String relative=uri.getPath().substring(
+            overlay?LANDSCAPE_PREFIX.length():PREFIX.length());
         if(relative.isEmpty()||relative.contains("..")||relative.contains("\\")||
            relative.startsWith("/")||relative.indexOf('\u0000')>=0)
             return new WebResourceResponse("text/plain","UTF-8",400,"Bad Request",
                 Collections.emptyMap(),new ByteArrayInputStream(empty));
+        if(overlay){
+            try{
+                // The UV56 variant contains only the small owned delta:
+                // index, CSS, clean app, exporter and three landscape modules.
+                InputStream update=getAssets().open(
+                    "phoenix-uv56-overlay/assets/"+relative);
+                return new WebResourceResponse(mime(relative),"UTF-8",update);
+            }catch(IOException unchanged){
+                // All 1911+ identical library/model files are reused from
+                // the pristine UV44 package, no duplicate paid packs.
+            }
+        }
         try {
             InputStream data=getAssets().open("phoenix/assets/"+relative);
             return new WebResourceResponse(mime(relative),"UTF-8",data);
@@ -638,16 +738,29 @@ public final class PhoenixBuilderActivity extends Activity {
                 lastError="JSON проекта повреждён или превышает лимит";
                 return false;
             }
-            byte[] data=json.getBytes(StandardCharsets.UTF_8);
-            if(data.length>MAX_PROJECT_JSON_BYTES){
-                lastError="Файл проекта слишком большой";return false;
-            }
             File live=projectFile();
             try{
-                // Phoenix may call both saveProject and saveManualProject
-                // for one click. Avoid rotating away good history twice.
+                // UV44 knows nothing about UV56 terrain. Preserve terrain
+                // from the last known-good project when UV44 saves building
+                // edits, so changing modes cannot silently delete the land.
                 String previous=readValidProject(live);
-                if(json.equals(previous))return true;
+                String merged=json;
+                if(!landscapeMode && previous!=null){
+                    JSONObject incoming=new JSONObject(json);
+                    JSONObject old=new JSONObject(previous);
+                    if(!incoming.has("terrain")&&old.has("terrain")){
+                        incoming.put("terrain",old.get("terrain"));
+                        merged=incoming.toString();
+                    }
+                }
+                byte[] data=merged.getBytes(StandardCharsets.UTF_8);
+                if(data.length>MAX_PROJECT_JSON_BYTES){
+                    lastError="Общий JSON зданий и ландшафта превышает лимит";
+                    return false;
+                }
+                // Phoenix can call two save aliases for one click. Do not
+                // rotate away the same known-good snapshot twice.
+                if(merged.equals(previous))return true;
                 long available=live.getUsableSpace();
                 if(available>0&&available<data.length*2L+DISK_RESERVE){
                     lastError="Недостаточно памяти для двух безопасных копий";

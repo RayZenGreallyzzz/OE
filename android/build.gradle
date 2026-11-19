@@ -5,11 +5,11 @@ android {
     namespace 'game.oe.editor'
     compileSdk 35
     defaultConfig {
-        applicationId 'game.oe.editor.r57glfix'
+        applicationId 'game.oe.editor.r57plots'
         minSdk 26
         targetSdk 34
-        versionCode 40
-        versionName '0.8.10-r57-snow-gl-camera-test'
+        versionCode 41
+        versionName '0.8.11-r57-editor-plots-test'
         ndk { abiFilters 'arm64-v8a' }
         externalNativeBuild {
             cmake { cppFlags '-std=c++17 -O2 -Wall -Wextra' }

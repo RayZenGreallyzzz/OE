@@ -1949,6 +1949,87 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterPain
  else {if(present->second.id)glDeleteTextures(1,&present->second.id);present->second=std::move(prepared);}
  return JNI_TRUE;
 }
+// Material appearance belongs to each placed INSTANCE, never to the GLB.
+JNIEXPORT jobjectArray JNICALL Java_game_oe_editor_EditorActivity_nativeSelectedMaterials(
+ JNIEnv*env,jclass){
+ jclass klass=env->FindClass("java/lang/String");
+ if(!klass)return nullptr;
+ std::vector<int> ids;
+ const Entity*e=selected();
+ if(e&&e->type==6){
+  auto asset=gAssets.find(e->asset);
+  if(asset!=gAssets.end())for(const auto&batch:asset->second.batches)
+   if(std::find(ids.begin(),ids.end(),batch.materialId)==ids.end())
+    ids.push_back(batch.materialId);
+ }
+ std::sort(ids.begin(),ids.end());
+ jobjectArray names=env->NewObjectArray(static_cast<jsize>(ids.size()),klass,nullptr);
+ if(!names)return nullptr;
+ for(jsize i=0;i<static_cast<jsize>(ids.size());i++){
+  const int id=ids[static_cast<size_t>(i)];
+  std::string label=id<0?"Общий материал":
+   (id<static_cast<int>(gAssets.at(e->asset).materialNames.size())?
+     gAssets.at(e->asset).materialNames[static_cast<size_t>(id)]:"Материал");
+  std::replace(label.begin(),label.end(),'|',' ');
+  label=std::to_string(id)+"|"+label;
+  jstring name=env->NewStringUTF(label.c_str());
+  if(!name)return nullptr;
+  env->SetObjectArrayElement(names,i,name);
+  env->DeleteLocalRef(name);
+ }
+ return names;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeTintSelectedMaterial(
+ JNIEnv*,jclass,jint materialId,jfloat r,jfloat g,jfloat b){
+ Entity*e=selected();
+ if(!e||e->type!=6||materialId<-1||
+    !std::isfinite(r)||!std::isfinite(g)||!std::isfinite(b)||
+    r<0.f||r>2.f||g<0.f||g>2.f||b<0.f||b>2.f)return JNI_FALSE;
+ auto asset=gAssets.find(e->asset);
+ if(asset==gAssets.end())return JNI_FALSE;
+ bool hasMaterial=false;
+ for(const auto&batch:asset->second.batches)
+  if(batch.materialId==materialId){hasMaterial=true;break;}
+ if(!hasMaterial)return JNI_FALSE;
+ auto style=e->materialStyles.find(materialId);
+ if(style==e->materialStyles.end()&&e->materialStyles.size()>=64)return JNI_FALSE;
+ const bool neutral=r==1.f&&g==1.f&&b==1.f;
+ if(style==e->materialStyles.end()&&neutral)return JNI_TRUE;
+ if(style!=e->materialStyles.end()&&
+    style->second.tint.x==r&&style->second.tint.y==g&&style->second.tint.z==b)
+     return JNI_TRUE;
+ recordEdit();
+ if(neutral&&style!=e->materialStyles.end()&&style->second.texture.empty())
+  e->materialStyles.erase(style);
+ else e->materialStyles[materialId].tint={r,g,b};
+ return JNI_TRUE;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeTextureSelectedMaterial(
+ JNIEnv*env,jclass,jint materialId,jstring name){
+ Entity*e=selected();
+ if(!e||e->type!=6||!name||materialId<-1)return JNI_FALSE;
+ const char*raw=env->GetStringUTFChars(name,nullptr);
+ if(!raw)return JNI_FALSE;
+ std::string texture(raw);env->ReleaseStringUTFChars(name,raw);
+ if(!texture.empty()&&(!validPaintKey(texture)||
+     gPaintTextures.find(texture)==gPaintTextures.end()))return JNI_FALSE;
+ auto asset=gAssets.find(e->asset);
+ if(asset==gAssets.end())return JNI_FALSE;
+ bool hasMaterial=false;
+ for(const auto&batch:asset->second.batches)
+  if(batch.materialId==materialId){hasMaterial=true;break;}
+ if(!hasMaterial)return JNI_FALSE;
+ auto style=e->materialStyles.find(materialId);
+ if(style==e->materialStyles.end()&&e->materialStyles.size()>=64)return JNI_FALSE;
+ if(style==e->materialStyles.end()&&texture.empty())return JNI_TRUE;
+ if(style!=e->materialStyles.end()&&style->second.texture==texture)return JNI_TRUE;
+ recordEdit();
+ if(texture.empty()&&style!=e->materialStyles.end()&&
+    style->second.tint.x==1.f&&style->second.tint.y==1.f&&
+    style->second.tint.z==1.f)e->materialStyles.erase(style);
+ else e->materialStyles[materialId].texture=texture;
+ return JNI_TRUE;
+}
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativePaintSelected(
  JNIEnv*env,jclass,jstring name){
  if(!name||!selected())return JNI_FALSE;
@@ -2385,6 +2466,7 @@ JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeRenderStats(J
  std::ostringstream out;
  out<<"GPU-профиль: "<<quality().name<<" · CPU submit "<<std::fixed<<std::setprecision(2)
  <<gSubmitCpuMs<<" мс · "<<gDrawCalls<<" draw / "<<gTriangles<<" треуг."
+ <<" · моделей GPU "<<gAssets.size()<<" / объектов "<<gEntities.size()
  <<" · LOD "<<gLodDrawCounts[0]<<"/"<<gLodDrawCounts[1]<<"/"<<gLodDrawCounts[2];
  return env->NewStringUTF(out.str().c_str());
 }
@@ -3126,7 +3208,12 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeDuplicateSelecte
  Entity*original=selected();
  if(!original||gEntities.size()>=MAX_ENTITIES)return 0;
  Entity copy=*original;
- const float offset=(copy.type<=2||copy.type==6?7.5f:2.5f)*copy.size;
+ float offset=(copy.type<=2?7.5f:2.5f)*copy.size;
+ if(copy.type==6){
+  auto asset=gAssets.find(copy.asset);
+  offset=asset==gAssets.end()?8.f*copy.size:
+   std::max(2.f,(asset->second.maxX-asset->second.minX)*copy.size*copy.sx+2.f);
+ }
  float nx=copy.x+offset;
  if(nx>worldHalf()-2.f)nx=copy.x-offset;
  if(nx<-worldHalf()+2.f)return 0;

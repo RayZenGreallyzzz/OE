@@ -43,6 +43,6 @@ for q in (
 assert "uv56ReverseOrbit=true;" in java
 assert '"Рельеф".equals(activePaletteCategory)&&drawerOpen' in java
 assert "MAX_TEXTURES=32" in arch
-assert "version>=1&&version<=9" in arch
+assert "version>=1&&version<=10" in arch
 print("OE_VIDEO_BLACK_SNOW_FIX_OK: EGL layer cache recovery, blank sky look-only, "
       "camera direction toggle, user paint tiles preserved, R5.7 scenes compatible")

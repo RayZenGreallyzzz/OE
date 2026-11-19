@@ -79,6 +79,13 @@ public class EditorActivity extends Activity {
     private static native double[] nativeSelectedCoordinates();
     private static native boolean nativeSetSelectedCoordinates(double x,double y,double z);
     private static native String nativeSceneSnapshot();
+    // Visual authoring guides only. Never become game physics or entities.
+    private static native int nativePlotAdd(String name,float x,float z,int size);
+    private static native boolean nativePlotEdit(int id,String name,float x,float z,int size);
+    private static native boolean nativePlotDelete(int id);
+    private static native boolean nativePlotFocus(int id);
+    private static native String[] nativePlotList();
+    private static native void nativePlotShow(boolean visible);
     private static native String[] nativeLabels();
     private static native int[] nativeIds();
     private static native void nativeReset(boolean withDemo);
@@ -100,7 +107,8 @@ public class EditorActivity extends Activity {
             long[] roadIds, String[] roadNames, String[] roadMaterials,
             double[] roadWidths, double[] roadTileMetres,double[][] roadPoints,int[] tileCoords,byte[][] tileData,
             int[] layerCoords,String[] layerKeys,byte[][] layerMasks,float[] lakes,
-            int uv56AreaSqM,int[] uv56Nodes);
+            int uv56AreaSqM,int[] uv56Nodes,
+            int[] plotIds,String[] plotNames,float[] plotValues);
     private static native boolean nativeRegisterPaintTexture(String key, byte[] rgba,int width,int height);
     private static native boolean nativePaintSelected(String key);
     private static native int nativePaintTerrainAtScreen(float x,float y,float radius,String key);
@@ -205,6 +213,7 @@ public class EditorActivity extends Activity {
     private volatile boolean uv56ReverseOrbit=true; // owner can toggle direction
     private static final int MAX_TILE_LIBRARY=32; // imported files, not automatic GPU uploads
     private volatile String activePaletteCategory="Здания";
+    private volatile boolean editorPlotsVisible=true;
     private NativeLandscapePanel activeLandscapePanel;
     private boolean walkJumpQueued=false,walkAirborne=false;
     private float walkAxisX=0f,walkAxisZ=0f;
@@ -400,7 +409,7 @@ public class EditorActivity extends Activity {
         HorizontalScrollView categoryScroll=new HorizontalScrollView(this);
         categoryScroll.setHorizontalScrollBarEnabled(false);
         LinearLayout categoryRow=row();
-        for(String category:new String[]{"Здания","Детали","Мосты","Фундаменты","Декор","Рельеф","Вода","Дороги","Текстуры","Проект"}){
+        for(String category:new String[]{"Здания","Детали","Мосты","Фундаменты","Декор","Рельеф","Участки","Вода","Дороги","Текстуры","Проект"}){
             Button tab=button(category,()->showPalette(category));
             LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(dp(98),dp(44));
             p.setMargins(dp(2),0,dp(2),0);categoryRow.addView(tab,p);
@@ -614,6 +623,21 @@ public class EditorActivity extends Activity {
                 surface.requestRender();
             });
             showUv56LandscapePanel();
+        }else if("Участки".equals(category)){
+            addPaletteOption("🏘 Создать участок села 500×500 м",
+                ()->newEditorPlot(500));
+            addPaletteOption("🏙 Создать участок города 1000×1000 м",
+                ()->newEditorPlot(1000));
+            addPaletteOption("📋 Список / изменить / переместить",this::chooseEditorPlot);
+            addPaletteOption(editorPlotsVisible?"👁 Скрыть рамки":"👁 Показать рамки",
+                this::toggleEditorPlotGuides);
+            addPaletteOption("ℹ Рамки — только в редакторе",()->
+                new AlertDialog.Builder(this).setTitle("Участки OE")
+                    .setMessage("Границы не создают стен и коллизий, не "+
+                        "мешают персонажу и не попадают в игровую сцену. "+
+                        "Они помогают строить сёла и города на ОДНОЙ карте. "+
+                        "PNG-планы участков добавим отдельным этапом.")
+                    .setPositiveButton("Понятно",null).show());
         }else if("Вода".equals(category)){
             addPaletteOption("⛏ Вырыть чашу для озера",this::startLakeExcavation);
             addPaletteOption("🌊 Залить озеро касанием",this::beginLakePlacement);
@@ -892,6 +916,137 @@ public class EditorActivity extends Activity {
                 .setNegativeButton("Не менять землю",null).show());
         });
     }
+    private void toggleEditorPlotGuides(){
+        editorPlotsVisible=!editorPlotsVisible;
+        surface.queueEvent(()->{
+            nativePlotShow(editorPlotsVisible);
+            surface.requestRender();
+        });
+        showPalette("Участки");
+        message(editorPlotsVisible?"Рамки участков показаны":"Рамки временно скрыты");
+    }
+    private void newEditorPlot(int size){
+        if(importing)return;
+        cancelPlace();
+        surface.queueEvent(()->{
+            final double[] target=nativeMapTarget();
+            final int count=nativePlotList().length;
+            ui(()->{
+                final android.widget.EditText input=new android.widget.EditText(this);
+                input.setSingleLine(true);
+                input.setText((size==500?"Село ":"Город ")+(count+1));
+                new AlertDialog.Builder(this)
+                    .setTitle(size==500?"🏘 Новый участок 500×500 м":
+                        "🏙 Новый участок 1000×1000 м")
+                    .setMessage("Рамка появится около центра камеры. "+
+                        "Затем можно задать точные X/Z в списке участков. "+
+                        "Земля и объекты НЕ будут изменены.")
+                    .setView(input)
+                    .setPositiveButton("Создать",(d,w)->{
+                        final String name=input.getText().toString().trim();
+                        if(!validEditorPlotName(name)){
+                            message("Название: 1–80 символов, без знака |");
+                            return;
+                        }
+                        final float x=target==null?0f:(float)target[0];
+                        final float z=target==null?0f:(float)target[1];
+                        surface.queueEvent(()->{
+                            final int id=nativePlotAdd(name,x,z,size);
+                            if(id>0){
+                                nativePlotFocus(id);
+                                surface.requestRender();
+                                message("✓ Участок "+name+" создан · ↶ отменить");
+                            }else message("Участок не помещается в мир. "+
+                                "Измени размер карты или положение камеры.");
+                        });
+                    }).setNegativeButton("Отмена",null).show();
+            });
+        });
+    }
+    private static boolean validEditorPlotName(String s){
+        if(s==null||s.isEmpty()||s.length()>80||
+            s.getBytes(StandardCharsets.UTF_8).length>100)return false;
+        for(int i=0;i<s.length();i++){
+            char c=s.charAt(i);
+            if(Character.isISOControl(c)||c=='|')return false;
+        }
+        return true;
+    }
+    private void chooseEditorPlot(){
+        if(importing)return;
+        surface.queueEvent(()->{
+            final String[] records=nativePlotList();
+            ui(()->{
+                if(records==null||records.length==0){
+                    message("Участков пока нет. Создай село или город.");
+                    return;
+                }
+                final String[] names=new String[records.length];
+                for(int i=0;i<records.length;i++){
+                    String[] p=records[i].split("\\|",5);
+                    names[i]=p.length==5?
+                        p[4]+" · "+p[1]+"×"+p[1]+" м · X "+p[2]+" / Z "+p[3]:
+                        "Участок "+(i+1);
+                }
+                new AlertDialog.Builder(this).setTitle("Участки единого мира OE")
+                    .setItems(names,(dialog,which)->editEditorPlot(records[which]))
+                    .setNegativeButton("Закрыть",null).show();
+            });
+        });
+    }
+    private void editEditorPlot(String record){
+        final String[] rec=record.split("\\|",5);
+        if(rec.length!=5){message("Некорректная запись участка");return;}
+        final int id;
+        final int previousSize;
+        try{id=Integer.parseInt(rec[0]);previousSize=Integer.parseInt(rec[1]);}
+        catch(NumberFormatException ex){message("Некорректный номер участка");return;}
+        LinearLayout body=new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setPadding(dp(15),dp(6),dp(15),dp(6));
+        android.widget.EditText name=new android.widget.EditText(this),
+            x=new android.widget.EditText(this),z=new android.widget.EditText(this);
+        name.setSingleLine(true);name.setText(rec[4]);name.setHint("Название");
+        x.setSingleLine(true);x.setText(rec[2]);x.setHint("Центр X, м");
+        z.setSingleLine(true);z.setText(rec[3]);z.setHint("Центр Z, м");
+        int decimal=android.text.InputType.TYPE_CLASS_NUMBER|
+            android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL|
+            android.text.InputType.TYPE_NUMBER_FLAG_SIGNED;
+        x.setInputType(decimal);z.setInputType(decimal);
+        body.addView(name);body.addView(x);body.addView(z);
+        new AlertDialog.Builder(this).setTitle("Изменить участок "+id)
+            .setView(body)
+            .setNeutralButton("🔎 Найти", (dialog,which)->
+                surface.queueEvent(()->{
+                    if(nativePlotFocus(id)){surface.requestRender();
+                        message("Камера наведена на участок");}
+                }))
+            .setPositiveButton("💾 Применить",(dialog,which)->{
+                final String newName=name.getText().toString().trim();
+                if(!validEditorPlotName(newName)){message("Неверное название");return;}
+                try{
+                    final float cx=Float.parseFloat(x.getText().toString()
+                        .trim().replace(',','.'));
+                    final float cz=Float.parseFloat(z.getText().toString()
+                        .trim().replace(',','.'));
+                    surface.queueEvent(()->{
+                        boolean ok=nativePlotEdit(id,newName,cx,cz,previousSize);
+                        if(ok){surface.requestRender();message("Участок обновлён · ↶ отменить");}
+                        else message("Границы участка выходят за пределы мира");
+                    });
+                }catch(NumberFormatException ex){message("Введи числа для X/Z");}
+            })
+            .setNegativeButton("🗑 Удалить",(dialog,which)->
+                new AlertDialog.Builder(this).setTitle("Удалить только рамку?")
+                    .setMessage("Земля, дома, дороги и коллизии останутся без изменений.")
+                    .setPositiveButton("Удалить рамку",(d,w)->
+                        surface.queueEvent(()->{
+                            if(nativePlotDelete(id)){surface.requestRender();
+                                message("Рамка удалена · ↶ отменить");}
+                        }))
+                    .setNegativeButton("Отмена",null).show()).show();
+    }
+
     private void showUv56LandscapePanel(){
         final File[] textures;
         try{
@@ -1588,6 +1743,13 @@ public class EditorActivity extends Activity {
             if(json.optJSONObject("uv56Terrain")==null)
                 throw new Exception("Повреждены высоты UV56");
             json.put("version",9);
+        }
+        // Plots are optional editor-only v10 metadata. This is NOT game data.
+        if(json.has("editorPlots")){
+            JSONArray plots=json.optJSONArray("editorPlots");
+            if(plots==null||plots.length()<1||plots.length()>32)
+                throw new Exception("Повреждены границы участков");
+            json.put("version",10);
         }
         String result=json.toString();
         if(result.getBytes(StandardCharsets.UTF_8).length>ProjectArchive.MAX_SCENE_BYTES)
@@ -2659,15 +2821,16 @@ public class EditorActivity extends Activity {
             }
             JSONObject document=new JSONObject(new String(jsonBytes.toByteArray(),StandardCharsets.UTF_8));
             final int sceneVersion=document.optInt("version",-1);
-            if(sceneVersion<1||sceneVersion>9)
-                throw new Exception("Неверная версия сцены (нужна 1–9)");
+            if(sceneVersion<1||sceneVersion>10)
+                throw new Exception("Неверная версия сцены (нужна 1–10)");
             final boolean demoRoads=document.optBoolean("demoRoads",false);
             final int worldSize=document.optInt("worldSize",1024);
             if(worldSize!=1024&&worldSize!=2048&&worldSize!=4096&&worldSize!=8192&&worldSize!=16384)
                 throw new Exception("Неподдерживаемый размер карты");
             final JSONObject uv56Json=document.optJSONObject("uv56Terrain");
             if((sceneVersion==9&&uv56Json==null)||
-               (sceneVersion<9&&document.has("uv56Terrain")))
+               (sceneVersion<9&&document.has("uv56Terrain"))||
+               (document.has("uv56Terrain")&&uv56Json==null))
                 throw new Exception("Слой UV56 требует корректный формат сцены v9");
             final int uv56Area=uv56Json==null?0:uv56Json.getInt("areaSqM");
             final int[] uv56Nodes;
@@ -2702,6 +2865,36 @@ public class EditorActivity extends Activity {
                         throw new Exception("Некорректный узел UV56");
                 }
             }else uv56Nodes=new int[0];
+
+            // Stage v10 editor guides alongside the scene, then hand all
+            // validated coordinates to the native transactional replacement.
+            JSONArray plotsJson=document.optJSONArray("editorPlots");
+            if((sceneVersion==10&&(plotsJson==null||plotsJson.length()==0))||
+               (sceneVersion<10&&document.has("editorPlots"))||
+               (document.has("editorPlots")&&plotsJson==null))
+                throw new Exception("Сцена v10 требует границы участков");
+            final int plotCount=plotsJson==null?0:plotsJson.length();
+            if(plotCount>32)throw new Exception("Максимум 32 участка");
+            final int[] plotIds=new int[plotCount];
+            final String[] plotNames=new String[plotCount];
+            final float[] plotValues=new float[plotCount*3];
+            HashSet<Integer> plotUniqueIds=new HashSet<>();
+            for(int p=0;p<plotCount;p++){
+                JSONObject plot=plotsJson.getJSONObject(p);
+                int id=plot.getInt("id"),size=plot.getInt("size");
+                String label=plot.getString("name");
+                double x=plot.getDouble("x"),z=plot.getDouble("z");
+                if(id<1||id>1000000||!plotUniqueIds.add(id)||
+                   !validEditorPlotName(label)||
+                   (size!=500&&size!=1000)||
+                   !Double.isFinite(x)||!Double.isFinite(z)||
+                   Math.abs(x)+size/2.0>worldSize/2.0||
+                   Math.abs(z)+size/2.0>worldSize/2.0)
+                    throw new Exception("Неверные границы участка "+(p+1));
+                plotIds[p]=id;plotNames[p]=label;
+                plotValues[3*p]=(float)x;plotValues[3*p+1]=(float)z;
+                plotValues[3*p+2]=size;
+            }
 
             JSONArray savedLakes=document.optJSONArray("lakes");
             if((sceneVersion==7&&(savedLakes==null||savedLakes.length()==0))||
@@ -3111,7 +3304,8 @@ public class EditorActivity extends Activity {
                             roadIds,roadNames,roadMaterials,roadWidths,roadTileMetres,roadPaths,
                             preciseTileCoords,preciseTileBytes,
                             materialCoords,materialKeys,materialWeights,lakeData,
-                            uv56Area,uv56Nodes))
+                            uv56Area,uv56Nodes,
+                            plotIds,plotNames,plotValues))
                         throw new Exception("Сцена не прошла полную проверку в движке");
                     if(parsedGuide!=null){
                         if(!nativeMapCommit(parsedGuide.centerX,parsedGuide.centerZ,
@@ -3120,6 +3314,7 @@ public class EditorActivity extends Activity {
                     }else nativeMapClear();
                     mapGuide=parsedGuide;
                     mapTopViewActive=false;
+                    editorPlotsVisible=true;
                     committed=true;
                     roadMode=false;roadMoveMode=false;precisionPaintMode=false;materialPaintMode=false;lakeMode=false;
                     surface.requestRender();

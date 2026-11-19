@@ -2852,6 +2852,7 @@ public class EditorActivity extends Activity {
     }
     private void undoAction() {
         if(importing){message("Дождись завершения загрузки сцены");return;}
+        if(barrierDrawMode)cancelPlace();
         edit(() -> {
             if(nativeUndo()){syncPlotPlanCentres();message("Изменение отменено");}
             else message("История отмены пуста");
@@ -2859,6 +2860,7 @@ public class EditorActivity extends Activity {
     }
     private void redoAction() {
         if(importing){message("Дождись завершения загрузки сцены");return;}
+        if(barrierDrawMode)cancelPlace();
         edit(() -> {
             if(nativeRedo()){syncPlotPlanCentres();message("Изменение повторено");}
             else message("История повтора пуста");
@@ -4060,6 +4062,8 @@ public class EditorActivity extends Activity {
                     mapTopViewActive=false;
                     editorPlotsVisible=true;
                     barriersVisible=true;barrierCutId=0;
+                    barrierDrawMode=false;++barrierDrawGeneration;
+                    barrierDraftStart=null;
                     committed=true;
                     roadMode=false;roadMoveMode=false;precisionPaintMode=false;materialPaintMode=false;lakeMode=false;
                     surface.requestRender();
@@ -4109,7 +4113,12 @@ public class EditorActivity extends Activity {
     @Override protected void onResume() { super.onResume(); if (surface != null) surface.onResume(); }
     @Override protected void onPause() {
         finishWalkControls();
-        if(surface!=null)surface.onPause();
+        barrierDrawMode=false;++barrierDrawGeneration;barrierCutId=0;
+        barrierDraftStart=null;
+        if(surface!=null){
+            surface.queueEvent(()->nativeBarrierDraftPoint(false,0f,0f));
+            surface.onPause();
+        }
         super.onPause();
     }
 

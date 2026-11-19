@@ -39,7 +39,7 @@ assert "if(available>0&&available<data.length*2L+DISK_RESERVE)" in bridge
 assert "private File projectFile()" in bridge
 assert 'startActivityForResult(new Intent(this,PhoenixBuilderActivity.class),PHOENIX_BUILDER)' in editor
 assert "applicationId 'game.oe.editor.phoenix013fix1'" in gradle
-assert "versionCode 36" in gradle
+assert "versionCode 37" in gradle
 # Graphics settings must live in the always-visible top-right toolbar,
 # use existing native quality implementation, and persist the selection.
 assert 'Button settingsButton=button("⚙️",this::showEngineSettings);' in editor
@@ -211,3 +211,43 @@ center = ((lo[0]+hi[0])*.5,(lo[2]+hi[2])*.5)
 world = [(p[0]-center[0],p[1]-lo[1],p[2]-center[1]) for p in points]
 assert tuple(max(p[i] for p in world)-min(p[i] for p in world) for i in range(3))==(700.,90.,250.)
 print("OK: original 700m castle dimensions preserved; camera and picking support metric bounds")
+
+# Shared mesh and shader resource per GLB; appearance overrides stay on a
+# placed Entity and persist as small material-ID/tint/texture records.
+project=(ROOT/"android/src/main/java/game/oe/editor/ProjectArchive.java").read_text()
+assert "int[] materialIds;" in glb
+assert "String[] materialNames;" in glb
+assert "materialIds[batch]=j.materialId;" in glb
+assert "materialId=p.optInt" not in glb # materialIndex local variable
+assert "j.materialId=materialIndex;" in glb
+assert "struct MaterialStyle {" in cpp
+assert "std::unordered_map<int,MaterialStyle> materialStyles;" in cpp
+assert "std::vector<std::string> materialNames;" in cpp
+assert "int materialId=-1;" in cpp
+assert "e.materialStyles.find(batch.materialId)" in cpp
+assert "const TextureResource*batchPaint=variant&&!variant->texture.empty()?" in cpp
+assert "if(batchPaint&&batchPaint->id){bindPaint(batchPaint);}" in cpp
+assert "gAssets.find(e.asset)" in cpp
+assert "glUniform3f(gShader.locColor,variant->tint.x" in cpp
+assert 'out<<",\\\"materialStyles\\\":["' in cpp
+assert 'restored.materialStyles[id]={{r,g,b},texture};' in cpp
+assert "nativeTintSelectedMaterial(" in editor
+assert "nativeTextureSelectedMaterial(" in editor
+assert "nativeSelectedMaterials()" in editor
+assert "private void chooseBuildingMaterial()" in editor
+assert 'addControl(materialRow,"🏠 Материалы крыши/стен"' in editor
+assert "chooseMaterialTexture(int materialId)" in editor
+assert 'String[] styleTextures=styleTextureList.toArray(new String[0]);' in editor
+assert 'styleCounts,styleIds,' in editor
+assert 'styleColors,styleTextures,paintBrushes,paintBrushKeys' in editor
+assert 'MAX_MODELS=32;' in project
+assert 'MAX_TEXTURES=32,' in project
+assert 'MAX_UNPACKED_BYTES=512L*1024*1024' in project
+assert 'JSONArray variants=objects.getJSONObject(i).optJSONArray("materialStyles");' in project
+assert "keys.add(image);" in project
+assert "MAX_PAINT_TEXTURES=32" in cpp
+assert "copy.type==6" in cpp
+assert "gAssets.size()" in cpp
+assert 'Button builderMode=button("🏗 Стройка",this::openBuilderMode);' in editor
+assert 'startActivityForResult(new Intent(this,PhoenixBuilderActivity.class),PHOENIX_BUILDER)' in editor
+print("OK: per-instance roof/wall material variants reuse GPU assets and hashed textures across city save/reload")

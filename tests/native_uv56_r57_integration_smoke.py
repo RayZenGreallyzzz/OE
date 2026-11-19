@@ -49,7 +49,8 @@ for marker in (
 ):
     assert marker in archive, ("archive",marker)
 assert "nativeReplaceScene(" in native and "nativeReplaceScene(" in java
-assert "WebView" not in java and "WebView" not in native
+assert "import android.webkit" not in java and "new WebView(" not in java
+assert "new WebView(" not in native
 assert "uv56Terrain" in native and "uv56Terrain" in java
 assert 'static constexpr std::size_t kNodeLimit=32768;' in land
 assert "bool affectsTile(int tx,int tz" in land

@@ -52,11 +52,18 @@ class StagingContractTests(unittest.TestCase):
     def test_same_oe_app_with_mode_switch_and_terrain_guard(self):
         src=(Path(__file__).resolve().parents[1]/
              "android/src/main/java/game/oe/editor/PhoenixBuilderActivity.java").read_text()
-        self.assertIn("private boolean landscapeMode=false;",src)
-        self.assertIn("private void saveAndSwitch",src)
+        self.assertIn("private boolean landscapeMode=true;",src)
+        self.assertIn("private void selectTabInLiveScene",src)
+        self.assertIn("private void saveCurrentProject",src)
+        self.assertIn("if(landscapeMode&&!MODE_ORIGINAL_UV44.equals(mode))",src)
+        self.assertIn('"modeLandscape":"modeBuild"',src)
+        self.assertIn("selectTabInLiveScene(mode);",src)
+        self.assertIn("landscapeMode=!MODE_ORIGINAL_UV44.equals(mode);",src)
         self.assertIn('old.has("terrain")',src)
         self.assertIn('phoenix-uv56-overlay/assets/',src)
         self.assertIn('web.loadUrl(ORIGIN+(landscapeMode?',src)
+        self.assertIn('old.has("terrain")',src)
+        self.assertIn('saveCurrentProject(this::finish)',src)
 
 if __name__=="__main__":
     unittest.main()

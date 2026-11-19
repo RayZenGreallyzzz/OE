@@ -291,10 +291,10 @@ public class EditorActivity extends Activity {
         Button menu=button("☰ Каталог",()->toggleDrawer(!drawerOpen));
         top.addView(menu,new LinearLayout.LayoutParams(dp(104),dp(43)));
         Button builderMode=button("🏗 Стройка",this::openBuilderMode);
-        builderMode.setContentDescription("Режим Стройка · неизменённый Phoenix UV44");
+        builderMode.setContentDescription("Режим Стройка · общая сцена Phoenix UV56, библиотека оригинала UV44");
         top.addView(builderMode,new LinearLayout.LayoutParams(dp(103),dp(43)));
         Button landscapeMode=button("🌿 Ландшафт",this::openLandscapeMode);
-        landscapeMode.setContentDescription("Режим Ландшафт · инструменты Phoenix UV56");
+        landscapeMode.setContentDescription("Режим Ландшафт · та же сцена с домами, инструменты UV56");
         top.addView(landscapeMode,new LinearLayout.LayoutParams(dp(110),dp(43)));
         Button save=button("💾 Сохранить",this::saveScene);
         top.addView(save,new LinearLayout.LayoutParams(dp(112),dp(43)));
@@ -501,11 +501,11 @@ public class EditorActivity extends Activity {
     private void showPalette(String category){
         paletteItems.removeAllViews();
         if("🏗 Здание".equals(category)){
-            addPaletteOption("🏗 Стройка — оригинальный Phoenix UV44",this::openBuilderMode);
-            addPaletteOption("🌿 Ландшафт — инструменты UV56",this::openLandscapeMode);
+            addPaletteOption("🏗 Стройка — общая сцена, оригинальные ресурсы UV44",this::openBuilderMode);
+            addPaletteOption("🌿 Ландшафт — те же здания и земля UV56",this::openLandscapeMode);
             addPaletteOption("📥 Импорт готового GLB из Phoenix",this::pickGlb);
             addPaletteOption("ℹ Оба режима в одном OE, проект сохраняется между ними",
-                ()->message("Сохраняй проект перед сменой режима; ландшафт и дома в общем JSON"));
+                ()->message("Стройка и ландшафт работают в одной сцене; экспорт в город через GLB"));
         }else if("Дома".equals(category)||"Здания".equals(category)){
             addPaletteOption("+ Таверна",()->enterPlaceMode(0,null));
             addPaletteOption("+ Кузница",()->enterPlaceMode(1,null));

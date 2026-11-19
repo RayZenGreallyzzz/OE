@@ -253,7 +253,9 @@ assert "MAX_PAINT_TEXTURES=32" in cpp
 assert "const Vec3 step=cloneSpacing(prototype);" in cpp
 assert "gAssets.size()" in cpp
 assert 'Button builderMode=button("🏗 Стройка",this::openBuilderMode);' in editor
-assert 'startActivityForResult(new Intent(this,PhoenixBuilderActivity.class),PHOENIX_BUILDER)' in editor
+assert 'private void openPhoenixMode(String mode)' in editor
+assert 'intent.putExtra(PhoenixBuilderActivity.EXTRA_MODE,mode);' in editor
+assert 'startActivityForResult(intent,PHOENIX_BUILDER);' in editor
 print("OK: per-instance roof/wall material variants reuse GPU assets and hashed textures across city save/reload")
 
 # v37: neighbourhood tools create only Entity clones, not duplicated GLB images.

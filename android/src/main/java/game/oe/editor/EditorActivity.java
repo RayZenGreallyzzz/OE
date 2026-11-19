@@ -2229,9 +2229,30 @@ public class EditorActivity extends Activity {
         finishWalkControls();
         cancelPlace();
         toggleDrawer(false);
-        Intent studio=new Intent(this,PhoenixBuilderActivity.class);
-        studio.putExtra(PhoenixBuilderActivity.EXTRA_MODE,mode);
-        startActivityForResult(studio,PHOENIX_STUDIO);
+        // An unexpected Android process reclaim while Phoenix is foreground
+        // must not discard the last editable R5.7 city. Save the unchanged
+        // v1-v8 city scene before launching the private studio Activity.
+        surface.queueEvent(()->{
+            AtomicFile backup=new AtomicFile(saveFile());
+            FileOutputStream stream=null;
+            try{
+                byte[] json=snapshotWithGuide().getBytes(StandardCharsets.UTF_8);
+                if(json.length>ProjectArchive.MAX_SCENE_BYTES)
+                    throw new Exception("Город превышает лимит безопасного JSON");
+                stream=backup.startWrite();
+                stream.write(json);
+                backup.finishWrite(stream);stream=null;
+                ui(()->{
+                    Intent studio=new Intent(this,PhoenixBuilderActivity.class);
+                    studio.putExtra(PhoenixBuilderActivity.EXTRA_MODE,mode);
+                    startActivityForResult(studio,PHOENIX_STUDIO);
+                });
+            }catch(Exception error){
+                if(stream!=null)backup.failWrite(stream);
+                message("Стройка не открыта: сначала сохрани город. "+
+                    error.getMessage());
+            }
+        });
     }
     private void pickGlb() {
         if(importing) { message("Импорт или загрузка уже выполняется"); return; }

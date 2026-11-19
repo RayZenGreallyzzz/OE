@@ -53,6 +53,7 @@ public final class PhoenixBuilderActivity extends Activity {
     private static final String ORIGIN="https://appassets.androidplatform.net";
     // Two modes of ONE OE app. Original UV44 assets are NEVER rewritten.
     public static final String EXTRA_MODE="oe_phoenix_mode";
+    public static final String EXTRA_TRANSFER_TERRAIN="oe_transfer_phoenix_terrain";
     public static final String MODE_BUILD="build";
     public static final String MODE_LANDSCAPE="landscape";
     // Only a guarded recovery option uses the exact, original UV44 scene.
@@ -296,6 +297,7 @@ public final class PhoenixBuilderActivity extends Activity {
     private void showModeMenu(){
         String[] items={"🏗 Стройка (общая сцена)",
             "🌿 Ландшафт и дороги (та же сцена)",
+            "🗺 Передать высоты ландшафта в город OE",
             "🛟 Оригинал UV44 — только резервный режим",
             "🏙 Сохранить и вернуться в город OE",
             "🛟 Копии проекта"};
@@ -303,10 +305,34 @@ public final class PhoenixBuilderActivity extends Activity {
             .setItems(items,(dialog,which)->{
                 if(which==0)requestModeSwitch(MODE_BUILD);
                 else if(which==1)requestModeSwitch(MODE_LANDSCAPE);
-                else if(which==2)requestModeSwitch(MODE_ORIGINAL_UV44);
-                else if(which==3)confirmExit();
+                else if(which==2)transferTerrainToCity();
+                else if(which==3)requestModeSwitch(MODE_ORIGINAL_UV44);
+                else if(which==4)confirmExit();
                 else showProjectRecovery();
             }).show();
+    }
+    private void transferTerrainToCity(){
+        if(!landscapeMode){
+            Toast.makeText(this,"Открой общую сцену UV56 для передачи земли",
+                Toast.LENGTH_LONG).show();
+            return;
+        }
+        new AlertDialog.Builder(this)
+            .setTitle("Перенести высоты UV56 в город OE?")
+            .setMessage("Это экспериментальная передача ТОЧНЫХ узлов рельефа "+
+                "(сантиметры, сетка 1 м). Существующие дома, дороги и кисти "+
+                "города не удалятся. Но покрытия, изображения, окраска и "+
+                "дороги UV56 пока остаются в Phoenix; их перенос будет "+
+                "отдельным этапом. Прежний слой импортированного UV56 рельефа "+
+                "в городе заменится. Отменить можно через ↶.")
+            .setPositiveButton("🗺 Передать высоты",(d,w)->
+                saveCurrentProject(()->{
+                    Intent result=new Intent();
+                    result.putExtra(EXTRA_TRANSFER_TERRAIN,true);
+                    setResult(RESULT_OK,result);
+                    finish();
+                }))
+            .setNegativeButton("Остаться в редакторе",null).show();
     }
     private void selectTabInLiveScene(String mode){
         if(web==null||!landscapeMode)return;

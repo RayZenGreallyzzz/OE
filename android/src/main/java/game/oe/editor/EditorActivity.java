@@ -86,6 +86,13 @@ public class EditorActivity extends Activity {
     private static native boolean nativePlotFocus(int id);
     private static native String[] nativePlotList();
     private static native void nativePlotShow(boolean visible);
+    private static native int nativeBarrierAdd(double ax,double az,double bx,
+        double bz,double thickness,double height);
+    private static native boolean nativeBarrierDelete(int id);
+    private static native int nativeBarrierCutAtScreen(int id,float px,float py,
+        float radius);
+    private static native String[] nativeBarrierList();
+    private static native void nativeBarrierShow(boolean visible);
     private static native String[] nativeLabels();
     private static native int[] nativeIds();
     private static native void nativeReset(boolean withDemo);
@@ -108,7 +115,8 @@ public class EditorActivity extends Activity {
             double[] roadWidths, double[] roadTileMetres,double[][] roadPoints,int[] tileCoords,byte[][] tileData,
             int[] layerCoords,String[] layerKeys,byte[][] layerMasks,float[] lakes,
             int uv56AreaSqM,int[] uv56Nodes,
-            int[] plotIds,String[] plotNames,float[] plotValues);
+            int[] plotIds,String[] plotNames,float[] plotValues,
+            double[] wallRecords);
     private static native boolean nativeRegisterPaintTexture(String key, byte[] rgba,int width,int height);
     private static native boolean nativePaintSelected(String key);
     private static native int nativePaintTerrainAtScreen(float x,float y,float radius,String key);
@@ -214,6 +222,9 @@ public class EditorActivity extends Activity {
     private static final int MAX_TILE_LIBRARY=32; // imported files, not automatic GPU uploads
     private volatile String activePaletteCategory="Здания";
     private volatile boolean editorPlotsVisible=true;
+    private volatile boolean barriersVisible=true;
+    private volatile int barrierCutId=0;
+    private volatile float barrierCutRadius=4f;
     private NativeLandscapePanel activeLandscapePanel;
     private boolean walkJumpQueued=false,walkAirborne=false;
     private float walkAxisX=0f,walkAxisZ=0f;
@@ -418,7 +429,7 @@ public class EditorActivity extends Activity {
         HorizontalScrollView categoryScroll=new HorizontalScrollView(this);
         categoryScroll.setHorizontalScrollBarEnabled(false);
         LinearLayout categoryRow=row();
-        for(String category:new String[]{"Здания","Детали","Мосты","Фундаменты","Декор","Рельеф","Участки","Вода","Дороги","Текстуры","Проект"}){
+        for(String category:new String[]{"Здания","Детали","Мосты","Фундаменты","Декор","Рельеф","Участки","Коллизии","Вода","Дороги","Текстуры","Проект"}){
             Button tab=button(category,()->showPalette(category));
             LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(dp(98),dp(44));
             p.setMargins(dp(2),0,dp(2),0);categoryRow.addView(tab,p);
@@ -650,6 +661,23 @@ public class EditorActivity extends Activity {
                         "Они помогают строить сёла и города на ОДНОЙ карте. "+
                         "PNG-планы участков добавим отдельным этапом.")
                     .setPositiveButton("Понятно",null).show());
+        }else if("Коллизии".equals(category)){
+            addPaletteOption("🧱 Поставить невидимую преграду 30 м",
+                ()->createCollisionBarrier(30));
+            addPaletteOption("🧱 Поставить преграду 100 м",
+                ()->createCollisionBarrier(100));
+            addPaletteOption("✂ Выбрать стену / вырезать проход",this::chooseCollisionBarrier);
+            addPaletteOption(barriersVisible?"👁 Скрыть розовую разметку":
+                "👁 Показать розовую разметку",this::toggleCollisionBarriers);
+            addPaletteOption("🧍 Проверить коллизии путником",this::startWalkCollisionPreview);
+            addPaletteOption("✕ Завершить вырезание",this::cancelPlace);
+            addPaletteOption("ℹ О коллизиях",()->
+                new AlertDialog.Builder(this).setTitle("Физические преграды")
+                    .setMessage("Розовая линия видна только в редакторе. "+
+                        "Сама невидимая стена является настоящей коллизией путника. "+
+                        "Можно вырезать проход касанием. Рамки участков не "+
+                        "создают коллизий и не мешают ходить.")
+                    .setPositiveButton("Понятно",null).show());
         }else if("Вода".equals(category)){
             addPaletteOption("⛏ Вырыть чашу для озера",this::startLakeExcavation);
             addPaletteOption("🌊 Залить озеро касанием",this::beginLakePlacement);
@@ -784,6 +812,7 @@ public class EditorActivity extends Activity {
         message("Коснись места на карте для размещения");
     }
     private void cancelPlace() {
+        barrierCutId=0;
         uv56SculptTool=0;
         if(surface!=null)surface.queueEvent(EditorActivity::nativeUv56StrokeEnd);
         paintTerrainMode=false;roadMode=false;roadMoveMode=false;precisionPaintMode=false;
@@ -930,6 +959,117 @@ public class EditorActivity extends Activity {
                 .setNegativeButton("Не менять землю",null).show());
         });
     }
+    private void toggleCollisionBarriers(){
+        barriersVisible=!barriersVisible;
+        surface.queueEvent(()->{
+            nativeBarrierShow(barriersVisible);
+            surface.requestRender();
+        });
+        showPalette("Коллизии");
+        message(barriersVisible?"Коллизии видны розовым":
+            "Розовые линии скрыты, ФИЗИКА остаётся активной");
+    }
+    private void createCollisionBarrier(int length){
+        if(importing)return;
+        cancelPlace();
+        surface.queueEvent(()->{
+            double[] at=nativeMapTarget();
+            if(at==null)return;
+            final double cx=at[0],cz=at[1];
+            ui(()->{
+                final android.widget.EditText thickness=new android.widget.EditText(this);
+                thickness.setInputType(android.text.InputType.TYPE_CLASS_NUMBER|
+                    android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL);
+                thickness.setSingleLine(true);
+                thickness.setText("0.8");
+                LinearLayout content=new LinearLayout(this);
+                content.setOrientation(LinearLayout.VERTICAL);
+                content.setPadding(dp(14),dp(8),dp(14),dp(8));
+                content.addView(new TextView(this){{
+                    setText("Расположение — по центру камеры. "+
+                        "Физическая высота 4 м; видна только розовая линия.");}});
+                content.addView(thickness);
+                new AlertDialog.Builder(this)
+                    .setTitle("🧱 Преграда "+length+" метров")
+                    .setView(content)
+                    .setPositiveButton("Создать",(d,w)->{
+                        try{
+                            final double thick=Double.parseDouble(thickness
+                                .getText().toString().trim().replace(',','.'));
+                            surface.queueEvent(()->{
+                                int id=nativeBarrierAdd(cx-length*.5,cz,
+                                    cx+length*.5,cz,thick,4.);
+                                if(id>0){
+                                    surface.requestRender();
+                                    message("✓ Коллизия #"+id+" создана · ↶ отменить");
+                                }else message("Не хватает места или достигнут лимит 64 стен");
+                            });
+                        }catch(NumberFormatException e){message("Толщина: число 0.3–4 м");}
+                    }).setNegativeButton("Отмена",null).show();
+            });
+        });
+    }
+    private void chooseCollisionBarrier(){
+        if(importing)return;
+        surface.queueEvent(()->{
+            String[] raw=nativeBarrierList();
+            ui(()->{
+                if(raw==null||raw.length==0){
+                    message("Сначала добавь коллизионную преграду");
+                    return;
+                }
+                String[] labels=new String[raw.length];
+                for(int i=0;i<raw.length;i++){
+                    String[] p=raw[i].split("\\|",7);
+                    labels[i]=p.length==7?"Преграда #"+p[0]+
+                        " · X "+p[1]+"…"+p[3]+" / Z "+p[2]+"…"+p[4]:
+                        "Преграда "+(i+1);
+                }
+                new AlertDialog.Builder(this).setTitle("Настоящие коллизии OE")
+                    .setItems(labels,(d,k)->collisionBarrierActions(raw[k]))
+                    .setNegativeButton("Закрыть",null).show();
+            });
+        });
+    }
+    private void collisionBarrierActions(String row){
+        String[] parts=row.split("\\|",7);
+        if(parts.length!=7)return;
+        final int id;
+        try{id=Integer.parseInt(parts[0]);}
+        catch(NumberFormatException e){return;}
+        final String[] options={
+            "✂ Вырезать проход 8 м касанием",
+            "✂ Вырезать проход 16 м касанием",
+            "🗑 Удалить всю преграду",
+            "🧍 Пройти сквозь стену путником"
+        };
+        new AlertDialog.Builder(this).setTitle("Коллизия #"+id)
+            .setItems(options,(d,k)->{
+                if(k==0||k==1){
+                    cancelPlace();
+                    barrierCutId=id;
+                    barrierCutRadius=k==0?4f:8f;
+                    statusText.setText("✂ Коснись розовой линии: проход "+
+                        (k==0?8:16)+" м; ↶ вернуть стену.");
+                    message("Коснись нужного места на розовой линии "+
+                        "одним пальцем. Камера пока зафиксирована.");
+                    toggleDrawer(false);
+                }else if(k==2){
+                    new AlertDialog.Builder(this)
+                        .setTitle("Удалить всю физическую преграду?")
+                        .setMessage("Дороги, горы и здания сохраняются.")
+                        .setPositiveButton("Удалить",(d2,k2)->
+                            surface.queueEvent(()->{
+                                if(nativeBarrierDelete(id)){
+                                    surface.requestRender();
+                                    message("Преграда удалена · ↶ восстановить");
+                                }
+                            }))
+                        .setNegativeButton("Отмена",null).show();
+                }else startWalkCollisionPreview();
+            }).setNegativeButton("Отмена",null).show();
+    }
+
     private void toggleEditorPlotGuides(){
         editorPlotsVisible=!editorPlotsVisible;
         surface.queueEvent(()->{

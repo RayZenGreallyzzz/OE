@@ -125,7 +125,8 @@ static std::vector<TerrainPaint> gTerrainPaint;
 static constexpr size_t MAX_TERRAIN_PAINT=48;
 static std::vector<TerrainBrush> gBrushes;
 static int gTerrainRevision=0;
-static oe::uv56::Terrain gUv56Terrain; // real native OE scene, not a second app
+static oe::uv56::Terrain gUv56Terrain; // single native city GLES terrain
+static bool gUv56StrokeActive=false; // one touch gesture = one Undo action
 // R4 composited paint tiles: GPU cache is disposable; authoring bytes are portable.
 static oe::terrainpaint::Canvas gPaintTiles;
 static oe::terrainpaint::MaterialCanvas gMaterialCanvas;
@@ -231,6 +232,7 @@ void restoreScene(const SceneSnapshot&s){
  gWalkPreview.clear(); // Undo/Redo invalidates derived physical surfaces.
  gEntities=s.entities;gNextId=s.nextId;gSelected=s.selected;gWorldSize=s.worldSize;
  gDemoRoads=s.demoRoads;gTarget=s.target;gDistance=s.cameraDistance;
+ gUv56StrokeActive=false;
  gBrushes=s.terrain;gTerrainPaint=s.paints;gUv56Terrain=s.uv56;
  gTerrainRevision++;gSceneInitialized=true;
  gLakes=s.lakes;gSelectedLake=s.selectedLake;++gLakeRevision;
@@ -1637,7 +1639,7 @@ void reset(bool demo){
  const bool wasMuted=gSuspendHistory;
  gSuspendHistory=true;
  gEntities.clear();gBrushes.clear();gTerrainPaint.clear();
- gUv56Terrain=oe::uv56::Terrain();gTerrainRevision++;gNextId=1;gSelected=0;
+ gUv56StrokeActive=false;gUv56Terrain=oe::uv56::Terrain();gTerrainRevision++;gNextId=1;gSelected=0;
  gLakes.clear();gSelectedLake=-1;++gLakeRevision;
  gRoads.clear();gSelectedRoad=0;gActiveRoad=0;gSelectedRoadPoint=-1;gRoadPending=false;++gRoadRevision;
  gPaintTiles.clear();gMaterialCanvas.clear();
@@ -3050,6 +3052,68 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeApplyTerrainBrus
  gTarget.y=terrainHeightAt(gTarget.x,gTarget.z)+1.2f;
  return static_cast<jint>(gBrushes.size());
 }
+// UV56 video UX: continuous touch painting. Gesture begin records exactly
+// one reversible city snapshot; move samples the SAME original stroke baseline;
+// the native R5.7 walker, lakes and streets remain in this scene.
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeUv56Area(
+ JNIEnv*,jclass){return gUv56Terrain.areaSqM();}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeUv56ConfigureArea(
+ JNIEnv*,jclass,jint area){
+ if(gUv56StrokeActive||area<1000||area>2000000||
+    std::sqrt(static_cast<double>(area))>static_cast<double>(gWorldSize))
+     return JNI_FALSE;
+ if(gUv56Terrain.active()&&gUv56Terrain.areaSqM()==area)return JNI_TRUE;
+ oe::uv56::Terrain next;
+ if(!next.create(area))return JNI_FALSE;
+ recordEdit();
+ gUv56Terrain=std::move(next);
+ ++gTerrainRevision;++gRoadRevision;
+ gTarget.y=terrainHeightAt(gTarget.x,gTarget.z)+1.2f;
+ return JNI_TRUE;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeUv56StrokeStart(
+ JNIEnv*,jclass,jint tool,jfloat px,jfloat py,jfloat radius,jfloat power){
+ if(gUv56StrokeActive||tool<1||tool>5||!std::isfinite(radius)||
+    !std::isfinite(power)||radius<.5f||radius>24.f||power<.2f||power>8.f)
+    return JNI_FALSE;
+ float x=0,z=0;
+ if(!groundPoint(px,py,x,z))return JNI_FALSE;
+ oe::uv56::Terrain proposal=gUv56Terrain;
+ if(!proposal.active()){
+  // Stage 1-compatible default. Explicit selection uses ConfigureArea.
+  const int area=std::min(2000000,static_cast<int>(
+       static_cast<long long>(gWorldSize)*gWorldSize));
+  if(!proposal.create(area))return JNI_FALSE;
+ }
+ if(!proposal.valid(x,z))return JNI_FALSE;
+ proposal.beginStroke(x,z);
+ if(!proposal.brushAt(x,z,static_cast<oe::uv56::Tool>(tool),radius,power))
+  return JNI_FALSE;
+ recordEdit(); // one native R5.7 undo entry for the whole drag
+ gUv56Terrain=std::move(proposal);
+ gUv56StrokeActive=true;
+ ++gTerrainRevision;++gRoadRevision;
+ return JNI_TRUE;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeUv56StrokeMove(
+ JNIEnv*,jclass,jint tool,jfloat px,jfloat py,jfloat radius,jfloat power){
+ if(!gUv56StrokeActive||tool<1||tool>5||!std::isfinite(radius)||
+    !std::isfinite(power)||radius<.5f||radius>24.f||power<.2f||power>8.f)
+    return JNI_FALSE;
+ float x=0,z=0;
+ if(!groundPoint(px,py,x,z)||!gUv56Terrain.valid(x,z))return JNI_FALSE;
+ if(!gUv56Terrain.brushAt(x,z,static_cast<oe::uv56::Tool>(tool),radius,power))
+    return JNI_FALSE;
+ ++gTerrainRevision;++gRoadRevision;
+ return JNI_TRUE;
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeUv56StrokeEnd(
+ JNIEnv*,jclass){
+ if(!gUv56StrokeActive)return;
+ gUv56Terrain.endStroke();
+ gUv56StrokeActive=false;
+ gTarget.y=terrainHeightAt(gTarget.x,gTarget.z)+1.2f;
+}
 // UV56 sculpt operates directly on the R5.7 GLES city terrain.
 // One tap = one reversible native scene change; no WebView and no UV56
 // building scripts. Both the road/bridge walker and city sampler use
@@ -3598,7 +3662,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  // Commit: no validation or allocation failures below this point.
  gWalkPreview.clear();
  gEntities.swap(staged);gBrushes.swap(stagedBrushes);
- gUv56Terrain=std::move(stagedUv56);
+ gUv56StrokeActive=false;gUv56Terrain=std::move(stagedUv56);
  gLakes.swap(stagedLakes);gSelectedLake=-1;++gLakeRevision;
  gTerrainPaint.swap(stagedPaint);gTerrainRevision++;
  gRoads=std::move(nextRoads);gSelectedRoad=0;gActiveRoad=0;gRoadPending=false;

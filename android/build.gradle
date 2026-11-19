@@ -5,11 +5,11 @@ android {
     namespace 'game.oe.editor'
     compileSdk 35
     defaultConfig {
-        applicationId 'game.oe.editor.r57terrain'
+        applicationId 'game.oe.editor.r57landpanel'
         minSdk 26
         targetSdk 34
-        versionCode 36
-        versionName '0.8.6-r57-native-uv56-land-test'
+        versionCode 37
+        versionName '0.8.7-r57-uv56-video-panel-test'
         ndk { abiFilters 'arm64-v8a' }
         externalNativeBuild {
             cmake { cppFlags '-std=c++17 -O2 -Wall -Wextra' }

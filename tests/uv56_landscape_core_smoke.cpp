@@ -37,6 +37,16 @@ int main(){
  assert(terrain.undo()&&terrain.at(0,0).h==250&&terrain.at(1,1).h==400);
  assert(!terrain.restore(10000,{{0,0,0,7}},0)); // no unapproved material id
  assert(!terrain.restore(10000,{{0,0,60001,0}},0));
+ Terrain drag;
+ assert(drag.create(10000));
+ drag.beginStroke(0,0);
+ assert(drag.brushAt(0,0,Tool::Raise,4,2));
+ assert(drag.brushAt(5,0,Tool::Raise,4,2));
+ drag.endStroke();
+ assert(drag.at(0,0).h>0&&drag.at(5,0).h>0);
+ assert(drag.undo()&&drag.at(0,0).h==0&&drag.at(5,0).h==0);
+ assert(drag.redo()&&drag.at(0,0).h>0&&drag.at(5,0).h>0);
+
  std::cout<<"OK: native UV56 heights: cm precision, falloff, no spike, "
              "undo, redo, flatten, smooth and atomic restore\n";
 }

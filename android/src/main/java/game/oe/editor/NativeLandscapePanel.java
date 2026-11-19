@@ -59,6 +59,7 @@ final class NativeLandscapePanel extends LinearLayout {
     private final TextView status;
     private final TextView exact;
     private final SeekBar size;
+    private final Spinner areasSpinner;
     private int centimeters;
     private int selectedTool;
     private boolean initialized=false;
@@ -83,6 +84,7 @@ final class NativeLandscapePanel extends LinearLayout {
 
         addView(label("Размер территории",12,false));
         Spinner areas=spinner(AREA_NAMES);
+        areasSpinner=areas;
         areas.setSelection(3);
         addView(areas,new LayoutParams(-1,px(46)));
         Button applyArea=button("🌍 Создать / заменить землю",
@@ -146,13 +148,13 @@ final class NativeLandscapePanel extends LinearLayout {
                                                   int i,long id){
                 selectedTool=i;
                 if(initialized){
-                    updateSizeLabel();
+                    setCentimeters(centimeters,true);
                     host.tool(i);
                 }
             }
             @Override public void onNothingSelected(AdapterView<?> parent){}
         });
-        updateSizeLabel();
+        setCentimeters(centimeters,false);
         initialized=true;
 
         addView(label("Покрытие / загруженный тайл",13,true));
@@ -203,6 +205,8 @@ final class NativeLandscapePanel extends LinearLayout {
 
     void setAreaStatus(int nativeArea){
         if(nativeArea>0){
+            for(int i=0;i<AREAS.length;i++)
+                if(AREAS[i]==nativeArea)areasSpinner.setSelection(i);
             status.setText("✓ Территория "+nativeArea+" м² · шаг 1 м · "+
                 "редактирование в городе OE");
         }else status.setText("Новая территория ещё не создана · "+

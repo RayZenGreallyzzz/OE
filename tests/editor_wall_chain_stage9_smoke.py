@@ -30,12 +30,12 @@ for q in (
     "nativeBarrierEdit(int id,double ax,double az",
     "private void startBarrierPolyline()",
     "private void editCollisionBarrier(String row)",
-    "barrierDrawMode&&e.getPointerCount()<2",
+    "(barrierDrawMode||barrierPickMode||barrierMoveId>0)&&",
     "int id=nativeBarrierAdd(barrierDraftStart[0]",
     "barrierDraftStart=at; // continue same polygonal chain",
     "++barrierDrawGeneration",
-    'if(!"Коллизии".equals(category)&&(barrierDrawMode||barrierCutId>0))',
-    "if(barrierDrawMode)cancelPlace();",
+    'if(!"Коллизии".equals(category)&&(barrierDrawMode||barrierCutId>0||barrierPickMode||barrierMoveId>0))',
+    "if(barrierDrawMode||barrierPickMode||barrierMoveId>0)cancelPlace();",
     "android.widget.ScrollView scroll",
     "final double[] values=new double[6]",
     "nativeBarrierEdit(id,values[0],values[1]",
@@ -43,8 +43,8 @@ for q in (
 ):
     assert q in java, ("Android wall chain gesture/edit/lifecycle missing",q)
 assert "WalkBarrier diagonal" in smoke and "diagonalGap.size()==2" in smoke
-assert "applicationId 'game.oe.editor.r57wallchain'" in gradle
-assert "versionCode 45" in gradle
+assert "applicationId 'game.oe.editor.r57wallpick'" in gradle
+assert "versionCode 46" in gradle
 assert "GLSurfaceView.RENDERMODE_WHEN_DIRTY" in java
 assert "new WebView(" not in java
 # Do not upgrade v12: same persisted physical wall record shape.

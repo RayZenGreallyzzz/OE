@@ -55,6 +55,6 @@ assert "android.webkit" not in java
 assert "void drawMapGuide(const Mat4& vp)" in cpp
 assert "nativePlotFocus(" in cpp and "drawEditorPlots(vp);" in cpp
 assert "runtime/walk_collision.h" in cpp
-assert "applicationId 'game.oe.editor.r57wallchain'" in gradle
+assert "applicationId 'game.oe.editor.r57wallpick'" in gradle
 print("OE_STAGE7_BLUEPRINTS_OK: PNG per village/city plot, individual SHA ZIP refs, "
       "one native GLES editor overlay at a time, old scenes v1-v10 retained")

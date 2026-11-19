@@ -136,6 +136,7 @@ static int gNextWalkBarrierId=1;
 static bool gWalkBarriersVisible=true; // only magenta rendering is editor-only
 static bool gBarrierDraftPointVisible=false; // unsaved two-tap preview
 static float gBarrierDraftX=0.f,gBarrierDraftZ=0.f;
+static int gSelectedBarrierId=0; // highlight only; never part of saved collision data
 static constexpr size_t MAX_EDITOR_PLOTS=32;
 static bool gNeutralLandPreview=false; // editor-only; not serialized
 static bool gUv56StrokeActive=false; // one touch gesture = one Undo action
@@ -254,7 +255,7 @@ void restoreScene(const SceneSnapshot&s){
  gBrushes=s.terrain;gTerrainPaint=s.paints;gUv56Terrain=s.uv56;
  gEditorPlots=s.editorPlots;gNextEditorPlotId=s.nextEditorPlotId;
  gWalkBarriers=s.barriers;gNextWalkBarrierId=s.nextBarrierId;
- gBarrierDraftPointVisible=false;
+ gBarrierDraftPointVisible=false;gSelectedBarrierId=0;
  gEditorPlotsVisible=true;
  gTerrainRevision++;gSceneInitialized=true;
  gLakes=s.lakes;gSelectedLake=s.selectedLake;++gLakeRevision;
@@ -1344,9 +1345,10 @@ void drawCollisionBarrierGuides(const Mat4&vp){
                 (az+bz)*.5f-gTarget.z)>gDistance*2+len)continue;
   const int count=std::max(1,static_cast<int>(std::ceil(len/8.f)));
   vertices.clear();vertices.reserve(static_cast<size_t>(count)*6*11);
+  const bool chosen=w.id==static_cast<std::uint64_t>(gSelectedBarrierId);
   auto push=[&](float x,float y,float z){
    vertices.insert(vertices.end(),{x,y,z,0.f,1.f,0.f,
-      .98f,.18f,.80f,0.f,0.f});
+      chosen?1.f:.98f,chosen?.81f:.18f,chosen?.10f:.80f,0.f,0.f});
   };
   for(int i=0;i<count;++i){
    const float a=static_cast<float>(i)/count,b=static_cast<float>(i+1)/count;
@@ -1363,6 +1365,25 @@ void drawCollisionBarrierGuides(const Mat4&vp){
      vertices.data(),GL_DYNAMIC_DRAW);
   glDrawArrays(GL_TRIANGLES,0,static_cast<GLsizei>(vertices.size()/11));
   ++gDrawCalls;gTriangles+=static_cast<int>(vertices.size()/33);
+  if(chosen){
+   // Green = first endpoint, cyan = second. Visuals never collide.
+   vertices.clear();
+   auto endpoint=[&](float x,float z,float r,float g,float b){
+    const float y=terrainHeightAt(x,z)+.6f,half=1.15f;
+    auto v=[&](float vx,float vz){
+     vertices.insert(vertices.end(),{vx,y,vz,0.f,1.f,0.f,r,g,b,0.f,0.f});
+    };
+    v(x-half,z-half);v(x+half,z-half);v(x+half,z+half);
+    v(x-half,z-half);v(x+half,z+half);v(x-half,z+half);
+   };
+   endpoint(ax,az,.16f,.96f,.34f);
+   endpoint(bx,bz,.08f,.76f,1.f);
+   glBufferData(GL_ARRAY_BUFFER,
+       static_cast<GLsizeiptr>(vertices.size()*sizeof(float)),
+       vertices.data(),GL_DYNAMIC_DRAW);
+   glDrawArrays(GL_TRIANGLES,0,static_cast<GLsizei>(vertices.size()/11));
+   ++gDrawCalls;gTriangles+=4;
+  }
  }
  // One small amber editor-only marker at the first tap. Never exported,
  // never turned into a wall, and no continuous render loop.
@@ -1813,7 +1834,7 @@ void reset(bool demo){
  gUv56Terrain=oe::uv56::Terrain();gTerrainRevision++;gNextId=1;gSelected=0;
  gEditorPlots.clear();gNextEditorPlotId=1;gEditorPlotsVisible=true;
  gWalkBarriers.clear();gNextWalkBarrierId=1;gWalkBarriersVisible=true;
- gBarrierDraftPointVisible=false;
+ gBarrierDraftPointVisible=false;gSelectedBarrierId=0;
  gLakes.clear();gSelectedLake=-1;++gLakeRevision;
  gRoads.clear();gSelectedRoad=0;gActiveRoad=0;gSelectedRoadPoint=-1;gRoadPending=false;++gRoadRevision;
  gPaintTiles.clear();gMaterialCanvas.clear();
@@ -3572,6 +3593,59 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeBarrierEdit(
  }
  return JNI_FALSE;
 }
+// Stage 10: select a REAL physical wall by tapping near its magenta guide.
+// The raycast is shared with the terrain editor; no extra touch listener.
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeBarrierPickAtScreen(
+ JNIEnv*,jclass,jfloat px,jfloat py){
+ float x=0.f,z=0.f;
+ if(!std::isfinite(px)||!std::isfinite(py)||!groundPoint(px,py,x,z)){
+  gSelectedBarrierId=0;return 0;
+ }
+ const double tolerance=std::clamp(static_cast<double>(gDistance)*.015,1.5,8.);
+ double best=tolerance;
+ int selected=0;
+ for(const auto&w:gWalkBarriers){
+  const double d=oe::runtime::walkPointSegmentDistance(x,z,
+      w.ax,w.az,w.bx,w.bz);
+  if(d<=best){best=d;selected=static_cast<int>(w.id);}
+ }
+ gSelectedBarrierId=selected;
+ return selected;
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeBarrierSelect(
+ JNIEnv*,jclass,jint id){
+ gSelectedBarrierId=0;
+ if(id<=0)return;
+ for(const auto&w:gWalkBarriers)if(w.id==static_cast<std::uint64_t>(id)){
+  gSelectedBarrierId=id;return;
+ }
+}
+// One tap can move first endpoint (0), last endpoint (1), or translate
+// the WHOLE wall (2) so its midpoint follows the tap. Validation is atomic;
+// malformed geometry never enters runtime or Undo.
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeBarrierMoveAtScreen(
+ JNIEnv*,jclass,jint id,jint mode,jfloat px,jfloat py){
+ if(id<=0||mode<0||mode>2)return 0;
+ float x=0.f,z=0.f;
+ if(!std::isfinite(px)||!std::isfinite(py)||!groundPoint(px,py,x,z))
+   return 0;
+ for(auto&wall:gWalkBarriers)if(wall.id==static_cast<std::uint64_t>(id)){
+  auto change=wall;
+  if(mode==0){change.ax=x;change.az=z;}
+  else if(mode==1){change.bx=x;change.bz=z;}
+  else{
+   const double dx=x-(wall.ax+wall.bx)*.5;
+   const double dz=z-(wall.az+wall.bz)*.5;
+   change.ax+=dx;change.az+=dz;change.bx+=dx;change.bz+=dz;
+  }
+  if(!oe::runtime::validWalkBarrier(change,worldHalf()))return 0;
+  if(change.ax==wall.ax&&change.az==wall.az&&
+     change.bx==wall.bx&&change.bz==wall.bz)return 1;
+  recordEdit();wall=change;gSelectedBarrierId=id;
+  return 1;
+ }
+ return 0;
+}
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeBarrierAdd(
  JNIEnv*,jclass,jdouble ax,jdouble az,jdouble bx,jdouble bz,
  jdouble thickness,jdouble height){
@@ -3589,6 +3663,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeBarrierDelet
     gWalkBarriers[i].id==static_cast<std::uint64_t>(id)){
   recordEdit();
   gWalkBarriers.erase(gWalkBarriers.begin()+static_cast<long>(i));
+  if(gSelectedBarrierId==id)gSelectedBarrierId=0;
   return JNI_TRUE;
  }
  return JNI_FALSE;
@@ -4215,7 +4290,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  gUv56Terrain=std::move(stagedUv56);
  gEditorPlots=std::move(stagedPlots);gNextEditorPlotId=nextPlotId;
  gWalkBarriers=std::move(stagedWalls);gNextWalkBarrierId=nextWallId;
- gBarrierDraftPointVisible=false;
+ gBarrierDraftPointVisible=false;gSelectedBarrierId=0;
  gWalkBarriersVisible=true;
  gEditorPlotsVisible=true;
  gLakes.swap(stagedLakes);gSelectedLake=-1;++gLakeRevision;

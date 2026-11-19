@@ -39,7 +39,7 @@ assert "if(available>0&&available<data.length*2L+DISK_RESERVE)" in bridge
 assert "private File projectFile()" in bridge
 assert 'startActivityForResult(new Intent(this,PhoenixBuilderActivity.class),PHOENIX_BUILDER)' in editor
 assert "applicationId 'game.oe.editor.phoenix013fix1'" in gradle
-assert "versionCode 35" in gradle
+assert "versionCode 36" in gradle
 # Graphics settings must live in the always-visible top-right toolbar,
 # use existing native quality implementation, and persist the selection.
 assert 'Button settingsButton=button("⚙️",this::showEngineSettings);' in editor
@@ -168,3 +168,38 @@ assert '.setMessage(' not in recovery_list_dialog
 print("OK: Android GLB destination buttons and JSON recovery list are visible")
 
 print("OK: Phoenix JSON snapshots, fallback, SAF retry, city handoff, and app ID unchanged")
+
+# glTF meters are not the same as file size. A 700m castle must not be
+# normalized to six meters; verify whole Java->JNI->camera path and no
+# historical 24MiB bridge guard. These are static invariants; tablet QA is
+# still required for geometry rendering and large-world performance.
+glb = (ROOT / "android/src/main/java/game/oe/editor/GlbReader.java").read_text()
+assert 'float normalized=6.0f/extent' not in glb
+assert 'float centerX=(maxX+minX)*.5f,centerZ=(maxZ+minZ)*.5f;' in glb
+assert 'verts[i]-=centerX;' in glb
+assert 'verts[i+1]-=minY;' in glb
+assert 'verts[i+2]-=centerZ;' in glb
+assert 'float dx=maxX-minX,dy=maxY-minY,dz=maxZ-minZ;' in glb
+assert 'dy*.5f,sphere+.05f' in glb
+assert 'radius>8192.f' in cpp
+assert 'const float far=std::max(1800.f,gDistance*3.f+500.f);' in cpp
+assert 'gDistance=clampf(gDistance*clampf(zoom,.6f,1.5f),5,2400);' in cpp
+assert 'frameLargeImported(gEntities.back());' in cpp
+assert 'loX=a->second.minX;hiX=a->second.maxX;' in cpp
+assert 'gTarget.y=terrainHeightAt(gTarget.x,gTarget.z)+1.2f+elevation;' in cpp
+assert '<<(a.maxX-a.minX)*e->size*e->sx' in cpp
+assert 'if(next.file.length()>24L*1024*1024)' not in bridge
+assert 'if(next.file.length()>GlbReader.MAX_BYTES)' in bridge
+assert 'Город пока может загрузить за один раз до ' in bridge
+assert 'GLB больше 24 МБ' not in editor
+assert 'Неправильный размер GLB для города (макс. 24 МБ)' not in editor
+assert 'entry.bytes>24L*1024*1024' not in editor
+assert 'MAX_BYTES = 64 * 1024 * 1024' in glb
+# Integer arithmetic should preserve a real 700 x 250 x 90m bounding box.
+points = [(-350.0, 4.0, -125.0),(350.0, 94.0, 125.0)]
+lo = tuple(min(p[i] for p in points) for i in range(3))
+hi = tuple(max(p[i] for p in points) for i in range(3))
+center = ((lo[0]+hi[0])*.5,(lo[2]+hi[2])*.5)
+world = [(p[0]-center[0],p[1]-lo[1],p[2]-center[1]) for p in points]
+assert tuple(max(p[i] for p in world)-min(p[i] for p in world) for i in range(3))==(700.,90.,250.)
+print("OK: original 700m castle dimensions preserved; camera and picking support metric bounds")

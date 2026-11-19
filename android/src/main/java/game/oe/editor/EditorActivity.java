@@ -2907,7 +2907,7 @@ public class EditorActivity extends Activity {
     }
     private void undoAction() {
         if(importing){message("Дождись завершения загрузки сцены");return;}
-        if(barrierDrawMode)cancelPlace();
+        if(barrierDrawMode||barrierPickMode||barrierMoveId>0)cancelPlace();
         edit(() -> {
             if(nativeUndo()){syncPlotPlanCentres();message("Изменение отменено");}
             else message("История отмены пуста");
@@ -2915,7 +2915,7 @@ public class EditorActivity extends Activity {
     }
     private void redoAction() {
         if(importing){message("Дождись завершения загрузки сцены");return;}
-        if(barrierDrawMode)cancelPlace();
+        if(barrierDrawMode||barrierPickMode||barrierMoveId>0)cancelPlace();
         edit(() -> {
             if(nativeRedo()){syncPlotPlanCentres();message("Изменение повторено");}
             else message("История повтора пуста");
@@ -4117,8 +4117,8 @@ public class EditorActivity extends Activity {
                     mapTopViewActive=false;
                     editorPlotsVisible=true;
                     barriersVisible=true;barrierCutId=0;
-                    barrierDrawMode=false;++barrierDrawGeneration;
-                    barrierDraftStart=null;
+                    barrierDrawMode=false;barrierPickMode=false;barrierMoveId=0;
+                    ++barrierDrawGeneration;barrierDraftStart=null;
                     committed=true;
                     roadMode=false;roadMoveMode=false;precisionPaintMode=false;materialPaintMode=false;lakeMode=false;
                     surface.requestRender();
@@ -4168,7 +4168,8 @@ public class EditorActivity extends Activity {
     @Override protected void onResume() { super.onResume(); if (surface != null) surface.onResume(); }
     @Override protected void onPause() {
         finishWalkControls();
-        barrierDrawMode=false;++barrierDrawGeneration;barrierCutId=0;
+        barrierDrawMode=false;barrierPickMode=false;barrierMoveId=0;
+        ++barrierDrawGeneration;barrierCutId=0;
         barrierDraftStart=null;
         if(surface!=null){
             surface.queueEvent(()->nativeBarrierDraftPoint(false,0f,0f));
@@ -4263,7 +4264,7 @@ public class EditorActivity extends Activity {
             if(importing)return true; // Prevent input changes during scene replacement.
             int action=e.getActionMasked();
             if(action==MotionEvent.ACTION_DOWN) {
-                if(barrierCutId>0||barrierDrawMode){
+                if(barrierCutId>0||barrierDrawMode||barrierPickMode||barrierMoveId>0){
                     downX=lastX=e.getX();downY=lastY=e.getY();
                     multiTouch=false;lastPinch=0;return true;
                 }
@@ -4334,7 +4335,8 @@ public class EditorActivity extends Activity {
             if(action==MotionEvent.ACTION_MOVE) {
                 if(barrierCutId>0)return true;
                 // One finger places vertices, two fingers remain camera controls.
-                if(barrierDrawMode&&e.getPointerCount()<2)return true;
+                if((barrierDrawMode||barrierPickMode||barrierMoveId>0)&&
+                   e.getPointerCount()<2)return true;
                 if(e.getPointerCount()>=2) {
                     float p=pinch(e);
                     final float midX=(e.getX(0)+e.getX(1))*.5f;
@@ -4400,6 +4402,50 @@ public class EditorActivity extends Activity {
             }
             if(action==MotionEvent.ACTION_POINTER_UP) {multiTouch=true;lastPinch=0;return true;}
             if(action==MotionEvent.ACTION_UP) {
+                if(barrierPickMode||barrierMoveId>0){
+                    final boolean tap=!multiTouch&&
+                        Math.hypot(e.getX()-downX,e.getY()-downY)<dp(18);
+                    final float px=surfaceX(e.getX()),py=surfaceY(e.getY());
+                    final int generation=barrierDrawGeneration;
+                    final boolean picking=barrierPickMode;
+                    final int moveId=barrierMoveId,moveMode=barrierMoveAction;
+                    if(tap)queueEvent(()->{
+                        if(generation!=barrierDrawGeneration)return;
+                        if(picking){
+                            if(!barrierPickMode)return;
+                            int id=nativeBarrierPickAtScreen(px,py);
+                            requestRender();
+                            if(id<=0){
+                                message("Не попал в стену · коснись ближе "+
+                                    "к розовой линии (два пальца — камера)");
+                                return;
+                            }
+                            String selected=null;
+                            for(String record:nativeBarrierList()){
+                                if(record.startsWith(id+"|")){selected=record;break;}
+                            }
+                            if(selected==null){
+                                message("Выбранная стена уже удалена");return;
+                            }
+                            final String record=selected;
+                            barrierPickMode=false;
+                            ui(()->{
+                                if(generation==barrierDrawGeneration)
+                                    collisionBarrierActions(record);
+                            });
+                        }else if(barrierMoveId==moveId&&moveId>0){
+                            if(nativeBarrierMoveAtScreen(moveId,moveMode,px,py)>0){
+                                barrierMoveId=0;
+                                requestRender();
+                                message("✓ Физическая стена перемещена · "+
+                                    "↶ отменить / ↷ повторить");
+                            }else message("Не получилось: коснись земли "+
+                                "внутри мира; длина должна быть 1–512 м");
+                        }
+                    });
+                    multiTouch=false;
+                    return true;
+                }
                 if(barrierDrawMode){
                     final boolean tap=!multiTouch&&
                         Math.hypot(e.getX()-downX,e.getY()-downY)<dp(18);
@@ -4576,7 +4622,7 @@ public class EditorActivity extends Activity {
             }
             if(action==MotionEvent.ACTION_CANCEL) {
                 barrierCutId=0;
-                barrierDrawMode=false;
+                barrierDrawMode=false;barrierPickMode=false;barrierMoveId=0;
                 ++barrierDrawGeneration;
                 barrierDraftStart=null;
                 queueEvent(()->nativeBarrierDraftPoint(false,0f,0f));

@@ -41,7 +41,7 @@ assert 'private void openPhoenixMode(String mode)' in editor
 assert 'intent.putExtra(PhoenixBuilderActivity.EXTRA_MODE,mode);' in editor
 assert 'startActivityForResult(intent,PHOENIX_BUILDER);' in editor
 assert "applicationId 'game.oe.editor.phoenix013fix1'" in gradle
-assert "versionCode 37" in gradle
+assert "versionCode 38" in gradle
 # Graphics settings must live in the always-visible top-right toolbar,
 # use existing native quality implementation, and persist the selection.
 assert 'Button settingsButton=button("⚙️",this::showEngineSettings);' in editor

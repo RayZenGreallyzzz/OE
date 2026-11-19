@@ -120,7 +120,12 @@ assert 'glUniform1f(gShader.locUseNormalMap,0.f);' in cpp
 assert 'glActiveTexture(GL_TEXTURE2);glBindTexture(GL_TEXTURE_2D,0);' in cpp
 assert 'glUniform1f(gShader.locImportedLighting,0.f); // Do not alter road/terrain/gizmos.' in cpp
 assert 'GL_RGBA8' in cpp
-print("OK: glTF PBR GGX, smooth normals, metal-rough maps and normal map bound only on imported GLB")
+assert 'const char*fallbackVert=R"' in cpp
+assert 'const char*fallbackFrag=R"' in cpp
+assert '"GLB PBR shader unsupported by this GLES device: falling back to legacy"' in cpp
+assert 'glGetProgramiv(gShader.program,GL_LINK_STATUS,&linked);' in cpp
+assert 'vNormal=normalize(transpose(inverse(mat3(uModel)))*aNormal);' in cpp
+print("OK: glTF PBR maps, smooth normals and GLES fallback preserve non-GLB rendering")
 
 
 # Android AlertDialog.Builder.setMessage and setItems share the same content

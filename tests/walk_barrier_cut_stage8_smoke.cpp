@@ -21,6 +21,7 @@ int main(){
  assert(!walkBarrierStops(pieces[1],-2,0,2,0,0,0));
  assert(walkBarrierStops(pieces[0],-2,-10,2,-10,0,0));
  assert(!cutWalkBarrier(wall,50,50,4,pieces));
+ assert(cutWalkBarrier(wall,0,0,4,pieces));pieces[1].id=2;
  assert(!validWalkBarrier(WalkBarrier{3,0,0,900,0,.8,4},512));
  oe::roads::TraversalGraph empty;
  auto terrain=[](double,double){return 0.;};

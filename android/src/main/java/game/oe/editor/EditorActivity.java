@@ -2137,7 +2137,7 @@ public class EditorActivity extends Activity {
                         if(!nativeRegisterAsset(entry.getKey(),mesh.vertices,
                                 mesh.boundCenterY,mesh.boundRadius,
                                 mesh.draws,mesh.imageData,mesh.imageInfo,mesh.pbrTextures,mesh.pbrFactors,
-                                        mesh.previewOmitsRig))
+                                        mesh.materialIds,mesh.materialNames,mesh.previewOmitsRig))
                             throw new Exception("Ошибка загрузки GPU: "+entry.getKey());
                         uploaded.add(entry.getKey());
                     }

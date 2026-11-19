@@ -48,6 +48,8 @@ jobs:
           /tmp/oe-uv56-native-terrain
       - name: R5.7 scene version 1-8 compatibility and native UV56 v9 integration contract
         run: python3 tests/native_uv56_r57_integration_smoke.py
+      - name: Verify screenshot-inspired UV56 native landscape panel and exact cm controls
+        run: python3 tests/uv56_native_video_panel_integration_smoke.py
   device-quality:
     runs-on: ubuntu-latest
     steps:

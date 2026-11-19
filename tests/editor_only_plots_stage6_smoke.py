@@ -38,7 +38,7 @@ for marker in [
     'plotIds,plotNames,plotValues))',
     'sceneVersion>10',
     'validEditorPlotName(label)',
-    'if(sceneVersion==10&&(plotsJson==null||plotsJson.length()==0))',
+    'if((sceneVersion==10&&(plotsJson==null||plotsJson.length()==0))',
 ]:
     assert marker in java, ("missing Android plots UI/scene import",marker)
 for marker in [

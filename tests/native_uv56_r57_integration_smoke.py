@@ -12,7 +12,7 @@ for marker in (
     '#include "terrain/uv56_landscape_core.h"',
     'static oe::uv56::Terrain gUv56Terrain;',
     'float h=gUv56Terrain.heightAt(x,z);',
-    'const int divisions=uv56Edited?64:(detail?8:1)',
+    'const int divisions=uv56Edited?(gDistance>250.f?8:64):(detail?8:1)',
     'gUv56Terrain=s.uv56;',
     'gUv56Terrain=std::move(stagedUv56)',
     'nativeUv56SculptAtScreen',

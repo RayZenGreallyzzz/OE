@@ -246,6 +246,7 @@ void restoreScene(const SceneSnapshot&s){
  gUv56StrokeActive=false;gUv56LastStrokeError=0;
  gBrushes=s.terrain;gTerrainPaint=s.paints;gUv56Terrain=s.uv56;
  gEditorPlots=s.editorPlots;gNextEditorPlotId=s.nextEditorPlotId;
+ gEditorPlotsVisible=true;
  gTerrainRevision++;gSceneInitialized=true;
  gLakes=s.lakes;gSelectedLake=s.selectedLake;++gLakeRevision;
  gRoads.replaceAll(s.roads);gSelectedRoad=s.selectedRoad;
@@ -327,7 +328,7 @@ Mat4 translate(Vec3 v){auto m=identity();m.m[12]=v.x;m.m[13]=v.y;m.m[14]=v.z;ret
 Mat4 scale(Vec3 v){Mat4 m;m.m[0]=v.x;m.m[5]=v.y;m.m[10]=v.z;m.m[15]=1;return m;}
 Mat4 rotateY(float a){Mat4 m=identity();float c=std::cos(a),s=std::sin(a);m.m[0]=c;m.m[8]=s;m.m[2]=-s;m.m[10]=c;return m;}
 Mat4 perspective(float aspect){
- float f=1/std::tan(PI/6), near=.1f, far=560.f;Mat4 m;
+ float f=1/std::tan(PI/6), near=.1f, far=std::max(560.f,gDistance*3.f+300.f);Mat4 m;
  m.m[0]=f/aspect;m.m[5]=f;
  m.m[10]=(far+near)/(near-far);m.m[11]=-1;
  m.m[14]=2*far*near/(near-far);return m;
@@ -963,7 +964,8 @@ void updateTerrain(){
  vertices.reserve(20000);
  const int half=gWorldSize/static_cast<int>(WORLD_TILE)/2;
  int tiles=0;
- const int radius=quality().terrainTileRadius;
+ const int radius=gDistance>250.f?std::min(12,std::max(quality().terrainTileRadius,
+       static_cast<int>(std::ceil(gDistance*.9f/WORLD_TILE)))):quality().terrainTileRadius;
  for(int tz=std::max(-half,gz-radius);tz<=std::min(half-1,gz+radius);tz++)
  for(int tx=std::max(-half,gx-radius);tx<=std::min(half-1,gx+radius);tx++){
   // One beige base color across the entire editor canvas; no colored squares.
@@ -980,7 +982,7 @@ void updateTerrain(){
   // One-metre UV56 geometry only where the native brush changed the land.
   // Existing R5.7 roads, paint layers and untouched low-LOD ground stay intact.
   const bool uv56Edited=gUv56Terrain.affectsTile(tx,tz);
-  const int divisions=uv56Edited?64:(detail?8:1);
+  const int divisions=uv56Edited?(gDistance>250.f?8:64):(detail?8:1);
   const float step=WORLD_TILE/divisions;
   for(int iz=0;iz<divisions;iz++)for(int ix=0;ix<divisions;ix++){
     const float x0=loX+ix*step,x1=x0+step,z0=loZ+iz*step,z1=z0+step;
@@ -1252,7 +1254,7 @@ void drawMaterialLayers(const Mat4& vp){
 // heightfield as the walker, but is excluded from Runtime Core and collisions.
 void drawEditorPlots(const Mat4&vp){
  if(!gEditorPlotsVisible||gEditorPlots.empty()||!gPaintMesh.vao)return;
- const float visible=quality().viewRangeMetres+128.f;
+ const float visible=std::max(quality().viewRangeMetres+128.f,gDistance*1.35f);
  std::vector<float> v;
  for(const auto&plot:gEditorPlots){
   const float half=plot.size*.5f;
@@ -2180,10 +2182,10 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDraw(JNIEnv*,jcl
   drawMaterialLayers(vp);
  }
  drawMapGuide(vp);
- drawEditorPlots(vp);
  drawRoads(vp);
  for(const auto&e:gEntities)drawEntity(vp,frustum,e);
  drawLakes(vp);
+ drawEditorPlots(vp); // authoring overlay, never a game collision
  if(gWalkPreview.active()){
   const auto&state=gWalkPreview.state();
   const Vec3 place{static_cast<float>(state.feet.x),
@@ -2251,7 +2253,7 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeOrbit(JNIEnv*,jc
   gYaw-=dx*.006f;
   gPitch=clampf(gPitch+dy*.006f,-1.16f,1.25f);
  }
- gDistance=clampf(gDistance*clampf(zoom,.6f,1.5f),5,210);
+ gDistance=clampf(gDistance*clampf(zoom,.6f,1.5f),5,1100);
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativePan(JNIEnv*,jclass,jfloat dx,jfloat dy){
  const float speed=gDistance*.0035f;
@@ -3316,6 +3318,82 @@ JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSelectedInfo(
  << " XYZ "<<e->sx<<"/"<<e->sy<<"/"<<e->sz;
  return env->NewStringUTF(out.str().c_str());
 }
+// Authoring-only plot rectangles, kept separate from all physical/game data.
+bool validEditorPlot(const EditorPlot&p,int world){
+ if(p.id<=0||p.id>1000000||p.label.empty()||p.label.size()>100||
+    !std::isfinite(p.x)||!std::isfinite(p.z)||
+    (p.size!=500.f&&p.size!=1000.f))return false;
+ for(unsigned char c:p.label)if(c<0x20||c=='|'||c==0x7f)return false;
+ const float h=static_cast<float>(world)*.5f;
+ return std::abs(p.x)+p.size*.5f<=h&&
+        std::abs(p.z)+p.size*.5f<=h;
+}
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePlotAdd(
+ JNIEnv*env,jclass,jstring label,jfloat x,jfloat z,jint size){
+ if(!label||gEditorPlots.size()>=MAX_EDITOR_PLOTS)return 0;
+ const char*raw=env->GetStringUTFChars(label,nullptr);
+ if(!raw)return 0;
+ EditorPlot candidate{gNextEditorPlotId,raw,x,z,static_cast<float>(size)};
+ env->ReleaseStringUTFChars(label,raw);
+ if(!validEditorPlot(candidate,gWorldSize))return 0;
+ recordEdit();
+ ++gNextEditorPlotId;gEditorPlots.push_back(std::move(candidate));
+ return gEditorPlots.back().id;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativePlotEdit(
+ JNIEnv*env,jclass,jint id,jstring label,jfloat x,jfloat z,jint size){
+ if(!label)return JNI_FALSE;
+ const char*raw=env->GetStringUTFChars(label,nullptr);
+ if(!raw)return JNI_FALSE;
+ EditorPlot candidate{id,raw,x,z,static_cast<float>(size)};
+ env->ReleaseStringUTFChars(label,raw);
+ if(!validEditorPlot(candidate,gWorldSize))return JNI_FALSE;
+ for(auto&plot:gEditorPlots)if(plot.id==id){
+  if(plot.label==candidate.label&&plot.x==x&&plot.z==z&&plot.size==size)
+   return JNI_TRUE;
+  recordEdit();plot=std::move(candidate);return JNI_TRUE;
+ }
+ return JNI_FALSE;
+}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativePlotDelete(
+ JNIEnv*,jclass,jint id){
+ for(size_t i=0;i<gEditorPlots.size();i++)if(gEditorPlots[i].id==id){
+  recordEdit();gEditorPlots.erase(gEditorPlots.begin()+static_cast<long>(i));
+  return JNI_TRUE;
+ }
+ return JNI_FALSE;
+}
+JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativePlotShow(
+ JNIEnv*,jclass,jboolean show){gEditorPlotsVisible=show==JNI_TRUE;}
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativePlotFocus(
+ JNIEnv*,jclass,jint id){
+ for(const auto&plot:gEditorPlots)if(plot.id==id){
+  gTarget={plot.x,terrainHeightAt(plot.x,plot.z)+1.2f,plot.z};
+  gDistance=std::min(1050.f,plot.size*1.05f);
+  gPitch=.87f;gMapTopDown=false;
+  ++gTerrainRevision; // viewer LOD changes for the chosen plot
+  return JNI_TRUE;
+ }
+ return JNI_FALSE;
+}
+JNIEXPORT jobjectArray JNICALL Java_game_oe_editor_EditorActivity_nativePlotList(
+ JNIEnv*env,jclass){
+ jclass str=env->FindClass("java/lang/String");
+ if(!str)return nullptr;
+ jobjectArray result=env->NewObjectArray(
+    static_cast<jsize>(gEditorPlots.size()),str,nullptr);
+ if(!result)return nullptr;
+ for(size_t i=0;i<gEditorPlots.size();i++){
+  const auto&p=gEditorPlots[i];
+  std::ostringstream item;
+  item<<p.id<<"|"<<p.size<<"|"<<p.x<<"|"<<p.z<<"|"<<p.label;
+  jstring value=env->NewStringUTF(item.str().c_str());
+  if(!value)return nullptr;
+  env->SetObjectArrayElement(result,static_cast<jsize>(i),value);
+  env->DeleteLocalRef(value);
+ }
+ return result;
+}
 std::string plotJsonEscaped(const std::string&in){
  std::ostringstream out;
  for(unsigned char c:in){
@@ -3563,10 +3641,11 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  jobjectArray roadNames,jobjectArray roadMaterials,jdoubleArray roadWidths,
  jdoubleArray roadTileMetres,jobjectArray roadPoints,jintArray tileCoords,jobjectArray tileData,
  jintArray layerCoords,jobjectArray layerKeys,jobjectArray layerMasks,
- jfloatArray lakeData,jint uv56Area,jintArray uv56NodeData){
+ jfloatArray lakeData,jint uv56Area,jintArray uv56NodeData,
+ jintArray plotIds,jobjectArray plotNames,jfloatArray plotValues){
  if(!allowedWorldSize(size)||!kinds||!transforms||!modelKeys||!terrainData||
     !objectPaintKeys||!painting||!terrainPaintKeys||!roadIds||!roadNames||
-    !roadMaterials||!roadWidths||!roadTileMetres||!roadPoints||!tileCoords||!tileData||!layerCoords||!layerKeys||!layerMasks||!lakeData||!uv56NodeData)
+    !roadMaterials||!roadWidths||!roadTileMetres||!roadPoints||!tileCoords||!tileData||!layerCoords||!layerKeys||!layerMasks||!lakeData||!uv56NodeData||!plotIds||!plotNames||!plotValues)
     return JNI_FALSE;
  const jsize n=env->GetArrayLength(kinds);
  if(n<0||n>MAX_ENTITIES||env->GetArrayLength(transforms)!=n*8||
@@ -3822,6 +3901,36 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
      std::sqrt(static_cast<double>(uv56Area))>static_cast<double>(size)+.01)
      return JNI_FALSE;
  }else if(uv56Ints!=0)return JNI_FALSE;
+ // Stage the v10 editor-only frame metadata before committing the city.
+ // Invalid plots must NOT erase the existing terrain, roads or buildings.
+ const jsize plotCount=env->GetArrayLength(plotIds);
+ if(plotCount<0||plotCount>static_cast<jsize>(MAX_EDITOR_PLOTS)||
+    env->GetArrayLength(plotNames)!=plotCount||
+    env->GetArrayLength(plotValues)!=plotCount*3)return JNI_FALSE;
+ std::vector<jint> plotIdData(static_cast<size_t>(plotCount));
+ std::vector<jfloat> plotValueData(static_cast<size_t>(plotCount)*3u);
+ if(plotCount){
+  env->GetIntArrayRegion(plotIds,0,plotCount,plotIdData.data());
+  env->GetFloatArrayRegion(plotValues,0,plotCount*3,plotValueData.data());
+  if(env->ExceptionCheck())return JNI_FALSE;
+ }
+ std::vector<EditorPlot> stagedPlots;
+ stagedPlots.reserve(static_cast<size_t>(plotCount));
+ int nextPlotId=1;
+ for(jsize k=0;k<plotCount;k++){
+  jstring value=static_cast<jstring>(env->GetObjectArrayElement(plotNames,k));
+  if(!value)return JNI_FALSE;
+  const char*chars=env->GetStringUTFChars(value,nullptr);
+  if(!chars){env->DeleteLocalRef(value);return JNI_FALSE;}
+  EditorPlot plot{plotIdData[k],chars,plotValueData[k*3],
+                  plotValueData[k*3+1],plotValueData[k*3+2]};
+  env->ReleaseStringUTFChars(value,chars);
+  env->DeleteLocalRef(value);
+  if(!validEditorPlot(plot,size))return JNI_FALSE;
+  for(const auto&earlier:stagedPlots)if(earlier.id==plot.id)return JNI_FALSE;
+  nextPlotId=std::max(nextPlotId,plot.id+1);
+  stagedPlots.push_back(std::move(plot));
+ }
  // Commit: no validation or allocation failures below this point.
  gWalkPreview.clear();
  gEntities.swap(staged);gBrushes.swap(stagedBrushes);

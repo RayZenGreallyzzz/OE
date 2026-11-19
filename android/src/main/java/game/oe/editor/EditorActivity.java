@@ -118,6 +118,9 @@ public class EditorActivity extends Activity {
             boolean roadSidewalks, boolean roadCrosswalks);
     private static native boolean nativeRegisterPaintTexture(String key, byte[] rgba,int width,int height);
     private static native boolean nativePaintSelected(String key);
+    private static native String[] nativeSelectedMaterials();
+    private static native boolean nativeTintSelectedMaterial(int materialId,float red,float green,float blue);
+    private static native boolean nativeTextureSelectedMaterial(int materialId,String key);
     private static native int nativePaintTerrainAtScreen(float x,float y,float radius,String key);
     private static native void nativeChangeSelectedHeight(float dy);
     private static native void nativeScaleSelectedAxis(int axis,float factor);
@@ -396,6 +399,9 @@ public class EditorActivity extends Activity {
         addControl(uprightRow,"↥ Поставить на землю",()->
             edit(EditorActivity::nativeSnapSelectedToGround));
         advancedInspector.addView(uprightRow);
+        LinearLayout materialRow=row();
+        addControl(materialRow,"🏠 Материалы крыши/стен",this::chooseBuildingMaterial);
+        advancedInspector.addView(materialRow);
         LinearLayout scaleRow=row();
         addControl(scaleRow,"− Размер",()->edit(()->nativeScale(1f/scaleStep)));
         addControl(scaleRow,"+ Размер",()->edit(()->nativeScale(scaleStep)));
@@ -1240,6 +1246,112 @@ public class EditorActivity extends Activity {
             }
             return out.toByteArray();
         }
+    }
+    // Every house reuses the identical GPU geometry. These appearance edits
+    // affect only one placed instance and one glTF material, never Phoenix GLB.
+    private void chooseBuildingMaterial(){
+        if(importing){message("Дождись загрузки");return;}
+        surface.queueEvent(()->{
+            final String[] raw=nativeSelectedMaterials();
+            if(raw==null||raw.length==0){message("Выбери дом GLB в городе");return;}
+            final String[] labels=new String[raw.length];
+            final int[] ids=new int[raw.length];
+            for(int i=0;i<raw.length;i++){
+                final int split=raw[i].indexOf('|');
+                if(split<0){message("Ошибка списка материалов");return;}
+                try{ids[i]=Integer.parseInt(raw[i].substring(0,split));}
+                catch(NumberFormatException e){message("Неверный индекс материала");return;}
+                labels[i]="🎨 "+raw[i].substring(split+1);
+            }
+            ui(()->new AlertDialog.Builder(this)
+                .setTitle("🏠 Материалы этого дома · другие копии не изменятся")
+                .setItems(labels,(d,which)->editBuildingMaterial(ids[which],labels[which]))
+                .setNegativeButton("Закрыть",null).show());
+        });
+    }
+    private void editBuildingMaterial(int id,String label){
+        final String[] actions={
+            "🌈 Изменить оттенок / затемнить / осветлить",
+            "🧱 Использовать мою текстуру только здесь",
+            "↺ Восстановить исходный цвет",
+            "↺ Восстановить исходную текстуру"};
+        new AlertDialog.Builder(this)
+            .setTitle(label+" · только выбранный экземпляр")
+            .setItems(actions,(d,action)->{
+                if(action==0)chooseMaterialTint(id);
+                else if(action==1)chooseMaterialTexture(id);
+                else if(action==2)edit(()->{
+                    if(!nativeTintSelectedMaterial(id,1.f,1.f,1.f))
+                        message("Не удалось вернуть цвет материала");
+                });
+                else edit(()->{
+                    if(!nativeTextureSelectedMaterial(id,""))
+                        message("Не удалось вернуть текстуру материала");
+                });
+            }).setNegativeButton("Отмена",null).show();
+    }
+    private void chooseMaterialTint(int id){
+        final String[] colors={
+            "Исходный цвет","Темнее 30%","Темнее 50%","Светлее 20%",
+            "Светлее 50%","Красноватая черепица","Коричневый дуб",
+            "Светлый известняк","Тёмный сланец","Зелёная патина",
+            "Холодный камень"};
+        final float[][] rgb={
+            {1.f,1.f,1.f},{.7f,.7f,.7f},{.5f,.5f,.5f},{1.2f,1.2f,1.2f},
+            {1.5f,1.5f,1.5f},{1.35f,.74f,.65f},{.80f,.60f,.41f},
+            {1.30f,1.21f,1.10f},{.62f,.70f,.83f},{.65f,.95f,.63f},
+            {.83f,.93f,1.14f}};
+        new AlertDialog.Builder(this)
+            .setTitle("🌈 Цвет материала · другие дома без изменений")
+            .setItems(colors,(d,choice)->{
+                final float[] tint=rgb[choice];
+                edit(()->{
+                    if(nativeTintSelectedMaterial(id,tint[0],tint[1],tint[2]))
+                        message("Новый оттенок выбран только для этого дома");
+                    else message("Не получилось изменить материал");
+                });
+            }).setNegativeButton("Отмена",null).show();
+    }
+    private void chooseMaterialTexture(int materialId){
+        try{
+            File[] files=textureDir().listFiles((d,name)->validTexture(name));
+            if(files==null||files.length==0){
+                message("Добавь PNG/JPG через вкладку «Текстуры»");return;
+            }
+            Arrays.sort(files,(a,b)->a.getName().compareTo(b.getName()));
+            String[] labels=new String[files.length];
+            for(int i=0;i<files.length;i++)
+                labels[i]="🧱 "+files[i].getName().substring(3,15);
+            new AlertDialog.Builder(this).setTitle("Текстура только выбранного материала")
+                .setItems(labels,(d,which)->
+                    usePaintTextureForMaterial(files[which].getName(),materialId))
+                .setNegativeButton("Отмена",null).show();
+        }catch(Exception e){message("Не открыть текстуры: "+e.getMessage());}
+    }
+    private void usePaintTextureForMaterial(String key,int materialId){
+        if(importing)return;
+        importing=true;
+        new Thread(()->{
+            try{
+                if(!validTexture(key))throw new Exception("Неверный ключ текстуры");
+                File file=new File(textureDir(),key);
+                if(!file.isFile()||file.length()>ProjectArchive.MAX_TEXTURE_BYTES)
+                    throw new Exception("Текстура не найдена");
+                byte[] bytes=Files.readAllBytes(file.toPath());
+                String mime=textureType(bytes);
+                if(!key.equals(textureKey(bytes,mime)))
+                    throw new Exception("Повреждена текстура");
+                TextureReader.Image img=TextureReader.decode(bytes,mime,1024);
+                surface.queueEvent(()->{
+                    final boolean ok=nativeRegisterPaintTexture(key,img.bytes,img.width,img.height)
+                        &&nativeTextureSelectedMaterial(materialId,key);
+                    importing=false;
+                    if(ok)message("Текстура назначена этому материалу · другие дома без изменений");
+                    else message("Не применить материал: GPU-память или другой объект выбран");
+                    surface.requestRender();
+                });
+            }catch(Exception e){importing=false;message("Текстура: "+e.getMessage());}
+        },"oe-material-texture").start();
     }
     private void pickPaintTexture(){
         if(importing){message("Дождись загрузки");return;}

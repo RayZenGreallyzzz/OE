@@ -86,7 +86,7 @@ static float gSubmitCpuMs=0.f;
 const oe::QualityProfile&quality(){return oe::profile(gQualityTier);}
 static std::unordered_map<std::string,Asset> gAssets;
 static std::unordered_map<std::string,TextureResource> gPaintTextures;
-static constexpr size_t MAX_PAINT_TEXTURES=8,MAX_PAINT_CACHE_BYTES=32u*1024u*1024u;
+static constexpr size_t MAX_PAINT_TEXTURES=32,MAX_PAINT_CACHE_BYTES=128u*1024u*1024u;
 static constexpr size_t MAX_TEXTURE_CACHE_BYTES=96u*1024u*1024u;
 static constexpr size_t MAX_LOD_CACHE_BYTES=40u*1024u*1024u;
 static int gLodDrawCounts[3]={0,0,0};
@@ -1151,7 +1151,7 @@ void drawMaterialLayers(const Mat4& vp){
  glUniform1f(gShader.locMaterialLayer,1.f);
  glBindVertexArray(gPaintMesh.vao);
  std::vector<float> verts;
- verts.reserve(16*16*6*11);
+ verts.reserve(64*64*6*11);
  for(const auto& tile:gMaterialCanvas.tiles()){
   const float ox=tile.x*oe::terrainpaint::kTileMetres,
               oz=tile.z*oe::terrainpaint::kTileMetres;
@@ -1164,8 +1164,17 @@ void drawMaterialLayers(const Mat4& vp){
      (x-ox)/oe::terrainpaint::kTileMetres,
      (z-oz)/oe::terrainpaint::kTileMetres});
   };
-  for(int z=0;z<16;z++)for(int x=0;x<16;x++){
-   const float x0=ox+x*4.f,x1=x0+4.f,z0=oz+z*4.f,z1=z0+4.f;
+  // Height displacement is stored at 1m in UV56. 4m R5.7 material
+  // vertices clipped into hills or floated above the real surface.
+  // Adapt the overlay mesh to raised tiles, preserving low-RAM far LOD.
+  const bool uv56Edited=gUv56Terrain.affectsTile(tile.x,tile.z);
+  const int divisions=uv56Edited?
+      ((std::abs(ox+32.f-gTarget.x)<100.f&&
+        std::abs(oz+32.f-gTarget.z)<100.f)?64:32):16;
+  const float matStep=oe::terrainpaint::kTileMetres/static_cast<float>(divisions);
+  for(int z=0;z<divisions;z++)for(int x=0;x<divisions;x++){
+   const float x0=ox+x*matStep,x1=x0+matStep,
+               z0=oz+z*matStep,z1=z0+matStep;
    append(x0,z0);append(x0,z1);append(x1,z0);
    append(x1,z0);append(x0,z1);append(x1,z1);
   }
@@ -1564,7 +1573,10 @@ bool groundPoint(float px,float py,float &x,float &z){
  const float u=(px*2.f/gWidth-1.f)*half*aspect,v=(1.f-py*2.f/gHeight)*half;
  Vec3 ray=unit({forward.x+right.x*u+up.x*v,forward.y+right.y*u+up.y*v,
                  forward.z+right.z*u+up.z*v});
- if(gBrushes.empty()){
+ // Native UV56 height nodes are independent from legacy R5.7 brushes.
+ // Plane picking must be disabled after the FIRST UV56 hill is sculpted.
+ // Otherwise the cursor hits an invisible y=0 plane behind raised ground.
+ if(gBrushes.empty()&&gUv56Terrain.nodeCount()==0){
   if(ray.y>-.0001f)return false;
   const float t=-eye.y/ray.y;
   if(t<=0||t>1500.f)return false;

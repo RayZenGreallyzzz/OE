@@ -529,7 +529,13 @@ void setupGL(){
  gMapStage={};
  gRoadGpu={};gRoadRanges.clear();gRoadGpuRevision=-1;gRoadGpuTerrainRevision=-1;
  gLakeGpu={}; // Drop stale handles on Android EGL context recreation.
- gPaintTileGpu.clear();gPrecisionPaintActive=false;gPaintCursorVisible=false;
+ // The old EGL texture IDs are invalid after screen recorder / window
+ // reconfiguration. Drop just GPU handles; keep every authored paint layer.
+ // Do NOT glDeleteTextures(old-id) in the newly created context: that can
+ // delete a different texture which has reused the same integer name.
+ gPaintTileGpu.clear();
+ gMaterialGpu.clear();
+ gPrecisionPaintActive=false;gPaintCursorVisible=false;
  const char*vert=R"(#version 300 es
  layout(location=0) in vec3 aPos;
  layout(location=1) in vec3 aNormal;
@@ -1185,9 +1191,14 @@ void drawMaterialLayers(const Mat4& vp){
                verts.data(),GL_DYNAMIC_DRAW);
   for(const auto& layer:tile.materials){
    const TextureResource* material=paintTexture(layer.material);
-   if(!material||!material->id)continue;
+   if(!material||!material->id||glIsTexture(material->id)!=GL_TRUE)
+    continue; // fail safe; never draw a black quad with an invalid snow tile
    const auto key=std::make_tuple(tile.x,tile.z,layer.material);
    auto& gpu=gMaterialGpu[key];
+   if(gpu.texture&&glIsTexture(gpu.texture)!=GL_TRUE){
+    // The same logical layer survived an EGL loss; re-create its GPU mask.
+    gpu.texture=0;gpu.revision=0;
+   }
    glActiveTexture(GL_TEXTURE1);
    if(!gpu.texture){
     glGenTextures(1,&gpu.texture);
@@ -2089,13 +2100,22 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeDraw(JNIEnv*,jcl
  gLodDrawCounts[0]=gLodDrawCounts[1]=gLodDrawCounts[2]=0;
  Mat4 vp=viewProjection();
  const Frustum frustum=makeFrustum(vp);
+ // Reinitialize inherited shader state after any renderer-mode switch.
+ glUniform1f(gShader.locMaterialLayer,0.f);
+ glUniform1f(gShader.locGuide,0.f);
+ glUniform1f(gShader.locOverlay,0.f);
+ glUniform1f(gShader.locOpacity,1.f);
+ glUniform1f(gShader.locPaintOverride,0.f);
+ glUniform1f(gShader.locTextured,0.f);
+ glActiveTexture(GL_TEXTURE0);
  drawWorld(vp);
- // Neutral preview is editor-only: existing paint textures are preserved.
+ // Preview hides ALL ground texture systems, including old paint tiles.
+ // It never changes the saved masks, ground heights or collision data.
  if(!gNeutralLandPreview){
   drawTerrainPaint(vp);
+  drawPrecisionPaint(vp);
   drawMaterialLayers(vp);
  }
- drawPrecisionPaint(vp);
  drawMapGuide(vp);
  drawRoads(vp);
  for(const auto&e:gEntities)drawEntity(vp,frustum,e);
@@ -3074,6 +3094,12 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeApplyTerrainBrus
 // one reversible city snapshot; move samples the SAME original stroke baseline;
 // the native R5.7 walker, lakes and streets remain in this scene.
 // Editor-only view mode: never changes saved materials or gameplay geometry.
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeGroundHitAtScreen(
+ JNIEnv*,jclass,jfloat px,jfloat py){
+ if(!std::isfinite(px)||!std::isfinite(py))return JNI_FALSE;
+ float x=0,z=0;
+ return groundPoint(px,py,x,z)?JNI_TRUE:JNI_FALSE;
+}
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeSetNeutralLandPreview(
  JNIEnv*,jclass,jboolean enabled){
  gNeutralLandPreview=enabled==JNI_TRUE;

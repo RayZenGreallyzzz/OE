@@ -45,14 +45,14 @@ int main(){
  const oe::roads::TerrainHeight hillside=[](double,double z){return .5*z;};
  WalkBarrier ridge{5,0,-15,0,15,.8,4.};
  assert(walker.configure(empty,hillside,512.,{ridge}));
- assert(walker.spawn(-2.,12.));
+ assert(walker.spawn(-2.,8.));
  assert(walker.advance(1.,0.,false,90));
- assert(walker.state().feet.x<-.70); // remains blocked at +6m terrain
+ assert(walker.state().feet.x<-.70); // remains blocked at +4m terrain
  std::vector<WalkBarrier> ridgeGap;
- assert(cutWalkBarrier(ridge,0.,12.,4.,ridgeGap));
+ assert(cutWalkBarrier(ridge,0.,8.,4.,ridgeGap));
  assert(ridgeGap.size()==2);ridgeGap[1].id=6;
  assert(walker.configure(empty,hillside,512.,ridgeGap));
- assert(walker.spawn(-2.,12.));
+ assert(walker.spawn(-2.,8.));
  assert(walker.advance(1.,0.,false,90));
  assert(walker.state().feet.x>.50); // opening is truly passable
  walker.clear();assert(walker.barrierCount()==0);

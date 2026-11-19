@@ -3586,12 +3586,8 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
   std::vector<jint> raw(static_cast<size_t>(uv56Ints));
   env->GetIntArrayRegion(uv56NodeData,0,uv56Ints,raw.data());
   if(env->ExceptionCheck())return JNI_FALSE;
-  for(jsize i=0;i<uv56Ints;i+=4){
-   for(jsize j=0;j<4;j++)
-    if(raw[i+j]<std::numeric_limits<int>::min()||
-       raw[i+j]>std::numeric_limits<int>::max())return JNI_FALSE;
+  for(jsize i=0;i<uv56Ints;i+=4)
    uv56Nodes.push_back({raw[i],raw[i+1],raw[i+2],raw[i+3]});
-  }
  }
  oe::uv56::Terrain stagedUv56;
  if(uv56Area){

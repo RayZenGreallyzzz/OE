@@ -39,7 +39,7 @@ assert "if(available>0&&available<data.length*2L+DISK_RESERVE)" in bridge
 assert "private File projectFile()" in bridge
 assert 'startActivityForResult(new Intent(this,PhoenixBuilderActivity.class),PHOENIX_BUILDER)' in editor
 assert "applicationId 'game.oe.editor.phoenix013fix1'" in gradle
-assert "versionCode 33" in gradle
+assert "versionCode 34" in gradle
 # Graphics settings must live in the always-visible top-right toolbar,
 # use existing native quality implementation, and persist the selection.
 assert 'Button settingsButton=button("⚙️",this::showEngineSettings);' in editor
@@ -82,17 +82,42 @@ assert 'nativeSetImportedLighting(glbSoftLighting);' in editor
 assert 'glbSoftLighting=getPreferences(MODE_PRIVATE).getBoolean("oe_glb_soft_lighting",true);' in editor
 assert '.putBoolean("oe_glb_soft_lighting",glbSoftLighting).apply();' in editor
 assert 'private void chooseGlbLighting(){' in editor
-assert "☀️ Освещение зданий GLB" in editor
+assert "✨ Материалы GLB · не меняет оригиналы" in editor
 assert 'glUniform1f(gShader.locImportedLighting,gImportedSoftLighting?1.f:0.f);' in cpp
 assert 'glUniform1f(gShader.locImportedLighting,0.f); // Do not alter road/terrain/gizmos.' in cpp
 assert 'JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeSetImportedLighting(' in cpp
 assert 'uniform float uImportedLighting;' in cpp
 assert 'if(uImportedLighting>.5)' in cpp
-assert 'vec3 linearTexture=pow(clamp(texel.rgb,0.,1.),vec3(2.2));' in cpp
-assert 'color=pow(litLinear,vec3(1.0/2.2));' in cpp
+assert 'vec3 base=pow(clamp(texel.rgb,0.,1.),vec3(2.2))*' in cpp
+assert 'vec3 fresnel=F0+(1.-F0)*pow(1.-VoH,5.);' in cpp
+assert 'roughness*=orm.g;' in cpp
+assert 'metallic*=orm.b;' in cpp
+assert 'mapN.xy*=uNormalScale;' in cpp
 assert 'gShader.locImportedLighting=glGetUniformLocation(gShader.program,"uImportedLighting");' in cpp
 assert 'void drawWorld(' in cpp and 'void drawImported(' in cpp
-print("OK: isolated glTF lighting in native renderer with reversible persisted setting")
+# The new imported GLB material path must be complete from JSON to GLES.
+glb = (ROOT / "android/src/main/java/game/oe/editor/GlbReader.java").read_text()
+assert 'pbr.optJSONObject("metallicRoughnessTexture")' in glb
+assert 'mat.optJSONObject("normalTexture")' in glb
+assert 'attrs.has("NORMAL")' in glb
+assert 'pbrTextures[batch*2]=normalMap;' in glb
+assert 'pbrFactors[batch*3]=j.roughness;' in glb
+assert 'pbrFactors[batch*3+1]=j.metallic;' in glb
+assert 'pbrFactors[batch*3+2]=j.normalScale;' in glb
+assert 'new float[]{1.f,1.f,1.f}' in glb  # glTF default baseColorFactor
+assert 'float[] pbrTextures' not in glb  # slots are ints, factors are floats
+assert 'int[] pbrTextures;' in glb
+assert 'float[] pbrFactors;' in glb
+assert 'mesh.pbrTextures,mesh.pbrFactors' in editor
+assert 'model.pbrTextures,model.pbrFactors' in editor
+assert 'jintArray pbrTexData,jfloatArray pbrFactorData,' in cpp
+assert 'env->GetIntArrayRegion(pbrTexData' in cpp
+assert 'env->GetFloatArrayRegion(pbrFactorData' in cpp
+assert 'glUniform1f(gShader.locUseNormalMap,0.f);' in cpp
+assert 'glActiveTexture(GL_TEXTURE2);glBindTexture(GL_TEXTURE_2D,0);' in cpp
+assert 'glUniform1f(gShader.locImportedLighting,0.f); // Do not alter road/terrain/gizmos.' in cpp
+assert 'GL_RGBA8' in cpp
+print("OK: glTF PBR GGX, smooth normals, metal-rough maps and normal map bound only on imported GLB")
 
 
 # Android AlertDialog.Builder.setMessage and setItems share the same content

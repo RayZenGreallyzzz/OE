@@ -1823,7 +1823,8 @@ public class EditorActivity extends Activity {
                 byte[] buffer=new byte[4096];
                 int count;
                 while((count=in.read(buffer))!=-1){
-                    if(jsonBytes.size()+count>200000)throw new Exception("Файл сцены слишком большой");
+                    if(jsonBytes.size()+count>ProjectArchive.MAX_SCENE_BYTES)
+                        throw new Exception("Файл сцены слишком большой");
                     jsonBytes.write(buffer,0,count);
                 }
             }catch(java.io.FileNotFoundException missing){
@@ -2130,7 +2131,7 @@ public class EditorActivity extends Activity {
                             throw new Exception("Лимит памяти пользовательских текстур: "+entry.getKey());
                     }
                     if(!nativeCanRegisterMore(missing.size()))
-                        throw new Exception("Недостаточно свободных слотов GLB (макс. 12)");
+                        throw new Exception("Недостаточно свободных слотов уникальных GLB (до 32)");
                     for(Map.Entry<String,GlbReader.Result> entry:missing.entrySet()){
                         GlbReader.Result mesh=entry.getValue();
                         if(!nativeRegisterAsset(entry.getKey(),mesh.vertices,

@@ -99,7 +99,7 @@ const oe::QualityProfile&quality(){return oe::profile(gQualityTier);}
 static std::unordered_map<std::string,Asset> gAssets;
 static std::unordered_map<std::string,TextureResource> gPaintTextures;
 static constexpr size_t MAX_PAINT_TEXTURES=8,MAX_PAINT_CACHE_BYTES=32u*1024u*1024u;
-static constexpr size_t MAX_TEXTURE_CACHE_BYTES=96u*1024u*1024u;
+static constexpr size_t MAX_TEXTURE_CACHE_BYTES=128u*1024u*1024u;
 static constexpr size_t MAX_LOD_CACHE_BYTES=40u*1024u*1024u;
 static int gLodDrawCounts[3]={0,0,0};
 size_t lodCacheBytes(){
@@ -120,7 +120,7 @@ size_t textureCacheBytes(){
 // Up to 32 *distinct* meshes; many scene instances share one GPU asset.
 // Still bounded by MAX_TEXTURE_CACHE_BYTES and MAX_LOD_CACHE_BYTES.
 static constexpr int MAX_ASSETS=32;
-static constexpr int MAX_IMPORTED_TRIANGLES=90000;
+static constexpr int MAX_IMPORTED_TRIANGLES=240000;
 static Shader gShader;
 static std::vector<Entity> gEntities;
 static int gNextId=1, gSelected=0, gWidth=1, gHeight=1;
@@ -2845,7 +2845,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeRegisterAsse
   env->DeleteLocalRef(bytes);
   if(env->ExceptionCheck())return JNI_FALSE;
   totalNew+=expected;
-  if(totalNew>32u*1024u*1024u)return JNI_FALSE;
+  if(totalNew>64u*1024u*1024u)return JNI_FALSE;
   prepared.textures.push_back(std::move(tex));
  }
  const size_t oldBytes=existing==gAssets.end()?0:[&](){

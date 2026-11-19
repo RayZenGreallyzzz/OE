@@ -216,6 +216,8 @@ print("OK: original 700m castle dimensions preserved; camera and picking support
 # placed Entity and persist as small material-ID/tint/texture records.
 project=(ROOT/"android/src/main/java/game/oe/editor/ProjectArchive.java").read_text()
 assert "int[] materialIds;" in glb
+assert editor.count("mesh.materialIds,mesh.materialNames") == 2
+assert editor.count("model.materialIds,model.materialNames") == 1
 assert "String[] materialNames;" in glb
 assert "materialIds[batch]=j.materialId;" in glb
 assert "materialId=p.optInt" not in glb # materialIndex local variable

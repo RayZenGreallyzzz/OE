@@ -274,6 +274,9 @@ public class EditorActivity extends Activity {
     private final java.util.concurrent.ConcurrentHashMap<Integer,MapGuide>
         plotPlans=new java.util.concurrent.ConcurrentHashMap<>();
     private volatile int activePlotPlanId=0,pendingPlotPngId=0;
+    // Tracks frame origins so a PNG follows its site across undo and redo.
+    private final java.util.concurrent.ConcurrentHashMap<Integer,double[]>
+        plotPlanSiteCenters=new java.util.concurrent.ConcurrentHashMap<>();
     private static final int MAX_PLOT_PNGS=8;
     private volatile double selectedRoadWidth=6.0;
     private volatile float paintRadius=16f;
@@ -1042,7 +1045,8 @@ public class EditorActivity extends Activity {
                         .trim().replace(',','.'));
                     surface.queueEvent(()->{
                         boolean ok=nativePlotEdit(id,newName,cx,cz,previousSize);
-                        if(ok){surface.requestRender();message("Участок обновлён · ↶ отменить");}
+                        if(ok){syncPlotPlanCentres();surface.requestRender();
+                            message("Участок обновлён · PNG следует за рамкой · ↶ отменить");}
                         else message("Границы участка выходят за пределы мира");
                     });
                 }catch(NumberFormatException ex){message("Введи числа для X/Z");}
@@ -1052,14 +1056,46 @@ public class EditorActivity extends Activity {
                     .setMessage("Земля, дома, дороги и коллизии останутся без изменений.")
                     .setPositiveButton("Удалить рамку",(d,w)->
                         surface.queueEvent(()->{
-                            if(nativePlotDelete(id)){surface.requestRender();
-                                message("Рамка удалена · ↶ отменить");}
+                            if(nativePlotDelete(id)){
+                                if(activePlotPlanId==id){
+                                    nativeMapClear();activePlotPlanId=0;
+                                }
+                                surface.requestRender();
+                                message("Рамка удалена · PNG сохранён для ↶");
+                            }
                         }))
                     .setNegativeButton("Отмена",null).show()).show();
     }
 
     // One R5.7 native PNG overlay is visible at a time to protect tablet VRAM.
     // Each plot's PNG remains independently saved and selectable in .oezip.
+    // Called only on the GLES thread. Site frames and PNG drawings move
+    // together; undo/redo of the frame repositions its editor-only plan.
+    private void syncPlotPlanCentres(){
+        String[] records=nativePlotList();
+        for(String row:records){
+            String[] rec=row.split("\\|",5);
+            if(rec.length!=5)continue;
+            try{
+                int id=Integer.parseInt(rec[0]);
+                MapGuide plan=plotPlans.get(id);
+                if(plan==null)continue;
+                double cx=Double.parseDouble(rec[2]),cz=Double.parseDouble(rec[3]);
+                double[] old=plotPlanSiteCenters.get(id);
+                if(old==null){plotPlanSiteCenters.put(id,new double[]{cx,cz});continue;}
+                if(Math.abs(cx-old[0])<.0001&&Math.abs(cz-old[1])<.0001)continue;
+                MapGuide moved=plan.aligned(plan.centerX+(cx-old[0]),
+                    plan.centerZ+(cz-old[1]),plan.widthMetres,plan.opacity,plan.visible);
+                if(activePlotPlanId==id&&
+                   !nativeMapConfigure(moved.centerX,moved.centerZ,
+                       moved.widthMetres,moved.opacity,moved.visible))
+                    continue;
+                plotPlans.put(id,moved);
+                plotPlanSiteCenters.put(id,new double[]{cx,cz});
+            }catch(NumberFormatException ignored){}
+        }
+    }
+
     private void choosePlotForPlan(){
         if(importing)return;
         surface.queueEvent(()->{
@@ -1192,6 +1228,7 @@ public class EditorActivity extends Activity {
                                    plan.widthMetres,plan.opacity,true))
                                 throw new Exception("Нельзя показать PNG поверх участка");
                             plotPlans.put(id,plan);
+                            plotPlanSiteCenters.put(id,new double[]{cx,cz});
                             activePlotPlanId=id;
                             nativePlotFocus(id);
                             surface.requestRender();
@@ -1968,6 +2005,7 @@ public class EditorActivity extends Activity {
         }finally{stream.end();}
     }
     private String snapshotWithGuide() throws Exception{
+        syncPlotPlanCentres();
         final JSONObject json=new JSONObject(nativeSceneSnapshot());
         final MapGuide guide=mapGuide;
         if(guide!=null){
@@ -2556,14 +2594,14 @@ public class EditorActivity extends Activity {
     private void undoAction() {
         if(importing){message("Дождись завершения загрузки сцены");return;}
         edit(() -> {
-            if(nativeUndo())message("Изменение отменено");
+            if(nativeUndo()){syncPlotPlanCentres();message("Изменение отменено");}
             else message("История отмены пуста");
         });
     }
     private void redoAction() {
         if(importing){message("Дождись завершения загрузки сцены");return;}
         edit(() -> {
-            if(nativeRedo())message("Изменение повторено");
+            if(nativeRedo()){syncPlotPlanCentres();message("Изменение повторено");}
             else message("История повтора пуста");
         });
     }
@@ -3719,6 +3757,11 @@ public class EditorActivity extends Activity {
                     }else nativeMapClear();
                     mapGuide=parsedGuide;
                     plotPlans.clear();plotPlans.putAll(parsedPlotPlans);
+                    plotPlanSiteCenters.clear();
+                    for(int k=0;k<plotIds.length;k++)
+                        if(parsedPlotPlans.containsKey(plotIds[k]))
+                            plotPlanSiteCenters.put(plotIds[k],new double[]{
+                                plotValues[3*k],plotValues[3*k+1]});
                     activePlotPlanId=firstPlotPlanId;
                     mapTopViewActive=false;
                     editorPlotsVisible=true;
@@ -3759,7 +3802,8 @@ public class EditorActivity extends Activity {
                         edit(()->{
                             nativeReset(demo);nativeMapClear();
                             mapGuide=null;mapTopViewActive=false;
-                            plotPlans.clear();activePlotPlanId=0;
+                            plotPlans.clear();plotPlanSiteCenters.clear();
+                            activePlotPlanId=0;
                         });
                         message(demo?"Демонстрационный квартал восстановлен":"Пустая карта: все объекты удалены");
                     })

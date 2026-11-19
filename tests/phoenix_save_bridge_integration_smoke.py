@@ -37,7 +37,9 @@ assert "if(stream!=null||pendingSave!=null)return false;" not in bridge
 assert "if(available>0&&available<bytes.length+DISK_RESERVE)" in bridge
 assert "if(available>0&&available<data.length*2L+DISK_RESERVE)" in bridge
 assert "private File projectFile()" in bridge
-assert 'startActivityForResult(new Intent(this,PhoenixBuilderActivity.class),PHOENIX_BUILDER)' in editor
+assert 'private void openPhoenixMode(String mode)' in editor
+assert 'intent.putExtra(PhoenixBuilderActivity.EXTRA_MODE,mode);' in editor
+assert 'startActivityForResult(intent,PHOENIX_BUILDER);' in editor
 assert "applicationId 'game.oe.editor.phoenix013fix1'" in gradle
 assert "versionCode 37" in gradle
 # Graphics settings must live in the always-visible top-right toolbar,

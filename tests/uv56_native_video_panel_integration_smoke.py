@@ -50,8 +50,8 @@ assert 'showUv56LandscapePanel();' in terrain_section
 assert '⛰ Поднять гору' not in terrain_section
 assert 'chooseTerrainBrush' not in terrain_section
 assert 'enterTerrainMode' not in terrain_section
-assert 'version>=1&&version<=10' in archive
-assert 'sceneVersion>10' in java
+assert 'version>=1&&version<=11' in archive
+assert 'sceneVersion>11' in java
 assert "applicationId 'game.oe.editor.r57blueprints'" in gradle
 assert "applicationIdSuffix '.dev'" in gradle
 assert "import android.webkit" not in panel and "new WebView(" not in panel

@@ -20,6 +20,13 @@ class StagingContractTests(unittest.TestCase):
         self.uv56=dict(self.uv44)
         for name in mod.UV56_DELTA:
             self.uv56[name]=("UV56 "+name).encode()
+        # A single CleanBuilder canvas needs both modes and actual terrain
+        # restoration hooks. Synthetic fixtures model required UV56 wiring.
+        self.uv56["assets/index.html"]=(
+            b'<button id="modeBuild"></button><button id="modeLandscape"></button>')
+        self.uv56["assets/js/clean-app.js"]=(
+            b"$('modeBuild');$('modeLandscape');this.bindLandscape();"
+            b"this.landscape.restore(doc.terrain||null);")
         self.u44file=self.root/"44.apk"
         self.u56file=self.root/"56.apk"
         self.pack(self.u44file,self.uv44)
@@ -41,6 +48,15 @@ class StagingContractTests(unittest.TestCase):
         actual={(p.relative_to(out/"phoenix-uv56-overlay")).as_posix()
                 for p in (out/"phoenix-uv56-overlay").rglob("*") if p.is_file()}
         self.assertEqual(actual,set(mod.UV56_DELTA))
+        # Replacing an old staged Builder removes obsolete files rather than
+        # carrying them into the new owner-only OE APK.
+        stale=out/"phoenix/assets/js/legacy-builder.js"
+        stale.parent.mkdir(parents=True,exist_ok=True)
+        stale.write_text("obsolete")
+        mod.stage(self.u44file,self.u56file,out)
+        self.assertFalse(stale.exists())
+        self.assertEqual((out/"phoenix/assets/index.html").read_bytes(),
+                         self.uv44["assets/index.html"])
 
     def test_reject_builder_mutation_before_writing_assets(self):
         self.uv56["assets/models/test-0.glb"]=b"changed"

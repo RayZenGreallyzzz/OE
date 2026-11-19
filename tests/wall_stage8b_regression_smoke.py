@@ -38,7 +38,7 @@ for item in (
 assert "Пока нет столкновений со стенами" not in java
 assert "terrain_( (wall.ax+wall.bx)*.5" not in walk
 assert "validTerrain(terrain_,wall.ax+t*vx,wall.az+t*vz,groundY)" in walk
-assert "const TerrainHeight hillside" in smoke
+assert "const oe::roads::TerrainHeight hillside" in smoke
 assert "ridgeGap.size()==2" in smoke
 assert "applicationId 'game.oe.editor.r57wallfix'" in gradle
 assert "versionCode 44" in gradle

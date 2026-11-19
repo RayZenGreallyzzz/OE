@@ -280,7 +280,7 @@ public class EditorActivity extends Activity {
         top.setPadding(dp(5),dp(2),dp(5),dp(2));
         top.setBackgroundColor(Color.argb(220,14,21,32));
         TextView title=new TextView(this);
-        title.setText("OE 0.7.13 / PHOENIX v33");
+        title.setText("OE 0.7.13 / режим Город");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
         title.setTextSize(12);
@@ -288,7 +288,10 @@ public class EditorActivity extends Activity {
         title.setPadding(dp(8),0,dp(5),0);
         top.addView(title,new LinearLayout.LayoutParams(0,dp(45),1f));
         Button menu=button("☰ Каталог",()->toggleDrawer(!drawerOpen));
-        top.addView(menu,new LinearLayout.LayoutParams(dp(110),dp(43)));
+        top.addView(menu,new LinearLayout.LayoutParams(dp(104),dp(43)));
+        Button builderMode=button("🏗 Стройка",this::openBuilderMode);
+        builderMode.setContentDescription("Режим Стройка · Phoenix Builder UV44");
+        top.addView(builderMode,new LinearLayout.LayoutParams(dp(103),dp(43)));
         Button save=button("💾 Сохранить",this::saveScene);
         top.addView(save,new LinearLayout.LayoutParams(dp(112),dp(43)));
         Button undo=button("↶",this::undoAction);
@@ -456,6 +459,15 @@ public class EditorActivity extends Activity {
         root.addView(info,infoParams);
         setContentView(root);
     }
+    // Shared app lifecycle: OE city remains the parent scene while the
+    // unchanged Phoenix UV44 builder is in its own construction mode.
+    // The existing builder JSON/GLB save bridge handles persistence.
+    private void openBuilderMode(){
+        if(importing){message("Заверши импорт перед переходом в Стройку");return;}
+        cancelPlace();
+        toggleDrawer(false);
+        startActivityForResult(new Intent(this,PhoenixBuilderActivity.class),PHOENIX_BUILDER);
+    }
     private void toggleDrawer(boolean open){
         drawerOpen=open;
         toolDrawer.setVisibility(open?View.VISIBLE:View.GONE);
@@ -473,11 +485,7 @@ public class EditorActivity extends Activity {
     private void showPalette(String category){
         paletteItems.removeAllViews();
         if("🏗 Здание".equals(category)){
-            addPaletteOption("🔥 Открыть Phoenix Builder UV44",()->{
-                cancelPlace();
-                toggleDrawer(false);
-                startActivityForResult(new Intent(this,PhoenixBuilderActivity.class),PHOENIX_BUILDER);
-            });
+            addPaletteOption("🏗 Режим Стройка · Phoenix Builder UV44",this::openBuilderMode);
             addPaletteOption("📥 Импорт готового GLB из Phoenix",this::pickGlb);
             addPaletteOption("ℹ Редактор зданий отдельный от ландшафта и дорог",
                 ()->message("Строй здание в Phoenix, экспортируй GLB и импортируй в город"));

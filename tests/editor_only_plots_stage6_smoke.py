@@ -36,13 +36,13 @@ for marker in [
     'json.put("version",10)',
     'int[] plotIds,String[] plotNames,float[] plotValues',
     'plotIds,plotNames,plotValues,wallRecords))',
-    'sceneVersion>13',
+    'sceneVersion>14',
     'validEditorPlotName(label)',
     'if(((sceneVersion==10||sceneVersion==11)&&(plotsJson==null||plotsJson.length()==0))',
 ]:
     assert marker in java, ("missing Android plots UI/scene import",marker)
 for marker in [
-    "version>=1&&version<=13",
+    "version>=1&&version<=14",
     "validateEditorPlots(json,version)",
     "validateNativeUv56(json,version)",
     "validateLakes(json,version)",

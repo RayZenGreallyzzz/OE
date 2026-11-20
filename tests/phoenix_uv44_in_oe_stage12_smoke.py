@@ -68,8 +68,8 @@ for part in (
 assert 'android:name="game.oe.editor.PhoenixBuilderActivity"' in manifest
 assert 'android:exported="false"' in manifest
 assert manifest.count("android.intent.category.LAUNCHER")==1
-assert "applicationId 'game.oe.editor.r57canvas'" in gradle
-assert "versionCode 50" in gradle
+assert "applicationId 'game.oe.editor.r57canvas.paintfix'" in gradle
+assert "versionCode 51" in gradle
 assert 'json.put("version",12)' in app
 # No user's privately uploaded UV44 JS, GLB catalogue or project in git.
 assert not (root/"android/src/main/assets/uv44").exists()

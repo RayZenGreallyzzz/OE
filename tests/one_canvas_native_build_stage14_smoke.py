@@ -39,7 +39,8 @@ for q in (
     else: assert q in java, ("single canvas original UV44 library wiring",q)
 assert "uv56ReverseOrbit=false;" in java
 assert "uv56ReverseOrbit=true;" not in java
-assert "final float ox=x-lastX,oy=y-lastY;" in java
+assert "return surfaceY(y); // paint at the exact finger contact" in java
+assert "paintDragCamera" not in java, "painting cannot silently orbit the camera"
 assert "else nativeOrbit(reverse?-dx:dx,reverse?-dy:dy,1f);" in java
 assert "final boolean pinching=lastPinch>1.f&&" in java
 assert "if(zoom!=1f)nativeOrbit(0,0,zoom);" in java
@@ -47,8 +48,8 @@ assert "if(panX!=0f||panY!=0f)nativePan(panX,panY);" in java
 assert "final boolean reverse=uv56ReverseOrbit;" in java
 assert "nativeUv56StrokeStart" in java and "void reverseCamera(boolean reverse)" in panel
 assert 'addPaletteOption("📦 Мой GLB / glTF / VOX",this::pickGlb)' in java
-assert 'applicationId \'game.oe.editor.r57canvas\'' in gradle
-assert "versionCode 50" in gradle
+assert 'applicationId \'game.oe.editor.r57canvas.paintfix\'' in gradle
+assert "versionCode 51" in gradle
 assert "ZipInputStream" in bundle and "root(Context c)" in bundle
 assert 'new WebView(' not in java, "OE's main 3D canvas must remain native GLES"
 assert 'json.put("version",13)' in java, "UV44 editable houses must remain compatible"

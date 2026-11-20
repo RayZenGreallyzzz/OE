@@ -48,8 +48,8 @@ assert "if(generation!=barrierDrawGeneration)return;" in java
 assert 'json.put("version",12)' in java
 assert "version>=1&&version<=13" in archive
 assert "collisionWalls" in cpp
-assert "applicationId 'game.oe.editor.r57canvas'" in gradle
-assert "versionCode 50" in gradle
+assert "applicationId 'game.oe.editor.r57canvas.paintfix'" in gradle
+assert "versionCode 51" in gradle
 assert "new WebView(" not in java
 print("OE_STAGE11_LINKED_JUNCTIONS_OK: atomic C++ shared endpoints, v12 "
       "project, one undo and on-demand menu counts")

@@ -64,6 +64,7 @@ jobs:
           python3 tests/phoenix_uv44_in_oe_stage12_smoke.py
           python3 tests/phoenix_uv44_editable_roundtrip_stage13_smoke.py
           python3 tests/one_canvas_native_build_stage14_smoke.py
+          python3 tests/stage14_paint_touch_regression_smoke.py
   native-linked-collision-nodes:
     runs-on: ubuntu-latest
     steps:

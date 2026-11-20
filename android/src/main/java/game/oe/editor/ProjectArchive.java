@@ -52,7 +52,7 @@ public final class ProjectArchive {
         JSONObject json=new JSONObject(scene);
         int version=json.optInt("version",-1);
         JSONObject guide=json.optJSONObject("mapReference");
-        check(version>=1&&version<=13,"Неподдерживаемая версия сцены");
+        check(version>=1&&version<=14,"Неподдерживаемая версия сцены");
         if(version<3){
             check(!json.has("mapReference"),"Подложка требует сцену версии 3+");
             return null;
@@ -362,7 +362,7 @@ public final class ProjectArchive {
         check(scene.getBytes(StandardCharsets.UTF_8).length<=MAX_SCENE_BYTES,"Сцена превышает безопасный лимит");
         JSONObject json=new JSONObject(scene);
         int version=json.optInt("version",-1);
-        check(version>=1&&version<=13,"Неподдерживаемая версия сцены");
+        check(version>=1&&version<=14,"Неподдерживаемая версия сцены");
         check(version==1||json.optJSONArray("roads")!=null,"Нет дорожной сети");
         validateLakes(json,version);
         validateNativeUv56(json,version);
@@ -393,7 +393,7 @@ public final class ProjectArchive {
         for(int i=0;i<items.length();i++){
             JSONObject item=items.getJSONObject(i);
             int kind=item.getInt("type");
-            check(kind>=0&&kind<=28&&(kind<=16||version>=6),
+            check(kind>=0&&kind<=56&&(kind<=16||(kind<=28&&version>=6)||(kind>=29&&version>=14)),
                   "Недопустимый тип средневекового объекта");
             if(kind!=6)continue;
             String key=item.getString("asset");

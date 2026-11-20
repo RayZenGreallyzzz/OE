@@ -43,8 +43,8 @@ for q in (
 ):
     assert q in java, ("Android wall chain gesture/edit/lifecycle missing",q)
 assert "WalkBarrier diagonal" in smoke and "diagonalGap.size()==2" in smoke
-assert "applicationId 'game.oe.editor.r57nodes'" in gradle
-assert "versionCode 47" in gradle
+assert "applicationId 'game.oe.editor.r57uv44'" in gradle
+assert "versionCode 48" in gradle
 assert "GLSurfaceView.RENDERMODE_WHEN_DIRTY" in java
 assert "new WebView(" not in java
 # Do not upgrade v12: same persisted physical wall record shape.

@@ -26,8 +26,20 @@ int main(){
  assert(world.tiles().size()==previous.size());
  assert(!world.paint(0,0,1,1,0.3,1,false,paint,1024));
  assert(!world.paint(NAN,0,1,1,1,1,false,paint,1024));
+ // Regression: painting more than 32 DISTINCT map tiles must not silently stop.
+ Canvas wide;
+ for(int i=0;i<50;i++){
+  const int tx=i%10,tz=i/10;
+  const double x=-480+tx*64+10,z=-480+tz*64+10;
+  assert(wide.paint(x,z,x+1,z,1,1,false,paint,1024));
+ }
+ assert(wide.tiles().size()==50);
+ const auto wideCopy=wide.tiles();
+ Canvas restored;
+ assert(restored.replaceAll(wideCopy,1024));
+ assert(restored.tiles().size()==50);
  Canvas limit;
  assert(!limit.paint(-400,-400,400,400,16,1,false,paint,1024));
  assert(limit.tiles().empty());
- std::cout<<"OE_TERRAIN_TILES_OK: continuous sub-metre marks, segment/erase, atomic budget, reload\n";
+ std::cout<<"OE_TERRAIN_TILES_OK: continuous strokes, 50 painted areas, atomic restore\n";
 }

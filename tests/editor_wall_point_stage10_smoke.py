@@ -21,7 +21,7 @@ for q in (
     "else if(mode==1){change.bx=x;change.bz=z;}",
     "change.ax+=dx;change.az+=dz;change.bx+=dx;change.bz+=dz;",
     "validWalkBarrier(change,worldHalf())",
-    "recordEdit();wall=change;gSelectedBarrierId=id;",
+    "recordEdit();gWalkBarriers.swap(staged);gSelectedBarrierId=id;",
     "chosen?.81f:.18f",
     "endpoint(ax,az,.16f,.96f,.34f)",
     "endpoint(bx,bz,.08f,.76f,1.f)",
@@ -53,8 +53,8 @@ assert "validWalkBarrier(edited,512.)" in walker
 assert "version>=1&&version<=12" in arch
 assert 'json.put("version",12)' in java
 assert "collisionWalls" in cpp
-assert "applicationId 'game.oe.editor.r57wallpick'" in gradle
-assert "versionCode 46" in gradle
+assert "applicationId 'game.oe.editor.r57nodes'" in gradle
+assert "versionCode 47" in gradle
 assert "new WebView(" not in java
 print("OE_STAGE10_WALL_POINT_OK: one-tap nearest wall, selected endpoints, native "
       "physical transform/validation, undo and v12 persistence")

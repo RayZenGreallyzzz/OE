@@ -210,7 +210,7 @@ public class EditorActivity extends Activity {
     private static native void nativeMapClear();
     private static native void nativeMapTopView();
     private static native void nativeMapPerspective();
-    private static final int PICK_GLB = 702, PICK_PROJECT=703, SAVE_PROJECT=704, PICK_PAINT=705, PICK_MAP=706, PICK_PLOT_PNG=707;
+    private static final int PICK_GLB = 702, PICK_PROJECT=703, SAVE_PROJECT=704, PICK_PAINT=705, PICK_MAP=706, PICK_PLOT_PNG=707, OPEN_UV44_BUILDER=708;
     private static final int MAX_ASSETS = 12;
 
     private EditorSurface surface;
@@ -602,6 +602,7 @@ public class EditorActivity extends Activity {
         activeLandscapePanel=null;
         activePaletteCategory=category;
         if("Здания".equals(category)){
+            addPaletteOption("🏗 Phoenix Builder UV44 · стройка",this::openPhoenixBuilder);
             addPaletteOption("+ Таверна",()->enterPlaceMode(0,null));
             addPaletteOption("+ Кузница",()->enterPlaceMode(1,null));
             addPaletteOption("+ Аукционный дом",()->enterPlaceMode(2,null));
@@ -782,6 +783,7 @@ public class EditorActivity extends Activity {
                     +"Draco пока не поддерживается. KTX2 BasisU ETC1S/UASTC LDR -> ETC2 подключён (тест).")
                 .setPositiveButton("Понятно",null).show());
         }else if("Проект".equals(category)){
+            addPaletteOption("🏗 Строительство UV44 в OE",this::openPhoenixBuilder);
             addPaletteOption("🧠 Ядро игры · проверить",this::showRuntimeCoreStatus);
             addPaletteOption("⚡ Графика и качество",this::chooseDeviceProfile);
             addPaletteOption("🖥 Информация о GPU",this::showDeviceCapabilities);
@@ -3366,6 +3368,17 @@ public class EditorActivity extends Activity {
         if(stagingRoot!=null)new Thread(() -> ProjectArchive.removeTree(stagingRoot),
                 "oe-project-cleanup").start();
     }
+    // The UV44 building editor is part of THIS OE APK, not another app.
+    // Android automatically pauses OE's GLES scene while builder owns GPU.
+    private void openPhoenixBuilder(){
+        if(importing){message("Сначала заверши импорт сцены");return;}
+        cancelPlace();
+        if(walkControlsActive)finishWalkControls();
+        Intent in=new Intent(this,PhoenixBuilderActivity.class);
+        try{startActivityForResult(in,OPEN_UV44_BUILDER);}
+        catch(Exception e){message("Не запустить стройку UV44: "+e.getMessage());}
+    }
+
     private void pickGlb() {
         if(importing) { message("Импорт или загрузка уже выполняется"); return; }
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -3409,8 +3422,31 @@ public class EditorActivity extends Activity {
             }
             return;
         }
-        if(requestCode!=PICK_GLB || resultCode!=RESULT_OK || intent==null || intent.getData()==null)return;
-        final Uri uri=intent.getData();
+        if(requestCode==OPEN_UV44_BUILDER){
+            if(resultCode==RESULT_OK&&intent!=null){
+                String path=intent.getStringExtra(PhoenixBuilderActivity.EXTRA_GLB_PATH);
+                if(path!=null){
+                    try{
+                        File root=new File(getFilesDir(),"uv44_files");
+                        File glb=new File(path);
+                        if(!glb.getCanonicalPath().startsWith(
+                             root.getCanonicalPath()+File.separator)||
+                           !glb.getName().toLowerCase(Locale.ROOT).endsWith(".glb")||
+                           !glb.isFile()||glb.length()<20||
+                           glb.length()>GlbReader.MAX_BYTES)
+                            throw new Exception("UV44: неверный или слишком большой GLB");
+                        message("UV44 → OE: загружаю готовый дом в город");
+                        importModelFromUri(Uri.fromFile(glb));
+                    }catch(Exception ex){message("Ошибка передачи UV44: "+ex.getMessage());}
+                }
+            }
+            return;
+        }
+        if(requestCode!=PICK_GLB||resultCode!=RESULT_OK||
+           intent==null||intent.getData()==null)return;
+        importModelFromUri(intent.getData());
+    }
+    private void importModelFromUri(Uri uri){
         if(importing)return;
         importing=true;
         message("Распознаю GLB / glTF / VOX…");

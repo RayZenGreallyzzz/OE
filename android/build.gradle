@@ -5,11 +5,11 @@ android {
     namespace 'game.oe.editor'
     compileSdk 35
     defaultConfig {
-        applicationId 'game.oe.editor.r57nodes'
+        applicationId 'game.oe.editor.r57uv44'
         minSdk 26
         targetSdk 34
-        versionCode 47
-        versionName '0.8.17-r57-linked-nodes-test'
+        versionCode 48
+        versionName '0.8.18-r57-uv44-builder-internal-test'
         ndk { abiFilters 'arm64-v8a' }
         externalNativeBuild {
             cmake { cppFlags '-std=c++17 -O2 -Wall -Wextra' }

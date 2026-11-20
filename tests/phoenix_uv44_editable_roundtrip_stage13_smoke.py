@@ -35,7 +35,7 @@ for q in (
   'json.put("version",13)',
   "PhoenixHouseLinks.stageArchive(this,sourceBuilders,incomingUv44Houses)",
   "PhoenixHouseLinks.commitArchiveLinks(this,incomingUv44Houses)",
-  "sceneVersion>13",
+  "sceneVersion>14",
 ):
   assert q in editor,("editable UV44 scene integration missing",q)
 for q in (
@@ -70,7 +70,7 @@ for q in (
   assert q in links,("private content-hashed UV44 project ownership missing",q)
 for q in (
   'MAX_UNPACKED_BYTES=384L*1024*1024',
-  "version>=1&&version<=13",
+  "version>=1&&version<=14",
   "PhoenixHouseLinks.parseSceneLinks(json)",
   'new ZipEntry("builders/"+name)',
   "new File(staged.builderDir,",

@@ -16,7 +16,6 @@ assert "gDemoRoads=demo;" in cpp
 assert 'Button build=button("🏗 Стройка"' in java
 assert 'Button land=button("🌿 Ландшафт"' in java
 assert "showPalette(\"Стройка\")" in java
-assert 'showPalette("Стройка");\n\n' not in java or True
 assert 'new String[]{"Стройка","Рельеф","Здания"' in java
 assert 'if("Стройка".equals(category))' in java
 assert 'addPaletteOption("📚 Детали оригинальной библиотеки UV44"' in java

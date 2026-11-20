@@ -3243,6 +3243,103 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeFoundationUnderS
  ++gNextId;gSelected=foundation.id;
  return foundation.id;
 }
+// Stage16: native port of UV44 BuildingWorkflow.roomPlan's 2m tile grid.
+// A full room is one atomic undoable edit; no Three.js secondary scene.
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeBuildPhoenixRoomAtScreen(
+ JNIEnv*,jclass,jint metres,jboolean ceiling,jfloat px,jfloat py){
+ if(metres!=4&&metres!=6&&metres!=8&&metres!=12)return 0;
+ float cx=0,cz=0;
+ if(!groundPoint(px,py,cx,cz))return 0;
+ const int n=metres/2;
+ const int count=4*n+n*n*(ceiling==JNI_TRUE?2:1);
+ const float bound=static_cast<float>(metres)*.5f+2.f;
+ if(gEntities.size()+static_cast<size_t>(count)>MAX_ENTITIES||
+    std::abs(cx)+bound>worldHalf()||std::abs(cz)+bound>worldHalf()||
+    gNextId<=0||gNextId>2147483647-count)return 0;
+ const float base=terrainHeightAt(cx,cz);
+ if(!std::isfinite(base)||base< -24.f||base>154.f)return 0;
+ // Stage one room is flat at its centre's ground elevation, matching UV44
+ // storey grid. Terrain beneath other room corners may be higher/lower.
+ recordEdit();
+ const int first=gNextId;
+ auto spawn=[&](int kind,float x,float y,float z,float yaw){
+  Entity e{};e.id=gNextId++;e.type=kind;
+  e.x=x;e.y=y;e.z=z;e.yaw=yaw;
+  gEntities.push_back(std::move(e));
+ };
+ for(int col=0;col<n;col++){
+  const float x=cx-metres*.5f+1.f+col*2.f;
+  // One real door opening and one window opening per generated room.
+  spawn(col==n/2?53:56,x,base,cz-metres*.5f,0.f);
+  spawn(col==n/2?54:56,x,base,cz+metres*.5f,0.f);
+ }
+ for(int row=0;row<n;row++){
+  const float z=cz-metres*.5f+1.f+row*2.f;
+  spawn(56,cx-metres*.5f,base,z,90.f);
+  spawn(56,cx+metres*.5f,base,z,90.f);
+ }
+ for(int col=0;col<n;col++)for(int row=0;row<n;row++){
+  const float x=cx-metres*.5f+1.f+col*2.f;
+  const float z=cz-metres*.5f+1.f+row*2.f;
+  spawn(29,x,base,z,0.f);  // original UV44 2m floor grid
+  if(ceiling==JNI_TRUE)spawn(29,x,base+2.6f-.18f,z,0.f);
+ }
+ gSelected=first+(n/2)*2; // door wall is editable immediately
+ return count;
+}
+// Converting a selected modular wall is a real geometry change. Aperture
+// shape is baked as missing solid faces in the same native GLES mesh.
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeSetPhoenixWallOpening(
+ JNIEnv*,jclass,jint kind){
+ if(kind<53||kind>56)return JNI_FALSE;
+ Entity*e=selected();
+ if(!e||(e->type!=31&&(e->type<53||e->type>56)))return JNI_FALSE;
+ if(e->type!=kind){recordEdit();e->type=kind;}
+ return JNI_TRUE;
+}
+// Endpoint magnet on the same world. Uses socket positions/orientations,
+// respecting per-axis entity scale, yaw and height. No AABB pseudo-snaps.
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeSnapPhoenixSelected(
+ JNIEnv*,jclass){
+ Entity*e=selected();if(!e)return JNI_FALSE;
+ oe::phoenix::Socket own[2]{};
+ const int na=oe::phoenix::sockets(e->type,own);
+ if(!na)return JNI_FALSE;
+ auto worldSocket=[](const Entity&entity,const oe::phoenix::Socket&slot,
+                     float&x,float&z,float&dx,float&dz){
+  const float a=entity.yaw*RAD,c=std::cos(a),s=std::sin(a);
+  const float lx=slot.x*entity.size*entity.sx;
+  const float lz=slot.z*entity.size*entity.sz;
+  x=entity.x+c*lx+s*lz;
+  z=entity.z+c*lz-s*lx;
+  dx=c*slot.dx+s*slot.dz;dz=c*slot.dz-s*slot.dx;
+ };
+ float best=4.f,shiftX=0.f,shiftZ=0.f,shiftY=0.f;
+ for(const auto&target:gEntities){
+  if(target.id==e->id||std::abs(target.y-e->y)>1.1f)continue;
+  oe::phoenix::Socket slots[2]{};
+  const int nb=oe::phoenix::sockets(target.type,slots);
+  if(!nb)continue;
+  for(int a=0;a<na;a++)for(int b=0;b<nb;b++){
+   float ax,az,adx,adz,bx,bz,bdx,bdz;
+   worldSocket(*e,own[a],ax,az,adx,adz);
+   worldSocket(target,slots[b],bx,bz,bdx,bdz);
+   if(adx*bdx+adz*bdz>-.8f)continue;
+   const float dx=bx-ax,dz=bz-az,d2=dx*dx+dz*dz;
+   if(d2<best){
+    best=d2;shiftX=dx;shiftZ=dz;shiftY=target.y-e->y;
+   }
+  }
+ }
+ if(best>=4.f)return JNI_FALSE;
+ const float xx=e->x+shiftX,zz=e->z+shiftZ,yy=e->y+shiftY;
+ if(std::abs(xx)>worldHalf()||std::abs(zz)>worldHalf()||
+    yy< -24.f||yy>160.f)return JNI_FALSE;
+ if(std::abs(shiftX)+std::abs(shiftZ)+std::abs(shiftY)>.00001f){
+  recordEdit();e->x=xx;e->y=yy;e->z=zz;
+ }
+ return JNI_TRUE;
+}
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePlaceAtScreen(JNIEnv*,jclass,jint type,jfloat px,jfloat py){
  if(type<0||type>oe::phoenix::kLast||type==6)return 0;
  float x,z;

@@ -70,6 +70,10 @@ public class EditorActivity extends Activity {
     private static native int nativeAdd(int kind);
     private static native int nativeFoundationUnderSelected(int foundationKind);
     private static native int nativePlaceAtScreen(int kind, float x, float y);
+    private static native int nativeBuildPhoenixRoomAtScreen(int metres, boolean ceiling,
+            float px, float py);
+    private static native boolean nativeSetPhoenixWallOpening(int kind);
+    private static native boolean nativeSnapPhoenixSelected();
     private static native int nativePlaceImportedAtScreen(String key, float x, float y);
     private static native int nativeAddPlaced(int kind, float x, float z, float yaw, float scale);
     private static native void nativeSelect(int id);
@@ -313,6 +317,7 @@ public class EditorActivity extends Activity {
     private volatile long statsUpdatedAt=0;
     private volatile boolean importing = false;
     private volatile int placingKind = -1;
+    private volatile boolean placingPhoenixRoomCeiling = false;
     private volatile String placingGlb = null;
     private volatile int terrainMode=0; // -1 lower, +1 raise
     private volatile boolean lakeMode=false; // tap to fill an excavated depression
@@ -627,6 +632,14 @@ public class EditorActivity extends Activity {
             });
             addPaletteOption("📚 Детали оригинальной библиотеки UV44",
                 this::browseNativeUv44Library);
+            addPaletteOption("🧰 Нативные формы UV44 · 28 инструментов",
+                this::showNativePhoenixBuildTools);
+            addPaletteOption("🏠 Комната UV44 · 2-метровая сетка",
+                this::chooseNativePhoenixRoom);
+            addPaletteOption("🚪 Изменить проём выбранной стены",
+                this::chooseNativePhoenixWallOpening);
+            addPaletteOption("🧲 Стыковать выбранную стену / арку",
+                this::snapNativePhoenixWall);
             addPaletteOption("🧱 Стена",()->enterPlaceMode(10,null));
             addPaletteOption("▤ Пол",()->enterPlaceMode(11,null));
             addPaletteOption("⌂ Крыша",()->enterPlaceMode(12,null));
@@ -855,6 +868,81 @@ public class EditorActivity extends Activity {
             addPaletteOption("↷ Повтор",this::redoAction);
         }
     }
+    // Original UV44 supplies the full 1,832-piece GLB catalog separately.
+    // These 28 native construction forms have LIVE OE scene geometry/Undo.
+    private void showNativePhoenixBuildTools(){
+        final String[] forms={
+            "▤ Пол 2×2 м","🪜 Лестница 13 ступеней","🧱 Стена 2 м",
+            "⌞ Угол 90°","◔ Дуга 90°","◡ Дуга 180°","⌂ Секция крыши",
+            "🚪 Дверь классическая","🚪 Дверь округлая",
+            "🚪 Дверь готическая","🚪 Дверь руническая","🚪 Дверь двустворчатая",
+            "▯ Рама прямая","▯ Рама округлая","▯ Рама готическая",
+            "◈ Портал","⌂ Крыша двускатная","⌂ Вальмовая 3 ската",
+            "⌂ Вальмовая 4 ската","⌂ Шатёр","⌂ Мансардная крыша",
+            "⌂ Шпиль","⌂ Ведьмина крыша","⌂ Башенная крыша",
+            "🧱 Стена с дверным проёмом","🧱 Стена с окном",
+            "🧱 Стена с аркой","🧱 Стена без проёма"
+        };
+        new AlertDialog.Builder(this)
+            .setTitle("UV44 · нативная стройка · "+forms.length+" форм")
+            .setMessage("2 м — строительная сетка. Все детали размещаются "+
+                "в одном GLES-мире OE; их можно двигать, красить и сохранять.")
+            .setItems(forms,(dialog,index)->{
+                enterPlaceMode(29+index,null);
+                toggleDrawer(false);
+            })
+            .setNegativeButton("Отмена",null).show();
+    }
+    private void chooseNativePhoenixRoom(){
+        final String[] sizes={
+            "4×4 м · пол","4×4 м · пол + потолок",
+            "6×6 м · пол","6×6 м · пол + потолок",
+            "8×8 м · пол","8×8 м · пол + потолок",
+            "12×12 м · пол","12×12 м · пол + потолок"
+        };
+        new AlertDialog.Builder(this)
+            .setTitle("UV44 · построить комнату на общем ландшафте")
+            .setMessage("Собирает стены отдельными секциями 2 м с дверным и "+
+                "оконным проёмами, полом и, по выбору, потолком. "+
+                "Вся операция отменяется одним нажатием ↶.")
+            .setItems(sizes,(dialog,index)->{
+                int metres=new int[]{4,4,6,6,8,8,12,12}[index];
+                enterPlaceMode(100+metres,null);
+                placingPhoenixRoomCeiling=(index%2)==1;
+                toggleDrawer(false);
+                statusText.setText("КОМНАТА "+metres+"×"+metres+
+                    " м: коснись места постройки на земле · одна отмена ↶");
+                message("Коснись земли — построить комнату "+metres+"×"+metres+" м");
+            })
+            .setNegativeButton("Отмена",null).show();
+    }
+    private void chooseNativePhoenixWallOpening(){
+        final String[] openings={
+            "🚪 Вырезать дверной проём",
+            "🪟 Вырезать оконный проём",
+            "⌒ Арочный проход",
+            "🧱 Заложить проём · глухая стена"
+        };
+        new AlertDialog.Builder(this)
+            .setTitle("UV44 · изменить выбранную нативную стену")
+            .setMessage("Выдели стену 2 м из комнаты или стройки. "+
+                "Перестройка выполняется реальной геометрией без "+
+                "закрывающего проём полигона и поддерживает Undo.")
+            .setItems(openings,(dialog,index)->edit(()->{
+                if(nativeSetPhoenixWallOpening(53+index))
+                    message("Геометрия стены перестроена · ↶ отменить");
+                else message("Сначала выбери нативную стену UV44 длиной 2 м");
+            }))
+            .setNegativeButton("Отмена",null).show();
+    }
+    private void snapNativePhoenixWall(){
+        edit(()->{
+            if(nativeSnapPhoenixSelected())
+                message("Строительные стыки совмещены · ↶ отменить");
+            else message("Не найден совместимый стык в радиусе 2 м: "+
+                "выбери прямую стену или дугу UV44");
+        });
+    }
     private void changeGizmoMode(int mode){
         gizmoMode=mode;
         surface.queueEvent(()->{nativeSetGizmoMode(mode);surface.requestRender();});
@@ -888,6 +976,7 @@ public class EditorActivity extends Activity {
          surface.queueEvent(()->{nativePaintStrokeEnd();nativeLayerStrokeEnd();});
         surface.queueEvent(EditorActivity::nativeRoadFinish);
         placingKind = kind;
+        placingPhoenixRoomCeiling = false;
         placingGlb = asset;
         statusText.setText("РАЗМЕЩЕНИЕ: коснись свободной земли, чтобы поставить объект. Для отмены нажми «Отмена».");
         message("Коснись места на карте для размещения");
@@ -906,6 +995,7 @@ public class EditorActivity extends Activity {
         surface.queueEvent(()->{nativeRoadFinish();nativePaintStrokeEnd();nativeLayerStrokeEnd();});
         terrainMode=0;lakeMode=false;
         placingKind = -1;
+        placingPhoenixRoomCeiling = false;
         placingGlb = null;
         statusText.setText("Режим выбора · два пальца — перемещение; кнопки «Размер карты» и «Координаты» — большой мир.");
         message("Размещение отменено");
@@ -2503,6 +2593,14 @@ public class EditorActivity extends Activity {
             json.put("uv44Houses",editableHomes);
             json.put("version",13);
         }
+        // v14 only for native editable UV44 architecture (29..56).
+        // Original v1..v13 projects remain byte-format compatible.
+        for(int i=0;i<objects.length();i++){
+            if(objects.getJSONObject(i).getInt("type")>=29){
+                json.put("version",14);
+                break;
+            }
+        }
         String result=json.toString();
         if(result.getBytes(StandardCharsets.UTF_8).length>ProjectArchive.MAX_SCENE_BYTES)
             throw new Exception("Рисунок R4 превысил безопасный размер проекта");
@@ -3916,8 +4014,8 @@ public class EditorActivity extends Activity {
             }
             JSONObject document=new JSONObject(new String(jsonBytes.toByteArray(),StandardCharsets.UTF_8));
             final int sceneVersion=document.optInt("version",-1);
-            if(sceneVersion<1||sceneVersion>13)
-                throw new Exception("Неверная версия сцены (нужна 1–13)");
+            if(sceneVersion<1||sceneVersion>14)
+                throw new Exception("Неверная версия сцены (нужна 1–14)");
             final java.util.Map<String,String> incomingUv44Houses=
                 PhoenixHouseLinks.parseSceneLinks(document);
             final boolean demoRoads=document.optBoolean("demoRoads",false);
@@ -4262,7 +4360,8 @@ public class EditorActivity extends Activity {
                 double x=object.getDouble("x"),z=object.getDouble("z");
                 double yaw=object.getDouble("yaw"),size=object.getDouble("size"),
                         y=object.optDouble("y",0.0);
-                if(e.type<0||e.type>28||(e.type>=17&&sceneVersion<6)||
+                if(e.type<0||e.type>56||(e.type>=17&&e.type<=28&&sceneVersion<6)||
+                   (e.type>=29&&sceneVersion<14)||
                    !Double.isFinite(x)||!Double.isFinite(z)||
                     !Double.isFinite(yaw)||!Double.isFinite(size)||!Double.isFinite(y)||
                     Math.abs(z)>worldSize/2.0||Math.abs(x)>worldSize/2.0||
@@ -4982,6 +5081,7 @@ public class EditorActivity extends Activity {
                     final float px=surfaceX(upX),py=surfaceY(upY);
                     final boolean tap=Math.hypot(upX-downX,upY-downY)<dp(8);
                     final int kind=placingKind,brush=terrainMode,uv56Brush=uv56SculptTool;
+                    final boolean roomCeiling=placingPhoenixRoomCeiling;
                     final float uv56Radius=uv56SculptRadius,uv56Power=uv56SculptPower;
                     final boolean paint=paintTerrainMode;
                     final boolean roadDraw=roadMode;
@@ -5032,6 +5132,18 @@ public class EditorActivity extends Activity {
                                     brush*terrainStrength);
                                 if(count>0)message("Рельеф изменён · "+count+"/64");
                                 else message("Не удалось изменить землю: край карты или лимит 64 кисти");
+                            }else if(kind>=104&&kind<=112){
+                                int count=nativeBuildPhoenixRoomAtScreen(
+                                    kind-100,roomCeiling,px,py);
+                                if(count>0){
+                                    placingKind=-1;placingPhoenixRoomCeiling=false;
+                                    placingGlb=null;
+                                    message("Комната UV44 создана: "+count+
+                                        " настоящих деталей · одна отмена ↶");
+                                    ui(()->statusText.setText(
+                                        "Выделена дверная стена · 🏗 Стройка → проёмы / стыковка"));
+                                }else message("Комната не создана: нажми на землю, "+
+                                    "проверь край карты и лимит 300 деталей");
                             }else if(kind>=0){
                                 int id=kind==6?nativePlaceImportedAtScreen(asset,px,py):
                                     nativePlaceAtScreen(kind,px,py);

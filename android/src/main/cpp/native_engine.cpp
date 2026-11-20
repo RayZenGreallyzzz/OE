@@ -13,6 +13,8 @@
 #include "medieval/structures.h"
 #include "water/lake_surface.h"
 #include "terrainpaint/paint_tiles.h"
+#include "build/phoenix_native_modules.h"
+#include "build/phoenix_room_workflow.h"
 #include "terrainpaint/material_layers.h"
 #include "terrain/uv56_landscape_core.h"
 #include "vendor/basisu/transcoder/basisu_transcoder.h"
@@ -71,7 +73,7 @@ struct Asset {
  float centerY=0.f, radius=0.f;
 };
 static Mesh gMeshes[3];
-static Mesh gStaticMeshes[29];
+static Mesh gStaticMeshes[oe::phoenix::kLast+1];
 static Mesh gPaintMesh; // Every decorative object is a single combined draw.
 void bakeStaticMesh(int type);
 // Cached, combined flat terrain: one GLES draw call per frame instead of one per tile.
@@ -648,7 +650,7 @@ void setupGL(){
   glDisableVertexAttribArray(2);
   glDisableVertexAttribArray(3);
  }
- for(int kind=0;kind<29;kind++)if(kind!=6)bakeStaticMesh(kind);
+ for(int kind=0;kind<=oe::phoenix::kLast;kind++)if(kind!=6)bakeStaticMesh(kind);
  for(auto &kv:gAssets){
   uploadAsset(kv.second);
   for(auto&lod:kv.second.lods)uploadLod(lod);
@@ -892,21 +894,35 @@ void forEachStaticPart(int type,Part&&part){
 void bakeStaticMesh(int type){
  Asset baked;
  baked.vertexStride=11;
- // Build once on GL-context creation. Later only transform one mesh per entity.
- forEachStaticPart(type,[&](int kind,float x,float y,float z,float sx,float sy,float sz,Color col){
+ // One GPU mesh per kind; instances remain editable, paintable and saveable.
+ // Preserve existing legacy static mesh vertex format exactly.
+ auto appendPart=[&](int kind,float x,float y,float z,float sx,float sy,
+                      float sz,Color col,float localYaw){
   const std::vector<float> source=geometry(kind);
-  baked.vertices.reserve(baked.vertices.size()+source.size()/6*11);
+  const float radians=localYaw*RAD,c=std::cos(radians),s=std::sin(radians);
+  baked.vertices.reserve(baked.vertices.size()/11*11+source.size()/6*11);
   for(size_t i=0;i+5<source.size();i+=6){
-   const float px=x+source[i]*sx,py=y+source[i+1]*sy,pz=z+source[i+2]*sz;
+   const float lx=source[i]*sx,lz=source[i+2]*sz;
+   const float px=x+c*lx+s*lz,py=y+source[i+1]*sy,pz=z+c*lz-s*lx;
    const float nx=source[i+3],ny=source[i+4],nz=source[i+5];
-   // Planar mapping: wall sides use height, floor faces use XZ.
-   const float u=(std::abs(nx)>.6f?pz:px)*.5f;
+   const float nnx=c*nx*sx+s*nz*sz,nnz=c*nz*sz-s*nx*sx;
+   // Planar UVs remain metres, avoiding stretched procedural apertures.
+   const float u=(std::abs(nnx)>.6f?pz:px)*.5f;
    const float v=(std::abs(ny)>.6f?pz:py)*.5f;
    baked.vertices.insert(baked.vertices.end(),{
-      px,py,pz,nx*sx,ny*sy,nz*sz,col.r,col.g,col.b,u,v
-   });
+     px,py,pz,nnx,ny*sy,nnz,col.r,col.g,col.b,u,v});
   }
- });
+ };
+ if(oe::phoenix::valid(type)){
+  oe::phoenix::parts(type,[&](const oe::phoenix::Part&p){
+   appendPart(p.mesh,p.x,p.y,p.z,p.w,p.h,p.d,{p.r,p.g,p.b},p.yaw);
+  });
+ }else{
+  forEachStaticPart(type,[&](int kind,float x,float y,float z,
+                             float sx,float sy,float sz,Color col){
+   appendPart(kind,x,y,z,sx,sy,sz,col,0.f);
+  });
+ }
  uploadAsset(baked);
  gStaticMeshes[type]=baked.gpu;
 }
@@ -925,7 +941,7 @@ void bindPaint(const TextureResource*paint){
  }
 }
 void drawStatic(const Mat4&vp,const Entity&e){
- if(e.type<0||e.type>=29||e.type==6)return;
+ if(e.type<0||e.type>oe::phoenix::kLast||e.type==6)return;
  const Mesh&m=gStaticMeshes[e.type];
  if(m.count<=0)return;
  const Mat4 model=mul(mul(translate({e.x,e.y,e.z}),rotateY(e.yaw*RAD)),
@@ -1821,7 +1837,7 @@ void drawEntity(const Mat4&vp,const Frustum&frustum,const Entity&e){
  if(staticInView(vp,e))drawStatic(vp,e);
 }
 int add(int type,float x,float z,float yaw,float size){
- if(type<0||type>28||type==6||gEntities.size()>=MAX_ENTITIES)return 0;
+ if(type<0||type>oe::phoenix::kLast||type==6||gEntities.size()>=MAX_ENTITIES)return 0;
  recordEdit();
  int id=gNextId++;gEntities.push_back({id,type,x,z,yaw,size,"",terrainHeightAt(x,z)});gSelected=id;return id;
 }
@@ -1860,6 +1876,7 @@ void reset(bool demo){
 Entity* selected(){for(auto &e:gEntities)if(e.id==gSelected)return &e;return nullptr;}
 const char* nameFor(int type){
  const char* names[]={"Таверна","Кузница","Аукционный дом","Фонарь","Фонтан","Дерево","Модель GLB","Камни","Куст","Лавка","Стена","Пол","Крыша","Дверная рама","Окно","Колонна","Лестница","Каменный мост","Деревянный мост","Каменный фундамент","Узкий мостик","Верёвочный мост","Каменный брод","Свайный фундамент","Руины основания","Основание хижины","Основание башни","Широкий мост для телег","Настил через болото"};
+ if(oe::phoenix::valid(type))return oe::phoenix::name(type);
  return type>=0&&type<29?names[type]:"Объект";
 }
 
@@ -3190,7 +3207,7 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePick(JNIEnv*,jcl
  return found;
 }
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeAdd(JNIEnv*,jclass,jint type){
- if(type<0||type>28||type==6)return 0;
+ if(type<0||type>oe::phoenix::kLast||type==6)return 0;
  float x=gTarget.x,z=gTarget.z;
  for(int radius=0;radius<=160;radius+=12){
   for(int angle=0;angle<8;angle++){
@@ -3227,8 +3244,93 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeFoundationUnderS
  ++gNextId;gSelected=foundation.id;
  return foundation.id;
 }
+// Stage16: native port of UV44 BuildingWorkflow.roomPlan's 2m tile grid.
+// A full room is one atomic undoable edit; no Three.js secondary scene.
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeBuildPhoenixRoomAtScreen(
+ JNIEnv*,jclass,jint metres,jboolean ceiling,jfloat px,jfloat py){
+ if(metres!=4&&metres!=6&&metres!=8&&metres!=12)return 0;
+ float cx=0,cz=0;
+ if(!groundPoint(px,py,cx,cz))return 0;
+ const int n=metres/2;
+ const int count=oe::phoenix::roomCount(metres,ceiling==JNI_TRUE);
+ const float bound=static_cast<float>(metres)*.5f+2.f;
+ if(gEntities.size()+static_cast<size_t>(count)>MAX_ENTITIES||
+    std::abs(cx)+bound>worldHalf()||std::abs(cz)+bound>worldHalf()||
+    gNextId<=0||gNextId>2147483647-count)return 0;
+ const float base=terrainHeightAt(cx,cz);
+ if(!std::isfinite(base)||base< -24.f||base>154.f)return 0;
+ // A flat room is constructed at the touched UV56 terrain elevation.
+ // Native UV44 grid emits EACH independent tile: no stretched box meshes.
+ recordEdit();  // Entire room is one atomic Undo step.
+ const int first=gNextId;
+ const int placed=oe::phoenix::roomPlan(metres,ceiling==JNI_TRUE,
+     cx,base,cz,[&](const oe::phoenix::RoomPiece&piece){
+       Entity entity{};
+       entity.id=gNextId++;
+       entity.type=piece.kind;
+       entity.x=piece.x;entity.y=piece.y;entity.z=piece.z;
+       entity.yaw=piece.yaw;
+       gEntities.push_back(std::move(entity));
+     });
+ if(placed!=count)return 0;
+ gSelected=first+(n/2)*2; // door wall is editable immediately
+ return count;
+}
+// Converting a selected modular wall is a real geometry change. Aperture
+// shape is baked as missing solid faces in the same native GLES mesh.
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeSetPhoenixWallOpening(
+ JNIEnv*,jclass,jint kind){
+ if(kind<53||kind>56)return JNI_FALSE;
+ Entity*e=selected();
+ if(!e||(e->type!=31&&(e->type<53||e->type>56)))return JNI_FALSE;
+ if(e->type!=kind){recordEdit();e->type=kind;}
+ return JNI_TRUE;
+}
+// Endpoint magnet on the same world. Uses socket positions/orientations,
+// respecting per-axis entity scale, yaw and height. No AABB pseudo-snaps.
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeSnapPhoenixSelected(
+ JNIEnv*,jclass){
+ Entity*e=selected();if(!e)return JNI_FALSE;
+ oe::phoenix::Socket own[2]{};
+ const int na=oe::phoenix::sockets(e->type,own);
+ if(!na)return JNI_FALSE;
+ auto worldSocket=[](const Entity&entity,const oe::phoenix::Socket&slot,
+                     float&x,float&z,float&dx,float&dz){
+  const float a=entity.yaw*RAD,c=std::cos(a),s=std::sin(a);
+  const float lx=slot.x*entity.size*entity.sx;
+  const float lz=slot.z*entity.size*entity.sz;
+  x=entity.x+c*lx+s*lz;
+  z=entity.z+c*lz-s*lx;
+  dx=c*slot.dx+s*slot.dz;dz=c*slot.dz-s*slot.dx;
+ };
+ float best=4.f,shiftX=0.f,shiftZ=0.f,shiftY=0.f;
+ for(const auto&target:gEntities){
+  if(target.id==e->id||std::abs(target.y-e->y)>1.1f)continue;
+  oe::phoenix::Socket slots[2]{};
+  const int nb=oe::phoenix::sockets(target.type,slots);
+  if(!nb)continue;
+  for(int a=0;a<na;a++)for(int b=0;b<nb;b++){
+   float ax,az,adx,adz,bx,bz,bdx,bdz;
+   worldSocket(*e,own[a],ax,az,adx,adz);
+   worldSocket(target,slots[b],bx,bz,bdx,bdz);
+   if(adx*bdx+adz*bdz>-.8f)continue;
+   const float dx=bx-ax,dz=bz-az,d2=dx*dx+dz*dz;
+   if(d2<best){
+    best=d2;shiftX=dx;shiftZ=dz;shiftY=target.y-e->y;
+   }
+  }
+ }
+ if(best>=4.f)return JNI_FALSE;
+ const float xx=e->x+shiftX,zz=e->z+shiftZ,yy=e->y+shiftY;
+ if(std::abs(xx)>worldHalf()||std::abs(zz)>worldHalf()||
+    yy< -24.f||yy>160.f)return JNI_FALSE;
+ if(std::abs(shiftX)+std::abs(shiftZ)+std::abs(shiftY)>.00001f){
+  recordEdit();e->x=xx;e->y=yy;e->z=zz;
+ }
+ return JNI_TRUE;
+}
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePlaceAtScreen(JNIEnv*,jclass,jint type,jfloat px,jfloat py){
- if(type<0||type>28||type==6)return 0;
+ if(type<0||type>oe::phoenix::kLast||type==6)return 0;
  float x,z;
  if(!groundPoint(px,py,x,z)||blocked(x,z,type))return 0;
  return add(type,x,z,0,1);
@@ -3245,7 +3347,7 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePlaceImportedAtS
  int id=gNextId++;gEntities.push_back({id,6,x,z,0,1,asset,terrainHeightAt(x,z)});gSelected=id;return id;
 }
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeAddPlaced(JNIEnv*,jclass,jint type,jfloat x,jfloat z,jfloat yaw,jfloat size){
- if(type<0||type>28||type==6 || !std::isfinite(x)||!std::isfinite(z)||!std::isfinite(yaw)||!std::isfinite(size) ||
+ if(type<0||type>oe::phoenix::kLast||type==6 || !std::isfinite(x)||!std::isfinite(z)||!std::isfinite(yaw)||!std::isfinite(size) ||
  std::abs(x)>worldHalf() || std::abs(z)>worldHalf() || std::abs(yaw)>36000 || size<.2f || size>8)return 0;
  return add(type,x,z,yaw,size);
 }
@@ -4113,7 +4215,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
   const float x=matrix[i*8],z=matrix[i*8+1],yaw=matrix[i*8+2],
               scl=matrix[i*8+3],y=matrix[i*8+4],
               sx=matrix[i*8+5],sy=matrix[i*8+6],sz=matrix[i*8+7];
-  if(type<0||type>28||!std::isfinite(x)||!std::isfinite(z)||
+  if(type<0||type>oe::phoenix::kLast||!std::isfinite(x)||!std::isfinite(z)||
     !std::isfinite(yaw)||!std::isfinite(scl)||!std::isfinite(y)||
     !std::isfinite(sx)||!std::isfinite(sy)||!std::isfinite(sz)||
     std::abs(x)>half||std::abs(z)>half||std::abs(yaw)>36000||

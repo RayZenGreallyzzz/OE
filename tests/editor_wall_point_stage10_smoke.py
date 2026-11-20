@@ -50,11 +50,11 @@ assert "WalkBarrier edited=wall" in walker
 assert "WalkBarrier reshaped=wall" in walker
 assert "validWalkBarrier(reshaped,512.)" in walker
 assert "validWalkBarrier(edited,512.)" in walker
-assert "version>=1&&version<=13" in arch
+assert "version>=1&&version<=14" in arch
 assert 'json.put("version",12)' in java
 assert "collisionWalls" in cpp
-assert "applicationId 'game.oe.editor.r57canvas.uv44full'" in gradle
-assert "versionCode 52" in gradle
+assert "applicationId 'game.oe.editor.r57canvas.nativebuilder'" in gradle
+assert "versionCode 53" in gradle
 assert "new WebView(" not in java
 print("OE_STAGE10_WALL_POINT_OK: one-tap nearest wall, selected endpoints, native "
       "physical transform/validation, undo and v12 persistence")

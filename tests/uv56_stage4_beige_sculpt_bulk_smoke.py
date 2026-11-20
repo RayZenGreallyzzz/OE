@@ -34,8 +34,8 @@ checks=[
  ("R5.7 walker still intact", "runtime/walk_collision.h" in cpp),
  ("roads still intact", "roads/traversal_graph.h" in cpp),
  ("lakes intact", "water/lake_surface.h" in cpp),
- ("v1-v9 scene compatibility", "version>=1&&version<=13" in arch),
- ("isolated debug identity", "applicationId 'game.oe.editor.r57canvas.uv44full'" in gradle),
+ ("v1-v9 scene compatibility", "version>=1&&version<=14" in arch),
+ ("isolated debug identity", "applicationId 'game.oe.editor.r57canvas.nativebuilder'" in gradle),
 ]
 for name,valid in checks:
     assert valid, name

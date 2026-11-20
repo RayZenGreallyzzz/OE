@@ -36,20 +36,20 @@ for marker in [
     'json.put("version",10)',
     'int[] plotIds,String[] plotNames,float[] plotValues',
     'plotIds,plotNames,plotValues,wallRecords))',
-    'sceneVersion>13',
+    'sceneVersion>14',
     'validEditorPlotName(label)',
     'if(((sceneVersion==10||sceneVersion==11)&&(plotsJson==null||plotsJson.length()==0))',
 ]:
     assert marker in java, ("missing Android plots UI/scene import",marker)
 for marker in [
-    "version>=1&&version<=13",
+    "version>=1&&version<=14",
     "validateEditorPlots(json,version)",
     "validateNativeUv56(json,version)",
     "validateLakes(json,version)",
     "((version==10||version==11)&&plots!=null&&plots.length()>0)",
 ]:
     assert marker in archive, ("missing legacy compatible v10 archive gate",marker)
-assert "applicationId 'game.oe.editor.r57canvas.uv44full'" in gradle
+assert "applicationId 'game.oe.editor.r57canvas.nativebuilder'" in gradle
 assert "MAX_TEXTURES=32" in archive
 # Crucial: no plot geometry is added to gameplay walker/runtime.
 walk=cpp.split('Java_game_oe_editor_EditorActivity_nativeRuntimeCoreReport(',1)[1]

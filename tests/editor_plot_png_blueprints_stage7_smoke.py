@@ -32,14 +32,14 @@ for marker in (
     "TextureReader.decode(original,\"image/png\",1024)",
     'json.put("plotPlans",plans)',
     'json.put("version",11)',
-    'sceneVersion>13',
+    'sceneVersion>14',
     "sourceReferences!=null",
     "!validEditorPlotName(label)",
 ):
     assert marker in java, ("Android editor blueprint missing",marker)
 for marker in (
     "private static Set<String> referenceNames(String scene)",
-    "version>=1&&version<=13",
+    "version>=1&&version<=14",
     'version==11&&plans!=null&&plans.length()>0',
     'Set<String> references=referenceNames(scene)',
     "for(String reference:references)",
@@ -55,6 +55,6 @@ assert "android.webkit" not in java
 assert "void drawMapGuide(const Mat4& vp)" in cpp
 assert "nativePlotFocus(" in cpp and "drawEditorPlots(vp);" in cpp
 assert "runtime/walk_collision.h" in cpp
-assert "applicationId 'game.oe.editor.r57canvas.uv44full'" in gradle
+assert "applicationId 'game.oe.editor.r57canvas.nativebuilder'" in gradle
 print("OE_STAGE7_BLUEPRINTS_OK: PNG per village/city plot, individual SHA ZIP refs, "
       "one native GLES editor overlay at a time, old scenes v1-v10 retained")

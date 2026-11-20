@@ -43,6 +43,6 @@ assert "uv56ReverseOrbit=false;" in java
 assert 'if("Рельеф".equals(activePaletteCategory)){' in java
 assert 'if(drawerOpen)showPalette("Рельеф");' in java
 assert "MAX_TEXTURES=32" in arch
-assert "version>=1&&version<=13" in arch
+assert "version>=1&&version<=14" in arch
 print("OE_VIDEO_BLACK_SNOW_FIX_OK: EGL layer cache recovery, blank sky look-only, "
       "camera direction toggle, no paint-orbit fallback, user tiles preserved")

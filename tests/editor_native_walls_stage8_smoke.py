@@ -36,15 +36,15 @@ for marker in (
   "private void chooseCollisionBarrier()", "private void collisionBarrierActions(",
   "nativeBarrierCutAtScreen(id,sx,sy,radius)",
   "barrierCutId=0;", "barrierCutRadius=k==0?4f:8f",
-  'json.put("version",12)', "sceneVersion>13",
+  'json.put("version",12)', "sceneVersion>14",
   'wallRecords[i*7+j]=value', 'plotIds,plotNames,plotValues,wallRecords))'
 ):
     assert marker in java, ("Android authoring colliders missing",marker)
 assert "validateCollisionWalls(json,version)" in archive
-assert "version>=1&&version<=13" in archive
+assert "version>=1&&version<=14" in archive
 assert "MAX_TEXTURES=32" in archive
 assert "referenceNames(scene)" in archive
-assert "applicationId 'game.oe.editor.r57canvas.uv44full'" in gradle
+assert "applicationId 'game.oe.editor.r57canvas.nativebuilder'" in gradle
 assert "new WebView(" not in java
 print("OE_STAGE8_NATIVE_COLLISIONS_OK: 64 walls, physical 60Hz blocking, "
       "true gap erase, v12 restore/Undo, editor-only magenta guides")

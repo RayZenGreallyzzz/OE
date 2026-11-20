@@ -48,8 +48,8 @@ assert "if(panX!=0f||panY!=0f)nativePan(panX,panY);" in java
 assert "final boolean reverse=uv56ReverseOrbit;" in java
 assert "nativeUv56StrokeStart" in java and "void reverseCamera(boolean reverse)" in panel
 assert 'addPaletteOption("📦 Мой GLB / glTF / VOX",this::pickGlb)' in java
-assert 'applicationId \'game.oe.editor.r57canvas.uv44full\'' in gradle
-assert "versionCode 52" in gradle
+assert 'applicationId \'game.oe.editor.r57canvas.nativebuilder\'' in gradle
+assert "versionCode 53" in gradle
 assert "ZipInputStream" in bundle and "root(Context c)" in bundle
 assert 'new WebView(' not in java, "OE's main 3D canvas must remain native GLES"
 assert 'json.put("version",13)' in java, "UV44 editable houses must remain compatible"

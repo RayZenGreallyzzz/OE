@@ -35,7 +35,7 @@ for marker in (
 ):
     assert marker in editor, ("Android regression",marker)
 assert 'MAX_TEXTURES=32' in arch
-assert 'version>=1&&version<=12' in arch
+assert 'version>=1&&version<=13' in arch
 assert 'shown>=8' not in gallery
 assert 'shown>=32' in gallery
 assert 'tileTitles.get(key)' in gallery

@@ -25,8 +25,12 @@ public final class ProjectArchive {
     private ProjectArchive() {}
     public static final long MAX_UNPACKED_BYTES=384L*1024*1024; // bounded UV44 authoring backups
     public static final int MAX_MODELS=12;
-    public static final int MAX_SCENE_BYTES=8*1024*1024; // bounded R4 composite and R4.1 material masks
+    public static final int MAX_SCENE_BYTES=192*1024*1024; // bounded editable terrain masks (includes base64)
     public static final int MAX_TEXTURES=32,MAX_TEXTURE_BYTES=8*1024*1024;
+    // Paint is budgeted by mask bytes, not by tile count or material layers per tile.
+    // Match the native 64 MiB budgets in paint_tiles.h / material_layers.h.
+    public static final int MAX_PAINT_TILES_BY_MEMORY=(64*1024*1024)/(128*128*4);
+    public static final int MAX_MATERIAL_MASKS_BY_MEMORY=(64*1024*1024)/(128*128);
     public static final int MAX_REFERENCE_BYTES=8*1024*1024;
 
     public static final class StagedProject {
@@ -150,11 +154,9 @@ public final class ProjectArchive {
         if(version>=5){
             check((version!=5||independent!=null)&&
                   (!document.has("paintLayers")||independent!=null)&&
-                  (independent==null||independent.length()<=128),
+                  (independent==null||independent.length()<=MAX_MATERIAL_MASKS_BY_MEMORY),
                   "Неверные материальные маски R4.1");
             Set<String> uniqueLayers=new HashSet<>();
-            Set<String> tileSet=new HashSet<>();
-            java.util.Map<String,Integer> counts=new java.util.HashMap<>();
             for(int i=0;i<(independent==null?0:independent.length());i++){
                 JSONArray layer=independent.getJSONArray(i);
                 check(layer.length()==4,"Неверная запись маски");
@@ -167,13 +169,8 @@ public final class ProjectArchive {
                       mask.length()>=4&&mask.length()<=28000&&
                       mask.matches("[A-Za-z0-9+/=]+"),
                       "Неверные материальные слои");
-                tileSet.add(pair);
-                int count=counts.containsKey(pair)?counts.get(pair)+1:1;
-                check(count<=4,"Более 4 материалов на одной плитке");
-                counts.put(pair,count);
                 keys.add(key);
             }
-            check(tileSet.size()<=32,"Превышено число текстурных участков");
         }else check(!document.has("paintLayers"),"Неверная версия слоёв R4.1");
         check(keys.size()<=MAX_TEXTURES,"Более 32 пользовательских текстур");
         return keys;
@@ -373,7 +370,7 @@ public final class ProjectArchive {
         JSONArray tileData=json.optJSONArray("paintTiles");
         if(version>=4){
             check((version!=4||tileData!=null)&&
-                  (tileData==null||tileData.length()<=32),
+                  (tileData==null||tileData.length()<=MAX_PAINT_TILES_BY_MEMORY),
                   "В сцене R4 отсутствуют или превышены текстурные участки");
             Set<String> seenTiles=new HashSet<>();
             for(int i=0;i<(tileData==null?0:tileData.length());i++){

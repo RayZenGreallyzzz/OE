@@ -3447,14 +3447,75 @@ public class EditorActivity extends Activity {
     // Use the ORIGINAL UV44 PWB asset library on the SAME native OE city
     // surface, not UV44's separate WebGL editor. Source JS is NOT evaluated;
     // we only read the owner's private catalog JSON and imported GLB bytes.
+    // Exact catalog of the owner's original UV44 APK: 1,832 PWB GLB
+    // components. The 1,908 total asset files ALSO include JS/CSS/etc,
+    // which are not distinct building pieces.
+    private static final int UV44_ORIGINAL_MODELS=1832;
+    private static final int UV44_PAGE_SIZE=40;
+    private JSONArray nativeUv44CatalogCache=null; // UI thread only
+
+    private JSONArray nativeUv44Catalog() throws Exception {
+        if(nativeUv44CatalogCache!=null)return nativeUv44CatalogCache;
+        final File root=PhoenixUv44Bundle.root(this);
+        final File catalog=new File(root,"js/bundled-catalog.js");
+        if(!catalog.isFile()||catalog.length()>2_000_000)
+            throw new Exception("Каталог оригинального UV44 отсутствует");
+        String raw=new String(Files.readAllBytes(catalog.toPath()),
+            StandardCharsets.UTF_8);
+        int a=raw.indexOf('['),b=raw.lastIndexOf(']');
+        if(a<0||b<=a)throw new Exception("Неверный формат каталога UV44");
+        JSONArray entries=new JSONArray(raw.substring(a,b+1));
+        if(entries.length()!=UV44_ORIGINAL_MODELS)
+            throw new Exception("Неполный UV44: найдено "+entries.length()+
+                " из "+UV44_ORIGINAL_MODELS+" моделей. Выбери оригинальный APK");
+        HashSet<String> unique=new HashSet<>();
+        for(int i=0;i<entries.length();i++){
+            JSONObject part=entries.optJSONObject(i);
+            if(part==null)throw new Exception("Повреждена запись UV44 #"+i);
+            String id=part.optString("id","");
+            if(!id.matches("glb:pwb:[0-9a-f]{24}")||!unique.add(id))
+                throw new Exception("Повреждён идентификатор UV44 #"+i);
+            File model=new File(root,"pwb/"+id.substring(8)+".glb");
+            if(!model.isFile()||model.length()<20||
+               model.length()>GlbReader.MAX_BYTES)
+                throw new Exception("Отсутствует оригинальная деталь UV44 #"+i);
+        }
+        nativeUv44CatalogCache=entries;
+        return entries;
+    }
+
+    private static String uv44FolderName(String folder){
+        switch(folder){
+            case "walls":return "🧱 Стены";
+            case "roofs":return "🏠 Крыши";
+            case "doors":return "🚪 Двери";
+            case "windows":return "🪟 Окна";
+            case "floors":return "▤ Полы";
+            case "stairs":return "🪜 Лестницы";
+            case "outdoor":return "🌳 Улица и двор";
+            case "fences":return "▥ Заборы";
+            case "shapes":return "⬡ Формы";
+            case "gates":return "🚧 Ворота";
+            case "ceilings":return "▱ Потолки";
+            case "pools":return "🌊 Бассейны";
+            case "misc":return "📦 Прочее";
+            case "columns":return "▥ Колонны";
+            case "garden-arches":return "🌿 Садовые арки";
+            case "bridges":return "🌉 Мосты";
+            case "dormers":return "🏠 Слуховые окна";
+            case "balconies":return "▣ Балконы";
+            default:return "📁 "+folder;
+        }
+    }
+
     private void browseNativeUv44Library(){
         if(importing){message("Дождись завершения загрузки");return;}
         if(!PhoenixUv44Bundle.ready(this)){
             new AlertDialog.Builder(this)
-                .setTitle("Библиотека UV44 в нативной стройке OE")
-                .setMessage("Один раз выбери оригинальный APK Phoenix Builder UV44. "+
-                    "OE извлечёт его каталог деталей и GLB только в закрытую "+
-                    "память. На экране останется тот же ландшафт OE.")
+                .setTitle("Полная библиотека Phoenix Builder UV44")
+                .setMessage("Выбери оригинальный APK Phoenix Builder UV44. "+
+                    "OE проверит все 1 832 GLB-детали, извлечёт их только в "+
+                    "закрытую память и покажет каталог в ОБЩЕЙ 3D-сцене.")
                 .setPositiveButton("Выбрать APK",(d,w)->{
                     Intent pick=new Intent(Intent.ACTION_OPEN_DOCUMENT);
                     pick.addCategory(Intent.CATEGORY_OPENABLE);
@@ -3465,73 +3526,109 @@ public class EditorActivity extends Activity {
                 .setNegativeButton("Отмена",null).show();
             return;
         }
-        final EditText name=new EditText(this);
-        name.setSingleLine(true);
-        name.setHint("Поиск: стена, пол, крыша, дверь...");
-        name.setText("стена");
-        name.setSelectAllOnFocus(true);
-        new AlertDialog.Builder(this)
-            .setTitle("📚 Оригинальные детали UV44 · один холст OE")
-            .setMessage("Найди нужную деталь из каталога UV44, "+
-                "она сразу попадёт в нативный режим постановки на ландшафте.")
-            .setView(name)
-            .setPositiveButton("Найти",(d,w)->
-                listNativeUv44Parts(name.getText().toString().trim()))
-            .setNegativeButton("Отмена",null).show();
+        showNativeUv44Categories();
     }
+
+    private void showNativeUv44Categories(){
+        try {
+            JSONArray entries=nativeUv44Catalog();
+            TreeMap<String,Integer> counts=new TreeMap<>();
+            for(int i=0;i<entries.length();i++){
+                String key=entries.getJSONObject(i).optString("folder","misc");
+                counts.put(key,counts.containsKey(key)?counts.get(key)+1:1);
+            }
+            ArrayList<String> folders=new ArrayList<>(counts.keySet());
+            ArrayList<String> labels=new ArrayList<>();
+            labels.add("🔎 Найти по названию / папке / пути");
+            labels.add("📦 ВСЕ "+entries.length()+" моделей UV44");
+            for(String folder:folders)
+                labels.add(uv44FolderName(folder)+" · "+counts.get(folder));
+            new AlertDialog.Builder(this)
+                .setTitle("Phoenix UV44 · "+entries.length()+" моделей")
+                .setMessage("Выбери категорию, затем оригинальную GLB-деталь. "+
+                    "Модели загружаются по одной по мере выбора, "+
+                    "без второго холста и WebView.")
+                .setItems(labels.toArray(new String[0]),(dialog,index)->{
+                    if(index==0){
+                        EditText input=new EditText(this);
+                        input.setSingleLine(true);
+                        input.setHint("Поиск: стена, крыша, окно, дверь…");
+                        new AlertDialog.Builder(this)
+                            .setTitle("Поиск по всем моделям UV44")
+                            .setView(input)
+                            .setPositiveButton("Найти",(d,w)->
+                                listNativeUv44Parts(input.getText().toString().trim()))
+                            .setNegativeButton("Категории",(d,w)->
+                                showNativeUv44Categories()).show();
+                    }else if(index==1)showNativeUv44Page(null,"",0);
+                    else showNativeUv44Page(folders.get(index-2),"",0);
+                })
+                .setNegativeButton("Закрыть",null).show();
+        }catch(Exception e){message("Не открыть каталог UV44: "+e.getMessage());}
+    }
+
+    // Kept as a named entry point for the Stage14 single-canvas integration.
     private void listNativeUv44Parts(String query){
-        try{
+        showNativeUv44Page(null,query,0);
+    }
+    private void showNativeUv44Page(String category,String query,int page){
+        if(importing)return;
+        try {
+            JSONArray entries=nativeUv44Catalog();
             final File root=PhoenixUv44Bundle.root(this);
-            final File catalog=new File(root,"js/bundled-catalog.js");
-            if(!catalog.isFile()||catalog.length()>2_000_000)
-                throw new Exception("Нет каталога UV44");
-            String raw=new String(Files.readAllBytes(catalog.toPath()),
-                StandardCharsets.UTF_8);
-            int a=raw.indexOf('['),b=raw.lastIndexOf(']');
-            if(a<0||b<=a)throw new Exception("Некорректный каталог UV44");
-            JSONArray entries=new JSONArray(raw.substring(a,b+1));
             final ArrayList<File> files=new ArrayList<>();
-            final ArrayList<String> labels=new ArrayList<>();
+            final ArrayList<String> names=new ArrayList<>();
             final String search=query.toLowerCase(Locale.ROOT);
-            for(int i=0;i<entries.length()&&files.size()<60;i++){
+            for(int i=0;i<entries.length();i++){
                 JSONObject part=entries.optJSONObject(i);
                 if(part==null)continue;
                 String title=part.optString("name","");
                 String folder=part.optString("folder","");
+                String path=part.optString("path","");
                 String id=part.optString("id","");
-                if(!(title+" "+folder).toLowerCase(Locale.ROOT).contains(search)||
-                   !id.matches("glb:pwb:[0-9a-f]{24}"))continue;
+                if(category!=null&&!category.equals(folder))continue;
+                if(!(title+" "+folder+" "+path).toLowerCase(Locale.ROOT)
+                    .contains(search)||!id.matches("glb:pwb:[0-9a-f]{24}"))continue;
                 File model=new File(root,"pwb/"+id.substring(8)+".glb");
                 if(!model.isFile()||model.length()<20||
                    model.length()>GlbReader.MAX_BYTES)continue;
                 files.add(model);
-                labels.add(title.replace('_',' ')+" · "+folder);
+                names.add(title.replace('_',' ')+" · "+uv44FolderName(folder));
             }
             if(files.isEmpty()){
-                message("По запросу «"+query+"» нет деталей. Попробуй "+
-                    "«стена», «пол», «крыш», «двер» или другое слово.");
+                message("Не найдено моделей UV44 по запросу «"+query+"»");
+                showNativeUv44Categories();
                 return;
             }
-            new AlertDialog.Builder(this)
-                .setTitle("UV44 → OE · деталей найдено: "+files.size()+
-                    (files.size()==60?" (первые 60)":""))
-                .setItems(labels.toArray(new String[0]),(dialog,index)->{
-                    // Uses the EXISTING native C++ GLB import and placement.
-                    // Camera/terrain and .oezip remain the SAME scene.
+            int total=files.size(),maxPage=(total-1)/UV44_PAGE_SIZE;
+            if(page<0||page>maxPage)throw new Exception("Неверная страница");
+            int begin=page*UV44_PAGE_SIZE,end=Math.min(begin+UV44_PAGE_SIZE,total);
+            ArrayList<String> visible=new ArrayList<>(names.subList(begin,end));
+            AlertDialog.Builder prompt=new AlertDialog.Builder(this)
+                .setTitle("UV44 → OE · "+total+" найдено")
+                .setMessage("Показано "+(begin+1)+"–"+end+" из "+total+
+                    ". Выбранная деталь откроется на том же ландшафте OE.")
+                .setItems(visible.toArray(new String[0]),(dialog,index)->{
                     if(importing)return;
-                    message("UV44 → общий холст: "+labels.get(index));
-                    importModelFromUri(Uri.fromFile(files.get(index)));
+                    message("UV44 → общий холст: "+visible.get(index));
+                    importModelFromUri(Uri.fromFile(files.get(begin+index)));
                 })
-                .setNeutralButton("Другой поиск",(dialog,index)->
-                    browseNativeUv44Library())
-                .setNegativeButton("Отмена",null).show();
-        }catch(Exception e){message("Не открыть библиотеку UV44: "+e.getMessage());}
+                .setNegativeButton("Категории",(dialog,index)->
+                    showNativeUv44Categories());
+            if(page<maxPage)prompt.setPositiveButton("Следующие ▶",(d,w)->
+                showNativeUv44Page(category,query,page+1));
+            if(page>0)prompt.setNeutralButton("◀ Назад",(d,w)->
+                showNativeUv44Page(category,query,page-1));
+            prompt.show();
+        }catch(Exception e){message("Не открыть модели UV44: "+e.getMessage());}
     }
+
     private void installNativeUv44Bundle(Uri apk){
         message("Загружаю библиотеку деталей UV44 в OE…");
         new Thread(()->{
             try{
                 PhoenixUv44Bundle.install(this,apk);
+                nativeUv44CatalogCache=null;
                 ui(()->{
                     message("✓ Библиотека UV44 готова: стройка на общем холсте");
                     browseNativeUv44Library();

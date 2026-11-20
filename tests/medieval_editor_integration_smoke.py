@@ -12,10 +12,10 @@ manifest = (root / "android/src/main/AndroidManifest.xml").read_text()
 cmake = (root / "android/src/main/cpp/CMakeLists.txt").read_text()
 
 # Scene entity validators and both map-touch/add paths accept 17..28.
-assert "gStaticMeshes[29]" in native
+assert "gStaticMeshes[oe::phoenix::kLast+1]" in native
 assert "for(int kind=0;kind<29;kind++)if(kind!=6)bakeStaticMesh(kind);" in native
 assert "e.type>=29" in native
-assert "type<0||type>28||type==6" in native
+assert "type<0||type>oe::phoenix::kLast||type==6" in native
 assert "type<0||type>16" not in native
 assert "oe::medieval::moduleParts(type)" in native
 assert "nativeFoundationUnderSelected(" in native
@@ -45,9 +45,9 @@ for entry in (
 # Only scenes containing new object types move to version six.
 assert 'json.put("version",6)' in java
 assert "kind>=17&&kind<=28" in java
-assert "sceneVersion>13" in java
+assert "sceneVersion>14" in java
 assert "(e.type>=17&&sceneVersion<6)" in java
-assert "version>=1&&version<=13" in archive
+assert "version>=1&&version<=14" in archive
 assert "kind>=0&&kind<=28&&(kind<=16||version>=6)" in archive
 assert "(version!=5||independent!=null)" in archive
 assert "medieval/structures.cpp" in cmake

@@ -28,7 +28,7 @@ struct Socket {float x,z,dx,dz;};
 inline int sockets(int kind,Socket out[2]){
  switch(kind){
  case 53:case 54:case 55:case 56:
-  out[0]={-2,0,-1,0};out[1]={2,0,1,0};return 2;
+  out[0]={-1,0,-1,0};out[1]={1,0,1,0};return 2;
  case 31:out[0]={-1,0,-1,0};out[1]={1,0,1,0};return 2;
  case 32:out[0]={-1.9f,0,-1,0};out[1]={0,-1.9f,0,-1};return 2;
  case 33:out[0]={2,0,0,-1};out[1]={0,2,-1,0};return 2;
@@ -100,19 +100,20 @@ template<class Emit> bool parts(int kind,Emit emit){
  // opening: there is NO rectangle covering the central cut. Stored as
  // ordinary entity kinds so Undo and scene v14 preserve the aperture.
  if(kind>=53&&kind<=56){
-  const float width=4.f,height=3.f,depth=.24f;
+  const float width=2.f,height=2.6f,depth=.22f;
   if(kind==56){box(0,height*.5f,0,width,height,depth);return true;}
-  const float holeW=kind==53?1.3f:1.55f;
-  const float bottom=kind==53?0.f:(kind==54?1.f:0.f);
-  const float top=kind==53?2.35f:(kind==54?2.2f:2.08f);
+  const float holeW=kind==53?1.08f:1.2f;
+  const float bottom=kind==53?0.f:(kind==54?.8f:0.f);
+  const float top=kind==53?2.1f:(kind==54?1.9f:1.65f);
   const float side=(width-holeW)*.5f;
   for(float sign:{-1.f,1.f})
    box(sign*(holeW*.5f+side*.5f),height*.5f,0,side,height,depth);
   if(bottom>.001f)box(0,bottom*.5f,0,holeW,bottom,depth);
-  if(top<height)box(0,(top+height)*.5f,0,holeW,height-top,depth);
+  if(kind!=55&&top<height)
+   box(0,(top+height)*.5f,0,holeW,height-top,depth);
   if(kind==55){
    const int segments=10;
-   const float radius=holeW*.5f,rise=.66f;
+   const float radius=holeW*.5f,rise=.44f;
    for(int i=0;i<segments;i++){
     const float x=-radius+(i+.5f)*holeW/segments;
     const float nx=std::abs(x)/radius;

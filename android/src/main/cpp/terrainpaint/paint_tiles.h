@@ -9,7 +9,10 @@ namespace oe { namespace terrainpaint {
 constexpr int kTileMetres=64;
 constexpr int kResolution=128; // 0.5 metre / pixel, fixed authoring grid
 constexpr int kBytesPerTile=kResolution*kResolution*4;
-constexpr std::size_t kMaxTiles=32; // <= 2 MiB colour data on 4 GiB tablets
+// Limit working memory by bytes rather than by an arbitrary number of painted areas.
+// 64 MiB holds up to 1024 64m tiles; scene serialization has its own safety budget.
+constexpr std::size_t kMaxPaintTileBytes=64u*1024u*1024u;
+constexpr std::size_t kMaxPaintTilesByMemory=kMaxPaintTileBytes/kBytesPerTile;
 struct Tile {
  int x=0,z=0;  // signed 64m tile coordinates
  std::vector<std::uint8_t> pixels; // RGBA composited image, row 0 at +Z

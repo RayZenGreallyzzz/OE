@@ -135,7 +135,8 @@ public final class PhoenixBuilderActivity extends Activity {
         s.setJavaScriptEnabled(true); // required by the original UV44 Three.js
         s.setDomStorageEnabled(true);
         s.setAllowFileAccess(false);
-        s.setAllowContentAccess(false);
+        // SAF chooser returns granted content:// URIs for original UV44 imports.
+        s.setAllowContentAccess(true);
         s.setJavaScriptCanOpenWindowsAutomatically(false);
         s.setMediaPlaybackRequiresUserGesture(true);
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);

@@ -16,7 +16,7 @@ for part in (
     'PhoenixBuilderActivity.class',
     'OPEN_UV44_BUILDER=708',
     'addPaletteOption("🏗 Phoenix Builder UV44 · стройка"',
-    'importModelFromUri(Uri.fromFile(glb));',
+    'importModelFromUri(Uri.fromFile(glb),backup,entityId,oldKey);',
     'private void importModelFromUri(Uri uri)',
     'nativeRegisterAsset(key,model.vertices,',
     'enterPlaceMode(6,key)',

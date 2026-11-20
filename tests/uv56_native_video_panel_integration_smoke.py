@@ -50,7 +50,7 @@ assert 'showUv56LandscapePanel();' in terrain_section
 assert '⛰ Поднять гору' not in terrain_section
 assert 'chooseTerrainBrush' not in terrain_section
 assert 'enterTerrainMode' not in terrain_section
-assert 'version>=1&&version<=13' in archive
+assert 'version>=1&&version<=14' in archive
 assert 'sceneVersion>13' in java
 assert "applicationId 'game.oe.editor.r57canvas.nativebuilder'" in gradle
 assert "applicationIdSuffix '.dev'" in gradle

@@ -9,11 +9,10 @@
 
 namespace oe { namespace terrainpaint {
 
-constexpr std::size_t kMaxMaterialTiles=32;
-constexpr std::size_t kMaxMaterialsPerTile=4;
 constexpr std::size_t kMaterialMaskBytes=kResolution*kResolution; // 128x128 alpha
-constexpr std::size_t kMaxMaterialMaskBytes=
-    kMaxMaterialTiles*kMaxMaterialsPerTile*kMaterialMaskBytes; // <= 2 MiB
+// Bound aggregate mask memory, not number of areas or material types per area.
+constexpr std::size_t kMaxMaterialMaskBytes=64u*1024u*1024u;
+constexpr std::size_t kMaxMaterialMasksByMemory=kMaxMaterialMaskBytes/kMaterialMaskBytes;
 
 struct MaterialMask {
     std::string material; // canonical tx_<sha24>.png / .jpg

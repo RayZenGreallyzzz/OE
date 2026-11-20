@@ -19,7 +19,7 @@ for part in (
     'importModelFromUri(Uri.fromFile(glb),backup,entityId,oldKey);',
     'private void importModelFromUri(Uri uri)',
     'nativeRegisterAsset(key,model.vertices,',
-    'enterPlaceMode(6,key)',
+    'enterPlaceMode(6,newKey)',
     'glb.length()>GlbReader.MAX_BYTES',
     'root.getCanonicalPath()+File.separator',
 ):

@@ -46,10 +46,10 @@ for q in (
     assert q in java, ("Android linked-node menu missing",q)
 assert "if(generation!=barrierDrawGeneration)return;" in java
 assert 'json.put("version",12)' in java
-assert "version>=1&&version<=12" in archive
+assert "version>=1&&version<=13" in archive
 assert "collisionWalls" in cpp
-assert "applicationId 'game.oe.editor.r57uv44'" in gradle
-assert "versionCode 48" in gradle
+assert "applicationId 'game.oe.editor.r57uv44edit'" in gradle
+assert "versionCode 49" in gradle
 assert "new WebView(" not in java
 print("OE_STAGE11_LINKED_JUNCTIONS_OK: atomic C++ shared endpoints, v12 "
       "project, one undo and on-demand menu counts")

@@ -606,6 +606,14 @@ public class EditorActivity extends Activity {
         paletteItems.addView(b,p);
     }
     private void showPalette(String category){
+        // Stage14: one canvas, exclusive ACTIVE gestures. Switching from
+        // Landscape to Build must never leave a UV56 sculpt stroke armed,
+        // and switching to Landscape must never place a building by accident.
+        if(("Стройка".equals(category)&&
+                (uv56SculptTool>0||precisionPaintMode||materialPaintMode||
+                 paintTerrainMode||terrainMode!=0))||
+           ("Рельеф".equals(category)&&placingKind>=0))
+            cancelPlace();
         // Entering another tool must never leave a hidden wall touch handler.
         if(!"Коллизии".equals(category)&&(barrierDrawMode||barrierCutId>0||barrierPickMode||barrierMoveId>0))
             cancelPlace();

@@ -38,7 +38,7 @@ assert "static constexpr int MAX_ASSETS=32;" in cpp
 assert "nativePlaceImportedAtScreen" in java
 assert "nativePlaceImportedAtScreen" in cpp
 assert "gUv56Terrain" in cpp and "gAssets" in cpp
-assert "version>=1&&version<=13" in (
+assert "version>=1&&version<=14" in (
     root/"android/src/main/java/game/oe/editor/ProjectArchive.java").read_text()
 print("OE_UV44_FULL_CATALOG_STAGE15_OK: 1832 original parts searchable and "
       "paged in single native OE canvas (no private PWB bytes included)")

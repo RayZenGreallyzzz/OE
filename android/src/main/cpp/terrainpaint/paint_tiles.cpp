@@ -99,7 +99,8 @@ bool Canvas::paint(double x0,double z0,double x1,double z1,double radius,
   if(erase)continue;
   needed.emplace_back(tx,tz);
  }
- if(tiles_.size()+needed.size()>kMaxTiles)return false;
+ if(needed.size()>kMaxPaintTilesByMemory||
+    tiles_.size()>kMaxPaintTilesByMemory-needed.size())return false;
  for(auto [x,z]:needed)tiles_.push_back({x,z,std::vector<std::uint8_t>(kBytesPerTile,0),1});
  const double stride=std::max(.25,radius*.28);
  const int count=std::max(1,static_cast<int>(std::ceil(dist/stride)));
@@ -110,7 +111,7 @@ bool Canvas::paint(double x0,double z0,double x1,double z1,double radius,
  return true;
 }
 bool Canvas::replaceAll(std::vector<Tile> incoming,int worldSize){
- if(incoming.size()>kMaxTiles)return false;
+ if(incoming.size()>kMaxPaintTilesByMemory)return false;
  std::set<std::pair<int,int>> ids;
  for(auto& tile:incoming){
   if(!tileInside(tile.x,tile.z,worldSize)||

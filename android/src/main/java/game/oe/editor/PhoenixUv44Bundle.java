@@ -38,7 +38,7 @@ final class PhoenixUv44Bundle {
             // A partial/older extraction must not masquerade as the FULL
             // original owner's 1,832-part catalog.
             return new String(Files.readAllBytes(verified.toPath()),
-                StandardCharsets.UTF_8).contains("models="+ORIGINAL_PWB_MODELS+"\\n");
+                StandardCharsets.UTF_8).contains("models="+ORIGINAL_PWB_MODELS);
         }catch(IOException ignored){return false;}
     }
     static boolean legalPath(String entry){

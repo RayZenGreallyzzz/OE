@@ -94,6 +94,7 @@ public class EditorActivity extends Activity {
         double bx,double bz,double thickness,double height);
     private static native boolean nativeBarrierDelete(int id);
     private static native int nativeBarrierPickAtScreen(float px,float py);
+    private static native int nativeBarrierNodeDegree(int id,int endpoint);
     private static native int nativeBarrierMoveAtScreen(int id,int mode,float px,float py);
     private static native void nativeBarrierSelect(int id);
     private static native int nativeBarrierCutAtScreen(int id,float px,float py,
@@ -1038,9 +1039,11 @@ public class EditorActivity extends Activity {
         statusText.setText(mode==0?"✏ Коснись НОВОГО НАЧАЛА стены · ✕ отменить":
             mode==1?"✏ Коснись НОВОГО КОНЦА стены · ✕ отменить":
                      "✏ Коснись нового ЦЕНТРА всей стены · ✕ отменить");
-        message(mode==0?"Новая первая точка (зелёная)":
-            mode==1?"Новая последняя точка (голубая)":
-                "Перенос всего отрезка без изменения длины");
+        message(mode==0?"Новый общий узел начала (зелёный); смежные стены "+
+                "переместятся вместе":
+            mode==1?"Новый общий узел конца (голубой); смежные стены "+
+                "переместятся вместе":
+                "Перенос всего отрезка; общие узлы подтянут соседние стены");
         toggleDrawer(false);
     }
     private void editCollisionBarrier(String row){
@@ -1071,7 +1074,8 @@ public class EditorActivity extends Activity {
         new AlertDialog.Builder(this)
             .setTitle("✏ Изменить физическую стену #"+id)
             .setMessage("Отрезок 1–512 м · толщина 0.3–4 м · "+
-                "высота 1–30 м. Все значения в метрах.")
+                "высота 1–30 м. Общие узлы (точность 5 см) "+
+                "двигают соседние стены вместе.")
             .setView(scroll)
             .setPositiveButton("Применить",(dialog,which)->{
                 final double[] values=new double[6];
@@ -1091,7 +1095,7 @@ public class EditorActivity extends Activity {
                         values[2],values[3],values[4],values[5]);
                     if(ok){
                         surface.requestRender();
-                        message("✓ Физическая стена изменена · ↶ отменить");
+                        message("✓ Стена и связанные узлы изменены · ↶ отменить");
                     }else message("Недопустимая длина, толщина, высота "+
                         "или точка за границей карты");
                 });
@@ -1182,13 +1186,20 @@ public class EditorActivity extends Activity {
         catch(NumberFormatException e){return;}
         surface.queueEvent(()->{
             nativeBarrierSelect(id);surface.requestRender();
+            final int degreeA=nativeBarrierNodeDegree(id,0);
+            final int degreeB=nativeBarrierNodeDegree(id,1);
+            ui(()->showCollisionBarrierActions(row,id,degreeA,degreeB));
         });
+    }
+    private void showCollisionBarrierActions(String row,int id,
+                                             int degreeA,int degreeB){
+        // Counts include the selected segment itself (1 = unconnected end).
         final String[] options={
             "✂ Вырезать проход 8 м касанием",
             "✂ Вырезать проход 16 м касанием",
-            "🟢 Перенести начало стены касанием",
-            "🔵 Перенести конец стены касанием",
-            "↔ Переместить весь отрезок касанием",
+            "🟢 Перенести общий узел начала ("+degreeA+" стен)",
+            "🔵 Перенести общий узел конца ("+degreeB+" стен)",
+            "↔ Перенести отрезок со связанными узлами",
             "✏ Изменить X/Z, толщину и высоту",
             "🗑 Удалить только этот отрезок",
             "🧍 Пройти сквозь стену путником"
@@ -4434,13 +4445,16 @@ public class EditorActivity extends Activity {
                                     collisionBarrierActions(record);
                             });
                         }else if(barrierMoveId==moveId&&moveId>0){
-                            if(nativeBarrierMoveAtScreen(moveId,moveMode,px,py)>0){
+                            final int affected=nativeBarrierMoveAtScreen(
+                                moveId,moveMode,px,py);
+                            if(affected>0){
                                 barrierMoveId=0;
                                 requestRender();
-                                message("✓ Физическая стена перемещена · "+
-                                    "↶ отменить / ↷ повторить");
-                            }else message("Не получилось: коснись земли "+
-                                "внутри мира; длина должна быть 1–512 м");
+                                message("✓ Перемещено стен: "+affected+
+                                    " · общий узел сохранён · ↶ отменить");
+                            }else message("Нельзя переместить: одна из связанных "+
+                                "стен станет короче 1 м, длиннее 512 м "+
+                                "или выйдет за границы мира");
                         }
                     });
                     multiTouch=false;

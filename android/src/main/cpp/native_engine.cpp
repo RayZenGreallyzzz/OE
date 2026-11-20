@@ -4,6 +4,7 @@
 #include "quality_profiles.h"
 #include "runtime/oe_runtime.h"
 #include "runtime/walk_collision.h"
+#include "runtime/walk_barrier_nodes.h"
 #include "roads/road_network.h"
 #include "roads/road_junctions.h"
 #include "roads/road_topology.h"
@@ -3585,11 +3586,19 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeBarrierEdit(
  oe::runtime::WalkBarrier edited{static_cast<std::uint64_t>(id),
    ax,az,bx,bz,thickness,height};
  if(!oe::runtime::validWalkBarrier(edited,worldHalf()))return JNI_FALSE;
- for(auto&wall:gWalkBarriers)if(wall.id==edited.id){
-  if(wall.ax==ax&&wall.az==az&&wall.bx==bx&&wall.bz==bz&&
-     wall.thickness==thickness&&wall.height==height)return JNI_TRUE;
-  recordEdit(); // one Undo restores old endpoints, thickness and height
-  wall=edited;return JNI_TRUE;
+ for(const auto&wall:gWalkBarriers)if(wall.id==edited.id){
+  if(wall.ax==ax&&wall.az==az&&wall.bx==bx&&
+     wall.bz==bz&&wall.thickness==thickness&&
+     wall.height==height)return JNI_TRUE;
+  // Stage11: edit shared endpoints on ALL joined walls as one native undo.
+  // Coordinates and physics of every segment must be valid before commit.
+  auto staged=gWalkBarriers;
+  const int count=oe::runtime::editLinkedWalkBarrier(
+      staged,edited.id,edited,worldHalf());
+  if(count<=0)return JNI_FALSE;
+  recordEdit();
+  gWalkBarriers.swap(staged);
+  return JNI_TRUE;
  }
  return JNI_FALSE;
 }
@@ -3620,6 +3629,19 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeBarrierSelect(
   gSelectedBarrierId=id;return;
  }
 }
+// Connected degree counts physical segments, never editor ribbon geometry.
+// Used only for on-demand menus, not polled every frame or fixed tick.
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeBarrierNodeDegree(
+ JNIEnv*,jclass,jint id,jint endpoint){
+ if(id<=0||(endpoint!=0&&endpoint!=1))return 0;
+ for(const auto&w:gWalkBarriers)if(w.id==static_cast<std::uint64_t>(id)){
+  const double x=endpoint==0?w.ax:w.bx;
+  const double z=endpoint==0?w.az:w.bz;
+  return static_cast<jint>(
+      oe::runtime::walkNodeDegree(gWalkBarriers,x,z));
+ }
+ return 0;
+}
 // One tap can move first endpoint (0), last endpoint (1), or translate
 // the WHOLE wall (2) so its midpoint follows the tap. Validation is atomic;
 // malformed geometry never enters runtime or Undo.
@@ -3641,8 +3663,13 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeBarrierMoveAtScr
   if(!oe::runtime::validWalkBarrier(change,worldHalf()))return 0;
   if(change.ax==wall.ax&&change.az==wall.az&&
      change.bx==wall.bx&&change.bz==wall.bz)return 1;
-  recordEdit();wall=change;gSelectedBarrierId=id;
-  return 1;
+  // Includes linked neighboring wall ends; one Undo for the ENTIRE junction.
+  auto staged=gWalkBarriers;
+  const int affected=oe::runtime::editLinkedWalkBarrier(
+      staged,change.id,change,worldHalf());
+  if(affected<=0)return 0;
+  recordEdit();gWalkBarriers.swap(staged);gSelectedBarrierId=id;
+  return affected;
  }
  return 0;
 }

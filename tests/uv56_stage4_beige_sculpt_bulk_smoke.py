@@ -35,7 +35,7 @@ checks=[
  ("roads still intact", "roads/traversal_graph.h" in cpp),
  ("lakes intact", "water/lake_surface.h" in cpp),
  ("v1-v9 scene compatibility", "version>=1&&version<=12" in arch),
- ("isolated debug identity", "applicationId 'game.oe.editor.r57wallpick'" in gradle),
+ ("isolated debug identity", "applicationId 'game.oe.editor.r57nodes'" in gradle),
 ]
 for name,valid in checks:
     assert valid, name

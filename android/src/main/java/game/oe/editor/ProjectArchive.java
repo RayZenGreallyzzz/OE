@@ -554,6 +554,7 @@ public final class ProjectArchive {
             check(staged.textureDir.mkdir(),"Нельзя создать каталог текстур");
             check(staged.sourceDir.mkdir(),"Нельзя создать каталог оригиналов");
             check(staged.referenceDir.mkdir(),"Нельзя создать каталог карт-подложек");
+            check(staged.builderDir.mkdir(),"Нельзя создать каталог UV44-домов");
             long unpacked=0;
             Set<String> seen=new HashSet<>();
             try(ZipInputStream zip=new ZipInputStream(new BufferedInputStream(input))){
@@ -565,7 +566,8 @@ public final class ProjectArchive {
                         check("models/".equals(entry.getName())||
                               "textures/".equals(entry.getName())||
                               "sources/".equals(entry.getName())||
-                              "references/".equals(entry.getName()),"Неверная папка в проекте");
+                              "references/".equals(entry.getName())||
+                              "builders/".equals(entry.getName()),"Неверная папка в проекте");
                         zip.closeEntry();continue;
                     }
                     String name=entry.getName();
@@ -578,16 +580,28 @@ public final class ProjectArchive {
                         validSource(name.substring("sources/".length()));
                     boolean reference=name.startsWith("references/")&&
                         validReference(name.substring("references/".length()));
-                    check(scene||model||texture||original||reference,"Запрещён файл в архиве: "+name);
+                    boolean builder=name.startsWith("builders/")&&
+                        PhoenixHouseLinks.backupKey(
+                            name.substring("builders/".length()));
+                    check(scene||model||texture||original||reference||builder,
+                          "Запрещён файл в архиве: "+name);
                     check(seen.add(name),"Повторяющийся файл: "+name);
                     entries++;
-                    check(entries<=MAX_MODELS*3+MAX_TEXTURES+12,
+                    check(entries<=MAX_MODELS*3+MAX_TEXTURES+12+
+                          PhoenixHouseLinks.MAX_ARCHIVED_LINKS,
                           "Слишком много файлов");
-                    File target=scene?staged.sceneFile:(model?
-                        new File(staged.modelDir,name.substring("models/".length())):
-                        (texture?new File(staged.textureDir,name.substring("textures/".length())):
-                            (original?new File(staged.sourceDir,name.substring("sources/".length())):
-                            new File(staged.referenceDir,name.substring("references/".length())))));
+                    File target;
+                    if(scene)target=staged.sceneFile;
+                    else if(model)target=new File(staged.modelDir,
+                        name.substring("models/".length()));
+                    else if(texture)target=new File(staged.textureDir,
+                        name.substring("textures/".length()));
+                    else if(original)target=new File(staged.sourceDir,
+                        name.substring("sources/".length()));
+                    else if(reference)target=new File(staged.referenceDir,
+                        name.substring("references/".length()));
+                    else target=new File(staged.builderDir,
+                        name.substring("builders/".length()));
                     int fileBytes=0;
                     try(OutputStream out=new BufferedOutputStream(new FileOutputStream(target))){
                         int n;
@@ -597,7 +611,8 @@ public final class ProjectArchive {
                             check(unpacked<=MAX_UNPACKED_BYTES,"Архив слишком большой");
                             check(fileBytes<=(scene?MAX_SCENE_BYTES:
                                   ((model||original)?GlbReader.MAX_BYTES:
-                                   (reference?MAX_REFERENCE_BYTES:MAX_TEXTURE_BYTES))),
+                                   (builder?PhoenixHouseLinks.MAX_BACKUP_BYTES:
+                                    (reference?MAX_REFERENCE_BYTES:MAX_TEXTURE_BYTES)))),
                                   "Файл внутри архива слишком большой");
                             out.write(buf,0,n);
                         }
@@ -610,6 +625,16 @@ public final class ProjectArchive {
             String json=new String(Files.readAllBytes(staged.sceneFile.toPath()),StandardCharsets.UTF_8);
             Set<String> required=referencedModels(json);
             Set<String> references=referenceNames(json);
+            Set<String> uv44Sources=referencedBuilderSources(json);
+            File[] builderFiles=staged.builderDir.listFiles();
+            check(builderFiles!=null&&builderFiles.length==uv44Sources.size(),
+                "В архиве лишние или отсутствующие редактируемые дома UV44");
+            for(String name:uv44Sources){
+                File source=new File(staged.builderDir,name);
+                PhoenixHouseLinks.validateBackup(source);
+                check(PhoenixHouseLinks.shaName(source).equals(name),
+                      "Неверная контрольная сумма UV44-дома");
+            }
             File[] referenceFiles=staged.referenceDir.listFiles();
             check(referenceFiles!=null&&referenceFiles.length==references.size(),
                 "Неправильный состав PNG-подложек");

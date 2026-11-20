@@ -44,7 +44,7 @@ assert "validateCollisionWalls(json,version)" in archive
 assert "version>=1&&version<=13" in archive
 assert "MAX_TEXTURES=32" in archive
 assert "referenceNames(scene)" in archive
-assert "applicationId 'game.oe.editor.r57uv44edit'" in gradle
+assert "applicationId 'game.oe.editor.r57canvas'" in gradle
 assert "new WebView(" not in java
 print("OE_STAGE8_NATIVE_COLLISIONS_OK: 64 walls, physical 60Hz blocking, "
       "true gap erase, v12 restore/Undo, editor-only magenta guides")

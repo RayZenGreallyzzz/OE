@@ -28,7 +28,7 @@ for q in (
     'new File(root,"js/bundled-catalog.js")',
     'id.matches("glb:pwb:[0-9a-f]{24}")',
     'new File(root,"pwb/"+id.substring(8)+".glb")',
-    'importModelFromUri(Uri.fromFile(files.get(index)))',
+    'importModelFromUri(Uri.fromFile(files.get(begin+index)))',
     "PICK_UV44_NATIVE_LIBRARY=709",
     "PhoenixUv44Bundle.install(this,apk)",
     'else if("Здания".equals(category))',

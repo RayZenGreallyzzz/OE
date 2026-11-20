@@ -72,6 +72,9 @@ public class EditorActivity extends Activity {
     private static native int nativePlaceImportedAtScreen(String key, float x, float y);
     private static native int nativeAddPlaced(int kind, float x, float z, float yaw, float scale);
     private static native void nativeSelect(int id);
+    private static native String nativeSelectedUv44House();
+    private static native boolean nativeReplaceUv44House(int entityId,
+        String oldModelKey,String newModelKey);
     private static native void nativeNudge(float dx, float dz);
     private static native void nativeRotate(float deg);
     private static native void nativeScale(float factor);
@@ -603,6 +606,8 @@ public class EditorActivity extends Activity {
         activePaletteCategory=category;
         if("Здания".equals(category)){
             addPaletteOption("🏗 Phoenix Builder UV44 · стройка",this::openPhoenixBuilder);
+            addPaletteOption("✏ Редактировать выделенный дом UV44",
+                this::editSelectedPhoenixHouse);
             addPaletteOption("+ Таверна",()->enterPlaceMode(0,null));
             addPaletteOption("+ Кузница",()->enterPlaceMode(1,null));
             addPaletteOption("+ Аукционный дом",()->enterPlaceMode(2,null));
@@ -784,6 +789,8 @@ public class EditorActivity extends Activity {
                 .setPositiveButton("Понятно",null).show());
         }else if("Проект".equals(category)){
             addPaletteOption("🏗 Строительство UV44 в OE",this::openPhoenixBuilder);
+            addPaletteOption("✏ Редактировать выделенный дом UV44",
+                this::editSelectedPhoenixHouse);
             addPaletteOption("🧠 Ядро игры · проверить",this::showRuntimeCoreStatus);
             addPaletteOption("⚡ Графика и качество",this::chooseDeviceProfile);
             addPaletteOption("🖥 Информация о GPU",this::showDeviceCapabilities);
@@ -3379,6 +3386,58 @@ public class EditorActivity extends Activity {
         catch(Exception e){message("Не запустить стройку UV44: "+e.getMessage());}
     }
 
+    // Stage13: exact selected OE instance -> corresponding pristine UV44
+    // editable backup, without altering buildings in the same city.
+    private void editSelectedPhoenixHouse(){
+        if(importing){message("Заверши загрузку, потом выбери дом");return;}
+        surface.queueEvent(()->{
+            String data=nativeSelectedUv44House();
+            ui(()->{
+                if(data==null||!data.matches("[0-9]+\\|oe_[0-9a-f]{24}\\.glb")){
+                    message("Выбери размещённый GLB-дом UV44 касанием земли");
+                    return;
+                }
+                String[] parts=data.split("\\|",2);
+                int id=Integer.parseInt(parts[0]);
+                String modelKey=parts[1];
+                if(PhoenixHouseLinks.sourceFor(this,modelKey)==null){
+                    message("У этого дома нет редактируемой копии UV44. "+
+                        "При следующем экспорте сначала сохрани проект "+
+                        "(.phoenix.json), затем GLB.");
+                    return;
+                }
+                cancelPlace();
+                if(walkControlsActive)finishWalkControls();
+                Intent next=new Intent(this,PhoenixBuilderActivity.class);
+                next.putExtra(PhoenixHouseLinks.EXTRA_EDIT_MODEL,modelKey);
+                next.putExtra(PhoenixHouseLinks.EXTRA_EDIT_ENTITY,id);
+                try{startActivityForResult(next,OPEN_UV44_BUILDER);}
+                catch(Exception ex){
+                    message("Не открыть редактируемый дом UV44: "+ex.getMessage());
+                }
+            });
+        });
+    }
+
+    private void finishUv44Placement(String newKey,boolean editable,
+                                     int oldId,String oldKey){
+        // Caller: exclusively GLES thread after successful GPU registration.
+        if(editable&&oldId>0&&validAsset(oldKey)&&
+           nativeReplaceUv44House(oldId,oldKey,newKey)){
+            placingKind=-1;placingGlb=null;
+            surface.requestRender();
+            refreshSelected();
+            message("🏠 Дом UV44 обновлён В ТОМ ЖЕ месте OE · ↶ отменить");
+            return;
+        }
+        ui(()->enterPlaceMode(6,newKey));
+        if(editable)
+            message("✓ UV44-проект сохранён рядом с GLB. "+
+                "Поставь новый дом касанием земли.");
+        else message("Дом импортирован как обычный статический GLB; "+
+            "для повторного редактирования нужен проект .phoenix.json");
+    }
+
     private void pickGlb() {
         if(importing) { message("Импорт или загрузка уже выполняется"); return; }
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -3435,8 +3494,25 @@ public class EditorActivity extends Activity {
                            !glb.isFile()||glb.length()<20||
                            glb.length()>GlbReader.MAX_BYTES)
                             throw new Exception("UV44: неверный или слишком большой GLB");
-                        message("UV44 → OE: загружаю готовый дом в город");
-                        importModelFromUri(Uri.fromFile(glb));
+                        File backup=null;
+                        String sourcePath=intent.getStringExtra(
+                            PhoenixHouseLinks.EXTRA_BACKUP_PATH);
+                        if(sourcePath!=null){
+                            File candidate=new File(sourcePath);
+                            if(!candidate.getCanonicalPath().startsWith(
+                                root.getCanonicalPath()+File.separator)||
+                               !candidate.getName().endsWith(".phoenix.json")||
+                               !candidate.isFile()||
+                               candidate.length()>PhoenixHouseLinks.MAX_BACKUP_BYTES)
+                                throw new Exception("UV44: небезопасная резервная копия");
+                            backup=candidate;
+                        }
+                        int entityId=intent.getIntExtra(
+                            PhoenixHouseLinks.EXTRA_EDIT_ENTITY,0);
+                        String oldKey=intent.getStringExtra(
+                            PhoenixHouseLinks.EXTRA_EDIT_MODEL);
+                        message("UV44 → OE: связываю исходный дом и GLB");
+                        importModelFromUri(Uri.fromFile(glb),backup,entityId,oldKey);
                     }catch(Exception ex){message("Ошибка передачи UV44: "+ex.getMessage());}
                 }
             }
@@ -3447,6 +3523,10 @@ public class EditorActivity extends Activity {
         importModelFromUri(intent.getData());
     }
     private void importModelFromUri(Uri uri){
+        importModelFromUri(uri,null,0,null);
+    }
+    private void importModelFromUri(Uri uri,File uv44Source,
+                                     int editEntityId,String previousAsset){
         if(importing)return;
         importing=true;
         message("Распознаю GLB / glTF / VOX…");
@@ -3458,6 +3538,14 @@ public class EditorActivity extends Activity {
                 UniversalModelReader.Converted converted=UniversalModelReader.convert(original);
                 byte[] bytes=converted.glb;
                 final String key=GlbReader.key(bytes);
+                // Original UV44 portable source is bounded and SHA-addressed
+                // BEFORE touching GLES; never copy 96 MB on the render thread.
+                boolean sourceLinked=false;
+                if(uv44Source!=null){
+                    PhoenixHouseLinks.remember(this,key,uv44Source);
+                    sourceLinked=true;
+                }
+                final boolean editable=sourceLinked;
                 // Canonical GLB is the renderer/project asset. The exact original
                 // VOX/glTF bytes are stored separately and exported in .oezip.
                 File destination=new File(modelDir(),key);
@@ -3486,8 +3574,7 @@ public class EditorActivity extends Activity {
                 surface.queueEvent(() -> {
                     if(Arrays.asList(nativeLoadedAssetKeys()).contains(key)){
                         importing=false;
-                        ui(() -> enterPlaceMode(6,key));
-                        message("Модель уже загружена — использую меш из памяти");
+                        finishUv44Placement(key,editable,editEntityId,previousAsset);
                     }else{
                         new Thread(() -> {
                             try{
@@ -3499,7 +3586,8 @@ public class EditorActivity extends Activity {
                                     importing=false;
                                     if(success){
                                         surface.requestRender();
-                                        ui(() -> enterPlaceMode(6,key));
+                                        finishUv44Placement(key,editable,editEntityId,
+                                            previousAsset);
                                         if(model.previewOmitsRig||model.previewOmitsTextures){
                                             String notice="Статический предпросмотр GLB";
                                             if(model.previewOmitsRig)notice+=" · кости/анимации не воспроизводятся";

@@ -213,7 +213,7 @@ public class EditorActivity extends Activity {
     private static native void nativeMapClear();
     private static native void nativeMapTopView();
     private static native void nativeMapPerspective();
-    private static final int PICK_GLB = 702, PICK_PROJECT=703, SAVE_PROJECT=704, PICK_PAINT=705, PICK_MAP=706, PICK_PLOT_PNG=707, OPEN_UV44_BUILDER=708;
+    private static final int PICK_GLB = 702, PICK_PROJECT=703, SAVE_PROJECT=704, PICK_PAINT=705, PICK_MAP=706, PICK_PLOT_PNG=707, OPEN_UV44_BUILDER=708, PICK_UV44_NATIVE_LIBRARY=709;
     private static final int MAX_ASSETS = 12;
 
     private EditorSurface surface;
@@ -230,7 +230,8 @@ public class EditorActivity extends Activity {
     // First open must select a working brush, not the passive camera mode.
     private volatile int uv56LandscapeMode=1,uv56BrushCm=400;
     private volatile boolean uv56NeutralCanvas=true; // editor view, not saved game data
-    private volatile boolean uv56ReverseOrbit=true; // owner can toggle direction
+    // UV44/UV56 original OrbitControls is the reference; no mirrored OE default.
+    private volatile boolean uv56ReverseOrbit=false; // explicit opt-in toggle
     private static final int MAX_TILE_LIBRARY=32; // imported files, not automatic GPU uploads
     private volatile String activePaletteCategory="Здания";
     private volatile boolean editorPlotsVisible=true;
@@ -416,7 +417,7 @@ public class EditorActivity extends Activity {
         top.setPadding(dp(5),dp(2),dp(5),dp(2));
         top.setBackgroundColor(Color.argb(220,14,21,32));
         TextView title=new TextView(this);
-        title.setText("OE R5.7 · 🌳 Ландшафт UV56");
+        title.setText("OE R5.7 · один мир · Ландшафт + Стройка");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
         title.setTextSize(12);
@@ -430,6 +431,13 @@ public class EditorActivity extends Activity {
             toggleDrawer(true);
         });
         top.addView(land,new LinearLayout.LayoutParams(dp(112),dp(43)));
+        // Same GLES world, same camera and .oezip: choose a different TOOL,
+        // never a second renderer or another construction scene.
+        Button build=button("🏗 Стройка",()->{
+            showPalette("Стройка");
+            toggleDrawer(true);
+        });
+        top.addView(build,new LinearLayout.LayoutParams(dp(112),dp(43)));
         Button save=button("💾 Сохранить",this::saveScene);
         top.addView(save,new LinearLayout.LayoutParams(dp(112),dp(43)));
         Button undo=button("↶",this::undoAction);
@@ -446,7 +454,7 @@ public class EditorActivity extends Activity {
         HorizontalScrollView categoryScroll=new HorizontalScrollView(this);
         categoryScroll.setHorizontalScrollBarEnabled(false);
         LinearLayout categoryRow=row();
-        for(String category:new String[]{"Здания","Детали","Мосты","Фундаменты","Декор","Рельеф","Участки","Коллизии","Вода","Дороги","Текстуры","Проект"}){
+        for(String category:new String[]{"Стройка","Рельеф","Здания","Детали","Мосты","Фундаменты","Декор","Участки","Коллизии","Вода","Дороги","Текстуры","Проект"}){
             Button tab=button(category,()->showPalette(category));
             LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(dp(98),dp(44));
             p.setMargins(dp(2),0,dp(2),0);categoryRow.addView(tab,p);
@@ -469,7 +477,7 @@ public class EditorActivity extends Activity {
         drawerParams.bottomMargin=dp(8);
         root.addView(toolDrawer,drawerParams);
         toolDrawer.setVisibility(View.GONE);
-        showPalette("Здания");
+        showPalette("Стройка");
 
         // Tiny, context-sensitive inspector. No selection => no inspector at all.
         inspectorPanel=new LinearLayout(this);
@@ -598,14 +606,50 @@ public class EditorActivity extends Activity {
         paletteItems.addView(b,p);
     }
     private void showPalette(String category){
+        // Stage14: one canvas, exclusive ACTIVE gestures. Switching from
+        // Landscape to Build must never leave a UV56 sculpt stroke armed,
+        // and switching to Landscape must never place a building by accident.
+        if(("Стройка".equals(category)&&
+                (uv56SculptTool>0||precisionPaintMode||materialPaintMode||
+                 paintTerrainMode||terrainMode!=0))||
+           ("Рельеф".equals(category)&&placingKind>=0))
+            cancelPlace();
         // Entering another tool must never leave a hidden wall touch handler.
         if(!"Коллизии".equals(category)&&(barrierDrawMode||barrierCutId>0||barrierPickMode||barrierMoveId>0))
             cancelPlace();
         paletteItems.removeAllViews();
         activeLandscapePanel=null;
         activePaletteCategory=category;
-        if("Здания".equals(category)){
-            addPaletteOption("🏗 Phoenix Builder UV44 · стройка",this::openPhoenixBuilder);
+        if("Стройка".equals(category)){
+            addPaletteOption("🏗 СТРОЙКА НА ЭТОМ ЖЕ ХОЛСТЕ — OE",()->{
+                message("Стройка и ландшафт в одном нативном 3D-мире OE");
+            });
+            addPaletteOption("📚 Детали оригинальной библиотеки UV44",
+                this::browseNativeUv44Library);
+            addPaletteOption("🧱 Стена",()->enterPlaceMode(10,null));
+            addPaletteOption("▤ Пол",()->enterPlaceMode(11,null));
+            addPaletteOption("⌂ Крыша",()->enterPlaceMode(12,null));
+            addPaletteOption("▯ Дверная рама",()->enterPlaceMode(13,null));
+            addPaletteOption("▣ Окно",()->enterPlaceMode(14,null));
+            addPaletteOption("▥ Колонна",()->enterPlaceMode(15,null));
+            addPaletteOption("↗ Лестница",()->enterPlaceMode(16,null));
+            addPaletteOption("🧱 Фундамент",()->enterPlaceMode(19,null));
+            addPaletteOption("📦 Мой GLB / glTF / VOX",this::pickGlb);
+            addPaletteOption("↔ Двигать выбранную деталь",()->changeGizmoMode(0));
+            addPaletteOption("⟳ Повернуть выбранную деталь",()->changeGizmoMode(1));
+            addPaletteOption("⤢ Масштаб выбранной детали",()->changeGizmoMode(2));
+            addPaletteOption("ℹ UV44: перенос оригинальных процедур редактирования "+
+                "в нативное ядро будет поэтапным",()->new AlertDialog.Builder(this)
+                .setTitle("Один холст: Стройка + Ландшафт")
+                .setMessage("Здесь работают нативные инструменты OE и "+
+                    "оригинальная библиотека деталей GLB из UV44. "+
+                    "Полный перенос процедурной стройки, персонажа и дрона "+
+                    "из UV44 ещё не завершён. Старый Builder доступен "+
+                    "только в разделе «Проект» для совместимости.")
+                .setPositiveButton("Понятно",null).show());
+        }else if("Здания".equals(category)){
+            addPaletteOption("🏗 Детали стройки в общем мире",()->
+                showPalette("Стройка"));
             addPaletteOption("✏ Редактировать выделенный дом UV44",
                 this::editSelectedPhoenixHouse);
             addPaletteOption("+ Таверна",()->enterPlaceMode(0,null));
@@ -788,7 +832,10 @@ public class EditorActivity extends Activity {
                     +"Draco пока не поддерживается. KTX2 BasisU ETC1S/UASTC LDR -> ETC2 подключён (тест).")
                 .setPositiveButton("Понятно",null).show());
         }else if("Проект".equals(category)){
-            addPaletteOption("🏗 Строительство UV44 в OE",this::openPhoenixBuilder);
+            addPaletteOption("🏗 Стройка на общем холсте",()->
+                showPalette("Стройка"));
+            addPaletteOption("📦 Оригинальный UV44 · старый режим "+
+                "для сохранений (совместимость)",this::openPhoenixBuilder);
             addPaletteOption("✏ Редактировать выделенный дом UV44",
                 this::editSelectedPhoenixHouse);
             addPaletteOption("🧠 Ядро игры · проверить",this::showRuntimeCoreStatus);
@@ -3387,6 +3434,104 @@ public class EditorActivity extends Activity {
     }
     // The UV44 building editor is part of THIS OE APK, not another app.
     // Android automatically pauses OE's GLES scene while builder owns GPU.
+    // Use the ORIGINAL UV44 PWB asset library on the SAME native OE city
+    // surface, not UV44's separate WebGL editor. Source JS is NOT evaluated;
+    // we only read the owner's private catalog JSON and imported GLB bytes.
+    private void browseNativeUv44Library(){
+        if(importing){message("Дождись завершения загрузки");return;}
+        if(!PhoenixUv44Bundle.ready(this)){
+            new AlertDialog.Builder(this)
+                .setTitle("Библиотека UV44 в нативной стройке OE")
+                .setMessage("Один раз выбери оригинальный APK Phoenix Builder UV44. "+
+                    "OE извлечёт его каталог деталей и GLB только в закрытую "+
+                    "память. На экране останется тот же ландшафт OE.")
+                .setPositiveButton("Выбрать APK",(d,w)->{
+                    Intent pick=new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                    pick.addCategory(Intent.CATEGORY_OPENABLE);
+                    pick.setType("*/*");
+                    try{startActivityForResult(pick,PICK_UV44_NATIVE_LIBRARY);}
+                    catch(Exception e){message("Не открыть APK UV44: "+e.getMessage());}
+                })
+                .setNegativeButton("Отмена",null).show();
+            return;
+        }
+        final EditText name=new EditText(this);
+        name.setSingleLine(true);
+        name.setHint("Поиск: стена, пол, крыша, дверь...");
+        name.setText("стена");
+        name.setSelectAllOnFocus(true);
+        new AlertDialog.Builder(this)
+            .setTitle("📚 Оригинальные детали UV44 · один холст OE")
+            .setMessage("Найди нужную деталь из каталога UV44, "+
+                "она сразу попадёт в нативный режим постановки на ландшафте.")
+            .setView(name)
+            .setPositiveButton("Найти",(d,w)->
+                listNativeUv44Parts(name.getText().toString().trim()))
+            .setNegativeButton("Отмена",null).show();
+    }
+    private void listNativeUv44Parts(String query){
+        try{
+            final File root=PhoenixUv44Bundle.root(this);
+            final File catalog=new File(root,"js/bundled-catalog.js");
+            if(!catalog.isFile()||catalog.length()>2_000_000)
+                throw new Exception("Нет каталога UV44");
+            String raw=new String(Files.readAllBytes(catalog.toPath()),
+                StandardCharsets.UTF_8);
+            int a=raw.indexOf('['),b=raw.lastIndexOf(']');
+            if(a<0||b<=a)throw new Exception("Некорректный каталог UV44");
+            JSONArray entries=new JSONArray(raw.substring(a,b+1));
+            final ArrayList<File> files=new ArrayList<>();
+            final ArrayList<String> labels=new ArrayList<>();
+            final String search=query.toLowerCase(Locale.ROOT);
+            for(int i=0;i<entries.length()&&files.size()<60;i++){
+                JSONObject part=entries.optJSONObject(i);
+                if(part==null)continue;
+                String title=part.optString("name","");
+                String folder=part.optString("folder","");
+                String id=part.optString("id","");
+                if(!(title+" "+folder).toLowerCase(Locale.ROOT).contains(search)||
+                   !id.matches("glb:pwb:[0-9a-f]{24}"))continue;
+                File model=new File(root,"pwb/"+id.substring(8)+".glb");
+                if(!model.isFile()||model.length()<20||
+                   model.length()>GlbReader.MAX_BYTES)continue;
+                files.add(model);
+                labels.add(title.replace('_',' ')+" · "+folder);
+            }
+            if(files.isEmpty()){
+                message("По запросу «"+query+"» нет деталей. Попробуй "+
+                    "«стена», «пол», «крыш», «двер» или другое слово.");
+                return;
+            }
+            new AlertDialog.Builder(this)
+                .setTitle("UV44 → OE · деталей найдено: "+files.size()+
+                    (files.size()==60?" (первые 60)":""))
+                .setItems(labels.toArray(new String[0]),(dialog,index)->{
+                    // Uses the EXISTING native C++ GLB import and placement.
+                    // Camera/terrain and .oezip remain the SAME scene.
+                    if(importing)return;
+                    message("UV44 → общий холст: "+labels.get(index));
+                    importModelFromUri(Uri.fromFile(files.get(index)));
+                })
+                .setNeutralButton("Другой поиск",(dialog,index)->
+                    browseNativeUv44Library())
+                .setNegativeButton("Отмена",null).show();
+        }catch(Exception e){message("Не открыть библиотеку UV44: "+e.getMessage());}
+    }
+    private void installNativeUv44Bundle(Uri apk){
+        message("Загружаю библиотеку деталей UV44 в OE…");
+        new Thread(()->{
+            try{
+                PhoenixUv44Bundle.install(this,apk);
+                ui(()->{
+                    message("✓ Библиотека UV44 готова: стройка на общем холсте");
+                    browseNativeUv44Library();
+                });
+            }catch(Exception ex){
+                message("Неверный UV44 APK: "+ex.getMessage());
+            }
+        },"oe-uv44-native-pwb-library").start();
+    }
+
     private void openPhoenixBuilder(){
         if(importing){message("Сначала заверши импорт сцены");return;}
         cancelPlace();
@@ -3458,6 +3603,11 @@ public class EditorActivity extends Activity {
     }
     @Override protected void onActivityResult(int requestCode,int resultCode,Intent intent) {
         super.onActivityResult(requestCode,resultCode,intent);
+        if(requestCode==PICK_UV44_NATIVE_LIBRARY){
+            if(resultCode==RESULT_OK&&intent!=null&&intent.getData()!=null)
+                installNativeUv44Bundle(intent.getData());
+            return;
+        }
         if(requestCode==PICK_MAP){
             if(resultCode==RESULT_OK&&intent!=null&&intent.getData()!=null)
                 importMapReference(intent.getData());
@@ -4502,14 +4652,25 @@ public class EditorActivity extends Activity {
                     final float midY=(e.getY(0)+e.getY(1))*.5f;
                     final float dxMid=midX-lastMidX,dyMid=midY-lastMidY;
                     final float zoom=(lastPinch>1 && p>1)?Math.max(.7f,Math.min(1.3f,lastPinch/p)):1f;
-                    if(zoom!=1f||dxMid!=0||dyMid!=0)
-                        queueEvent(() -> {nativePan(dxMid,dyMid);nativeOrbit(0,0,zoom);interactiveRender();});
+                    // Separate pinch zoom from two-finger panning. Minor
+                    // centroid drift while zooming MUST NOT move the world.
+                    final boolean pinching=lastPinch>1.f&&
+                        Math.abs(p-lastPinch)>dp(2);
+                    final float panX=!pinching&&Math.abs(dxMid)>dp(2)?dxMid:0f;
+                    final float panY=!pinching&&Math.abs(dyMid)>dp(2)?dyMid:0f;
+                    if(zoom!=1f||panX!=0f||panY!=0f)
+                        queueEvent(() -> {
+                            if(panX!=0f||panY!=0f)nativePan(panX,panY);
+                            if(zoom!=1f)nativeOrbit(0,0,zoom);
+                            interactiveRender();
+                        });
                     lastPinch=p;lastMidX=midX;lastMidY=midY;
                 } else if(!multiTouch) {
                     float x=e.getX(),y=e.getY();
                     if(precisionPaintMode){
                         final float px=surfaceX(x),py=precisionScreenY(y);
-                        final float ox=surfaceX(x-lastX),oy=surfaceY(y-lastY);
+                        // Camera must use full VIEW pixels as in UV44, not scaled EGL pixels.
+                        final float ox=x-lastX,oy=y-lastY;
                         final boolean reverse=uv56ReverseOrbit;
                         queueEvent(()->{
                             if(paintDragCamera){
@@ -4539,7 +4700,7 @@ public class EditorActivity extends Activity {
                     }
                     final float dx=x-lastX,dy=y-lastY;
                     if(dx!=0||dy!=0){
-                        final float sx=surfaceX(dx),sy=surfaceY(dy);
+                        final float sx=surfaceX(dx),sy=surfaceY(dy); // GLES gizmo only; camera uses dx/dy
                         final boolean reverse=uv56ReverseOrbit;
                         final boolean movedEnough=Math.hypot(x-downX,y-downY)>dp(5);
                         // All input decisions happen on the GLES event queue:
@@ -4551,7 +4712,7 @@ public class EditorActivity extends Activity {
                                     gizmoEditStarted=nativeGizmoBegin(axis);
                                 if(gizmoEditStarted)nativeGizmoDrag(axis,sx,sy);
                             }else if(mapTopViewActive)nativePan(dx,dy);
-                            else nativeOrbit(reverse?-sx:sx,reverse?-sy:sy,1);
+                            else nativeOrbit(reverse?-dx:dx,reverse?-dy:dy,1f);
                             interactiveRender();
                         });
                     }
@@ -4769,7 +4930,14 @@ public class EditorActivity extends Activity {
                             refreshSelected();
                         }else{
                             final float dx=upX-lastX,dy=upY-lastY;
-                            if(dx!=0||dy!=0){if(mapTopViewActive)nativePan(dx,dy);else nativeOrbit(dx,dy,1);}
+                            if(dx!=0||dy!=0){
+                                if(mapTopViewActive)nativePan(dx,dy);
+                                else {
+                                    // ACTION_UP must not briefly flip orbit direction.
+                                    final boolean reverse=uv56ReverseOrbit;
+                                    nativeOrbit(reverse?-dx:dx,reverse?-dy:dy,1f);
+                                }
+                            }
                         }
                         requestRender();touchedGizmoAxis=-1;
                     });

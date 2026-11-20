@@ -52,7 +52,7 @@ assert 'chooseTerrainBrush' not in terrain_section
 assert 'enterTerrainMode' not in terrain_section
 assert 'version>=1&&version<=13' in archive
 assert 'sceneVersion>13' in java
-assert "applicationId 'game.oe.editor.r57uv44edit'" in gradle
+assert "applicationId 'game.oe.editor.r57canvas'" in gradle
 assert "applicationIdSuffix '.dev'" in gradle
 assert "import android.webkit" not in panel and "new WebView(" not in panel
 print("UV56_NATIVE_VIDEO_PANEL_OK: persistent native 3D sidebar, cm keypad, "

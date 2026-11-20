@@ -5,11 +5,11 @@ android {
     namespace 'game.oe.editor'
     compileSdk 35
     defaultConfig {
-        applicationId 'game.oe.editor.r57uv44edit'
+        applicationId 'game.oe.editor.r57canvas'
         minSdk 26
         targetSdk 34
-        versionCode 49
-        versionName '0.8.19-r57-uv44-editable-house-test'
+        versionCode 50
+        versionName '0.8.20-r57-one-canvas-empty-uv44-pwb-test'
         ndk { abiFilters 'arm64-v8a' }
         externalNativeBuild {
             cmake { cppFlags '-std=c++17 -O2 -Wall -Wextra' }

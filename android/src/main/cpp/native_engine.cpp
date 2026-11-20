@@ -3327,6 +3327,49 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeSnapSelectedToGr
   if(y!=e->y){recordEdit();e->y=y;}
  }
 }
+// UV44 centreline socket magnet: joins the selected native wall, corner or
+// curved wall to a genuine opposing socket of another editable OE entity.
+// Never snaps against the inaccurate AABB corner of L/arc pieces.
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeSnapPhoenixSelected(
+ JNIEnv*,jclass){
+ Entity *active=selected();
+ if(!active)return JNI_FALSE;
+ oe::phoenix::Socket own[2];
+ const int nOwn=oe::phoenix::sockets(active->type,own);
+ if(nOwn==0)return JNI_FALSE;
+ auto socketWorld=[](const Entity&e,const oe::phoenix::Socket&s,
+                    float&px,float&pz,float&dx,float&dz){
+  const float angle=e.yaw*RAD,c=std::cos(angle),ss=std::sin(angle);
+  const float lx=s.x*e.size*e.sx,lz=s.z*e.size*e.sz;
+  px=e.x+c*lx+ss*lz;pz=e.z+c*lz-ss*lx;
+  dx=c*s.dx+ss*s.dz;dz=c*s.dz-ss*s.dx;
+ };
+ float best=9.f,deltaX=0,deltaZ=0,dy=0;
+ for(const auto&other:gEntities){
+  if(other.id==active->id||std::abs(other.y-active->y)>3.f)continue;
+  oe::phoenix::Socket sockets[2];
+  const int nOther=oe::phoenix::sockets(other.type,sockets);
+  if(nOther==0)continue;
+  for(int i=0;i<nOwn;i++)for(int j=0;j<nOther;j++){
+   float ax,az,adx,adz,bx,bz,bdx,bdz;
+   socketWorld(*active,own[i],ax,az,adx,adz);
+   socketWorld(other,sockets[j],bx,bz,bdx,bdz);
+   // Opposed end sockets, not two endpoints that point in the same direction.
+   if(adx*bdx+adz*bdz>-.65f)continue;
+   const float ddx=bx-ax,ddz=bz-az,distance=ddx*ddx+ddz*ddz;
+   if(distance<best){
+    best=distance;deltaX=ddx;deltaZ=ddz;dy=other.y-active->y;
+   }
+  }
+ }
+ if(best>=9.f)return JNI_FALSE;
+ const float nx=active->x+deltaX,nz=active->z+deltaZ,ny=active->y+dy;
+ if(std::abs(nx)>worldHalf()||std::abs(nz)>worldHalf()||
+    ny< -24.f||ny>160.f)return JNI_FALSE;
+ if(std::abs(deltaX)+std::abs(deltaZ)+std::abs(dy)<.00001f)return JNI_TRUE;
+ recordEdit();active->x=nx;active->z=nz;active->y=ny;
+ return JNI_TRUE;
+}
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeApplyTerrainBrushAtScreen(
  JNIEnv*,jclass,jfloat px,jfloat py,jfloat radius,jfloat amount){
  float x,z;

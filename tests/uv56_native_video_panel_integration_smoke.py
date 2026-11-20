@@ -51,7 +51,7 @@ assert '⛰ Поднять гору' not in terrain_section
 assert 'chooseTerrainBrush' not in terrain_section
 assert 'enterTerrainMode' not in terrain_section
 assert 'version>=1&&version<=14' in archive
-assert 'sceneVersion>13' in java
+assert 'sceneVersion>14' in java
 assert "applicationId 'game.oe.editor.r57canvas.nativebuilder'" in gradle
 assert "applicationIdSuffix '.dev'" in gradle
 assert "import android.webkit" not in panel and "new WebView(" not in panel

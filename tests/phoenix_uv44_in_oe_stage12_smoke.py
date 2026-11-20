@@ -16,10 +16,10 @@ for part in (
     'PhoenixBuilderActivity.class',
     'OPEN_UV44_BUILDER=708',
     'addPaletteOption("🏗 Phoenix Builder UV44 · стройка"',
-    'importModelFromUri(Uri.fromFile(glb));',
+    'importModelFromUri(Uri.fromFile(glb),backup,entityId,oldKey);',
     'private void importModelFromUri(Uri uri)',
     'nativeRegisterAsset(key,model.vertices,',
-    'enterPlaceMode(6,key)',
+    'enterPlaceMode(6,newKey)',
     'glb.length()>GlbReader.MAX_BYTES',
     'root.getCanonicalPath()+File.separator',
 ):
@@ -68,8 +68,8 @@ for part in (
 assert 'android:name="game.oe.editor.PhoenixBuilderActivity"' in manifest
 assert 'android:exported="false"' in manifest
 assert manifest.count("android.intent.category.LAUNCHER")==1
-assert "applicationId 'game.oe.editor.r57uv44'" in gradle
-assert "versionCode 48" in gradle
+assert "applicationId 'game.oe.editor.r57uv44edit'" in gradle
+assert "versionCode 49" in gradle
 assert 'json.put("version",12)' in app
 # No user's privately uploaded UV44 JS, GLB catalogue or project in git.
 assert not (root/"android/src/main/assets/uv44").exists()

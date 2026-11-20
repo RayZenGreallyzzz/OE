@@ -62,6 +62,7 @@ jobs:
           python3 tests/editor_wall_point_stage10_smoke.py
           python3 tests/editor_linked_nodes_stage11_smoke.py
           python3 tests/phoenix_uv44_in_oe_stage12_smoke.py
+          python3 tests/phoenix_uv44_editable_roundtrip_stage13_smoke.py
   native-linked-collision-nodes:
     runs-on: ubuntu-latest
     steps:

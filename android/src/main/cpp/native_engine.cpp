@@ -3480,6 +3480,38 @@ JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSelectedInfo(
  << " XYZ "<<e->sx<<"/"<<e->sy<<"/"<<e->sz;
  return env->NewStringUTF(out.str().c_str());
 }
+// UV44 Stage13: return just the selected imported building identity.
+// IDs persist across GLES scene edits; source files remain in Java private
+// storage and never become separate physical collisions.
+JNIEXPORT jstring JNICALL Java_game_oe_editor_EditorActivity_nativeSelectedUv44House(
+ JNIEnv*env,jclass){
+ Entity*e=selected();
+ if(!e||e->type!=6||e->asset.empty())return nullptr;
+ return env->NewStringUTF((std::to_string(e->id)+"|"+e->asset).c_str());
+}
+// Replace ONE native GLB instance with a freshly exported UV44 building,
+// preserving its existing X/Y/Z, yaw, scale, plot and road relationships.
+// The old entity survives as an Undo snapshot; other GLB instances unchanged.
+JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceUv44House(
+ JNIEnv*env,jclass,jint entityId,jstring oldKey,jstring newKey){
+ if(entityId<=0||!oldKey||!newKey)return JNI_FALSE;
+ const char*oldValue=env->GetStringUTFChars(oldKey,nullptr);
+ if(!oldValue)return JNI_FALSE;
+ std::string previous(oldValue);
+ env->ReleaseStringUTFChars(oldKey,oldValue);
+ const char*newValue=env->GetStringUTFChars(newKey,nullptr);
+ if(!newValue)return JNI_FALSE;
+ std::string next(newValue);
+ env->ReleaseStringUTFChars(newKey,newValue);
+ if(next.empty()||gAssets.find(next)==gAssets.end())return JNI_FALSE;
+ for(auto&e:gEntities)if(e.id==entityId&&e.type==6&&e.asset==previous){
+  if(e.asset==next)return JNI_TRUE;
+  recordEdit();
+  e.asset=next;gSelected=entityId;
+  return JNI_TRUE;
+ }
+ return JNI_FALSE;
+}
 // Authoring-only plot rectangles, kept separate from all physical/game data.
 bool validEditorPlot(const EditorPlot&p,int world){
  if(p.id<=0||p.id>1000000||p.label.empty()||p.label.size()>100||

@@ -40,8 +40,8 @@ assert "terrain_( (wall.ax+wall.bx)*.5" not in walk
 assert "validTerrain(terrain_,wall.ax+t*vx,wall.az+t*vz,groundY)" in walk
 assert "const oe::roads::TerrainHeight hillside" in smoke
 assert "ridgeGap.size()==2" in smoke
-assert "applicationId 'game.oe.editor.r57uv44'" in gradle
-assert "versionCode 48" in gradle
+assert "applicationId 'game.oe.editor.r57uv44edit'" in gradle
+assert "versionCode 49" in gradle
 assert "runtime/walk_collision.h" in cpp
 print("OE_STAGE8B_WALL_QA_OK: spawn outside wall, correct hill-height collision, "
       "UI cancels stale joystick, warnings accurate, legacy scene untouched")

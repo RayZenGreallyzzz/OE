@@ -23,14 +23,14 @@ import java.util.zip.ZipOutputStream;
  */
 public final class ProjectArchive {
     private ProjectArchive() {}
-    public static final long MAX_UNPACKED_BYTES=128L*1024*1024;
+    public static final long MAX_UNPACKED_BYTES=384L*1024*1024; // bounded UV44 authoring backups
     public static final int MAX_MODELS=12;
     public static final int MAX_SCENE_BYTES=8*1024*1024; // bounded R4 composite and R4.1 material masks
     public static final int MAX_TEXTURES=32,MAX_TEXTURE_BYTES=8*1024*1024;
     public static final int MAX_REFERENCE_BYTES=8*1024*1024;
 
     public static final class StagedProject {
-        public final File root, sceneFile, modelDir, textureDir, sourceDir, referenceDir;
+        public final File root, sceneFile, modelDir, textureDir, sourceDir, referenceDir,builderDir;
         private StagedProject(File root){
             this.root=root;
             this.sceneFile=new File(root,"scene.json");
@@ -38,6 +38,7 @@ public final class ProjectArchive {
             this.textureDir=new File(root,"textures");
             this.sourceDir=new File(root,"sources");
             this.referenceDir=new File(root,"references");
+            this.builderDir=new File(root,"builders");
         }
     }
 
@@ -51,7 +52,7 @@ public final class ProjectArchive {
         JSONObject json=new JSONObject(scene);
         int version=json.optInt("version",-1);
         JSONObject guide=json.optJSONObject("mapReference");
-        check(version>=1&&version<=12,"Неподдерживаемая версия сцены");
+        check(version>=1&&version<=13,"Неподдерживаемая версия сцены");
         if(version<3){
             check(!json.has("mapReference"),"Подложка требует сцену версии 3+");
             return null;
@@ -327,7 +328,7 @@ public final class ProjectArchive {
     private static void validateCollisionWalls(JSONObject doc,int version)
         throws Exception {
         JSONArray walls=doc.optJSONArray("collisionWalls");
-        check((version==12&&((walls==null&&!doc.has("collisionWalls"))||
+        check((version>=12&&((walls==null&&!doc.has("collisionWalls"))||
                   (walls!=null&&walls.length()>0)))||
               (version<12&&!doc.has("collisionWalls")),
               "Физические коллизии доступны только в сцене v12");
@@ -361,12 +362,13 @@ public final class ProjectArchive {
         check(scene.getBytes(StandardCharsets.UTF_8).length<=MAX_SCENE_BYTES,"Сцена превышает безопасный лимит");
         JSONObject json=new JSONObject(scene);
         int version=json.optInt("version",-1);
-        check(version>=1&&version<=12,"Неподдерживаемая версия сцены");
+        check(version>=1&&version<=13,"Неподдерживаемая версия сцены");
         check(version==1||json.optJSONArray("roads")!=null,"Нет дорожной сети");
         validateLakes(json,version);
         validateNativeUv56(json,version);
         validateEditorPlots(json,version);
         validateCollisionWalls(json,version);
+        PhoenixHouseLinks.parseSceneLinks(json);
         referenceNames(scene);
         JSONArray tileData=json.optJSONArray("paintTiles");
         if(version>=4){
@@ -401,6 +403,11 @@ public final class ProjectArchive {
         check(names.size()<=MAX_MODELS,"Слишком много разных GLB");
         return names;
     }
+    private static Set<String> referencedBuilderSources(String scene)
+        throws Exception {
+        return new HashSet<>(
+            PhoenixHouseLinks.parseSceneLinks(new JSONObject(scene)).values());
+    }
     private static String calculatedName(File file) throws Exception{
         MessageDigest md=MessageDigest.getInstance("SHA-256");
         try(InputStream in=new BufferedInputStream(new FileInputStream(file))){
@@ -419,7 +426,14 @@ public final class ProjectArchive {
     }
     public static void exportProject(String scene,File modelFolder,File textureFolder,
              File originalFolder,File referenceFolder,OutputStream output) throws Exception{
+        exportProject(scene,modelFolder,textureFolder,originalFolder,
+            referenceFolder,null,output);
+    }
+    public static void exportProject(String scene,File modelFolder,File textureFolder,
+             File originalFolder,File referenceFolder,File builderFolder,
+             OutputStream output) throws Exception{
         Set<String> names=referencedModels(scene);
+        Set<String> sourcesUV44=referencedBuilderSources(scene);
         Set<String> textures=referencedTextures(scene);
         Set<String> references=referenceNames(scene);
         long budget=scene.getBytes(StandardCharsets.UTF_8).length;
@@ -449,6 +463,16 @@ public final class ProjectArchive {
                   "Повреждённая PNG-подложка");
             budget+=png.length();
             check(budget<=MAX_UNPACKED_BYTES,"Слишком много PNG-планов");
+        }
+        // Editable house backups never enter the GLES frame or scene.json.
+        for(String uv44:sourcesUV44){
+            check(builderFolder!=null,"Нет каталога редактируемых домов UV44");
+            File source=new File(builderFolder,uv44);
+            PhoenixHouseLinks.validateBackup(source);
+            check(PhoenixHouseLinks.shaName(source).equals(uv44),
+                "Повреждён редактируемый дом UV44: "+uv44);
+            budget+=source.length();
+            check(budget<=MAX_UNPACKED_BYTES,"Слишком большой архив домов OE");
         }
         Set<String> sources=new HashSet<>();
         for(String model:names){
@@ -495,6 +519,15 @@ public final class ProjectArchive {
                 }
                 zip.closeEntry();
             }
+            for(String name:sourcesUV44){
+                zip.putNextEntry(new ZipEntry("builders/"+name));
+                try(InputStream in=new BufferedInputStream(
+                    new FileInputStream(new File(builderFolder,name)))){
+                    int count;while((count=in.read(bytes))!=-1)
+                        zip.write(bytes,0,count);
+                }
+                zip.closeEntry();
+            }
             // Keep unmodified VOX and standalone glTF for source re-editing.
             // The canonical GLB is still sufficient to render this scene.
             for(String name:sources){
@@ -521,6 +554,7 @@ public final class ProjectArchive {
             check(staged.textureDir.mkdir(),"Нельзя создать каталог текстур");
             check(staged.sourceDir.mkdir(),"Нельзя создать каталог оригиналов");
             check(staged.referenceDir.mkdir(),"Нельзя создать каталог карт-подложек");
+            check(staged.builderDir.mkdir(),"Нельзя создать каталог UV44-домов");
             long unpacked=0;
             Set<String> seen=new HashSet<>();
             try(ZipInputStream zip=new ZipInputStream(new BufferedInputStream(input))){
@@ -532,7 +566,8 @@ public final class ProjectArchive {
                         check("models/".equals(entry.getName())||
                               "textures/".equals(entry.getName())||
                               "sources/".equals(entry.getName())||
-                              "references/".equals(entry.getName()),"Неверная папка в проекте");
+                              "references/".equals(entry.getName())||
+                              "builders/".equals(entry.getName()),"Неверная папка в проекте");
                         zip.closeEntry();continue;
                     }
                     String name=entry.getName();
@@ -545,16 +580,28 @@ public final class ProjectArchive {
                         validSource(name.substring("sources/".length()));
                     boolean reference=name.startsWith("references/")&&
                         validReference(name.substring("references/".length()));
-                    check(scene||model||texture||original||reference,"Запрещён файл в архиве: "+name);
+                    boolean builder=name.startsWith("builders/")&&
+                        PhoenixHouseLinks.backupKey(
+                            name.substring("builders/".length()));
+                    check(scene||model||texture||original||reference||builder,
+                          "Запрещён файл в архиве: "+name);
                     check(seen.add(name),"Повторяющийся файл: "+name);
                     entries++;
-                    check(entries<=MAX_MODELS*3+MAX_TEXTURES+12,
+                    check(entries<=MAX_MODELS*3+MAX_TEXTURES+12+
+                          PhoenixHouseLinks.MAX_ARCHIVED_LINKS,
                           "Слишком много файлов");
-                    File target=scene?staged.sceneFile:(model?
-                        new File(staged.modelDir,name.substring("models/".length())):
-                        (texture?new File(staged.textureDir,name.substring("textures/".length())):
-                            (original?new File(staged.sourceDir,name.substring("sources/".length())):
-                            new File(staged.referenceDir,name.substring("references/".length())))));
+                    File target;
+                    if(scene)target=staged.sceneFile;
+                    else if(model)target=new File(staged.modelDir,
+                        name.substring("models/".length()));
+                    else if(texture)target=new File(staged.textureDir,
+                        name.substring("textures/".length()));
+                    else if(original)target=new File(staged.sourceDir,
+                        name.substring("sources/".length()));
+                    else if(reference)target=new File(staged.referenceDir,
+                        name.substring("references/".length()));
+                    else target=new File(staged.builderDir,
+                        name.substring("builders/".length()));
                     int fileBytes=0;
                     try(OutputStream out=new BufferedOutputStream(new FileOutputStream(target))){
                         int n;
@@ -564,7 +611,8 @@ public final class ProjectArchive {
                             check(unpacked<=MAX_UNPACKED_BYTES,"Архив слишком большой");
                             check(fileBytes<=(scene?MAX_SCENE_BYTES:
                                   ((model||original)?GlbReader.MAX_BYTES:
-                                   (reference?MAX_REFERENCE_BYTES:MAX_TEXTURE_BYTES))),
+                                   (builder?PhoenixHouseLinks.MAX_BACKUP_BYTES:
+                                    (reference?MAX_REFERENCE_BYTES:MAX_TEXTURE_BYTES)))),
                                   "Файл внутри архива слишком большой");
                             out.write(buf,0,n);
                         }
@@ -577,6 +625,16 @@ public final class ProjectArchive {
             String json=new String(Files.readAllBytes(staged.sceneFile.toPath()),StandardCharsets.UTF_8);
             Set<String> required=referencedModels(json);
             Set<String> references=referenceNames(json);
+            Set<String> uv44Sources=referencedBuilderSources(json);
+            File[] builderFiles=staged.builderDir.listFiles();
+            check(builderFiles!=null&&builderFiles.length==uv44Sources.size(),
+                "В архиве лишние или отсутствующие редактируемые дома UV44");
+            for(String name:uv44Sources){
+                File source=new File(staged.builderDir,name);
+                PhoenixHouseLinks.validateBackup(source);
+                check(PhoenixHouseLinks.shaName(source).equals(name),
+                      "Неверная контрольная сумма UV44-дома");
+            }
             File[] referenceFiles=staged.referenceDir.listFiles();
             check(referenceFiles!=null&&referenceFiles.length==references.size(),
                 "Неправильный состав PNG-подложек");

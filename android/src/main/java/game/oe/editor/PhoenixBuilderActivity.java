@@ -20,6 +20,7 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.webkit.JsResult;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -49,7 +50,10 @@ public final class PhoenixBuilderActivity extends Activity {
     private LinearLayout panel;
     private TextView status;
     private Button transfer;
-    private volatile File latestGlb;
+    private volatile File latestGlb,latestBackup;
+    private String editingModelKey=null;
+    private int editingEntityId=0;
+    private boolean editableReloadInProgress=false;
     private ValueCallback<Uri[]> fileChoice;
     private final Uv44Bridge bridge=new Uv44Bridge();
 
@@ -77,6 +81,11 @@ public final class PhoenixBuilderActivity extends Activity {
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setBackgroundColor(Color.rgb(14,19,27));
         setContentView(panel);
+        editingModelKey=getIntent().getStringExtra(PhoenixHouseLinks.EXTRA_EDIT_MODEL);
+        editingEntityId=getIntent().getIntExtra(PhoenixHouseLinks.EXTRA_EDIT_ENTITY,0);
+        if(PhoenixHouseLinks.sourceFor(this,editingModelKey)==null){
+            editingModelKey=null;editingEntityId=0;
+        }
         LinearLayout toolbar=new LinearLayout(this);
         toolbar.setGravity(Gravity.CENTER_VERTICAL);
         toolbar.setBackgroundColor(Color.rgb(26,37,48));
@@ -85,6 +94,10 @@ public final class PhoenixBuilderActivity extends Activity {
         transfer=action("🏠 В город",v->exitBuilder(true));
         transfer.setEnabled(false);
         toolbar.addView(transfer,new LinearLayout.LayoutParams(dip(this,123),dip(this,44)));
+        if(editingModelKey!=null){
+            Button edit=action("✏ Дом OE",v->openExistingHouse());
+            toolbar.addView(edit,new LinearLayout.LayoutParams(dip(this,111),dip(this,44)));
+        }
         status=new TextView(this);
         status.setTextColor(Color.rgb(215,228,235));
         status.setTextSize(11);
@@ -148,8 +161,19 @@ public final class PhoenixBuilderActivity extends Activity {
                 if(!"GET".equals(req.getMethod()))
                     return PhoenixUv44Bundle.resolve(
                         PhoenixBuilderActivity.this,"https://invalid/");
+                if(editingModelKey!=null &&
+                    PhoenixHouseLinks.EDIT_ROUTE.equals(req.getUrl().getPath()) &&
+                    PhoenixUv44Bundle.ORIGIN.equals(req.getUrl().getScheme()+
+                        "://"+req.getUrl().getHost()))
+                    return PhoenixHouseLinks.serveHouse(
+                        PhoenixBuilderActivity.this,editingModelKey);
                 return PhoenixUv44Bundle.resolve(PhoenixBuilderActivity.this,
                     req.getUrl().toString());
+            }
+            @Override public void onPageFinished(WebView view,String url){
+                if(editingModelKey!=null)
+                    note("UV44 загружен · нажми «✏ Дом OE», чтобы открыть "+
+                        "редактируемый дом из общей карты");
             }
             @Override public boolean shouldOverrideUrlLoading(
                 WebView view,WebResourceRequest req) {
@@ -158,6 +182,16 @@ public final class PhoenixBuilderActivity extends Activity {
             }
         });
         builder.setWebChromeClient(new WebChromeClient(){
+            @Override public boolean onJsConfirm(
+                    WebView web,String origin,String text,JsResult result){
+                new AlertDialog.Builder(PhoenixBuilderActivity.this)
+                    .setTitle("Подтвердить действие Builder UV44")
+                    .setMessage(text)
+                    .setPositiveButton("Да",(d,w)->result.confirm())
+                    .setNegativeButton("Отмена",(d,w)->result.cancel())
+                    .setOnCancelListener(d->result.cancel()).show();
+                return true;
+            }
             @Override public boolean onShowFileChooser(WebView web,
                 ValueCallback<Uri[]> callback,FileChooserParams params) {
                 if(fileChoice!=null)fileChoice.onReceiveValue(null);
@@ -176,6 +210,34 @@ public final class PhoenixBuilderActivity extends Activity {
         builder.loadUrl(PhoenixUv44Bundle.ORIGIN+"/");
         note("UV44 готов: строй, сохраняй проект и нажми 📦 GLB в Builder");
     }
+    private void openExistingHouse(){
+        if(builder==null||editingModelKey==null||editableReloadInProgress)return;
+        if(PhoenixHouseLinks.sourceFor(this,editingModelKey)==null){
+            note("Нет сохранённой редактируемой копии этого дома");
+            return;
+        }
+        editableReloadInProgress=true;
+        // Original UV44 importBackup(File) is used unchanged. Fetch is served
+        // from OE private storage, not remote HTTP; no 100 MB JS bridge string.
+        final String javascript="(async()=>{"+
+            "if(!window.PhoenixClean||typeof window.PhoenixClean.importBackup!=='function')"+
+            "throw Error('Редактор UV44 ещё не готов');"+
+            "const response=await fetch('"+PhoenixHouseLinks.EDIT_ROUTE+"',{cache:'no-store'});"+
+            "if(!response.ok)throw Error('Не найден исходный проект дома');"+
+            "const bytes=await response.blob();"+
+            "const file=new File([bytes],'OE_House.phoenix.json',"+
+            "{type:'application/json'});"+
+            "await window.PhoenixClean.importBackup(file);"+
+            "return 'done';})().catch(error=>'error: '+String(error?.message||error))";
+        builder.evaluateJavascript(javascript,result->{
+            editableReloadInProgress=false;
+            if(result!=null&&result.contains("error:"))
+                note("Проверь загрузку дома UV44: "+result);
+            else note("Проект запрошен · подтверди замену текущего дома "+
+                      "в исходном Builder UV44");
+        });
+    }
+
     private void exitBuilder(boolean importFinished){
         File glb=latestGlb;
         if(importFinished){
@@ -183,8 +245,30 @@ public final class PhoenixBuilderActivity extends Activity {
                 note("Сначала экспортируй GLB из UV44 · лимит OE 24 МБ");
                 return;
             }
+            if(latestBackup==null||!latestBackup.isFile()){
+                new AlertDialog.Builder(this).setTitle("Нет редактируемой копии дома")
+                    .setMessage("В UV44 сначала нажми «💾 Сохранить проект "+
+                        "(.phoenix.json)», затем ещё раз «📦 GLB». "+
+                        "Иначе дом попадёт в OE как обычная GLB-модель "+
+                        "и восстановить его строительные детали будет нельзя.")
+                    .setPositiveButton("Продолжить стройку",null)
+                    .setNegativeButton("Передать только GLB",(d,w)->{
+                        Intent only=new Intent();
+                        only.putExtra(EXTRA_GLB_PATH,glb.getAbsolutePath());
+                        setResult(RESULT_OK,only);
+                        finish();
+                    }).show();
+                return;
+            }
             Intent result=new Intent();
             result.putExtra(EXTRA_GLB_PATH,glb.getAbsolutePath());
+            if(latestBackup!=null&&latestBackup.isFile())
+                result.putExtra(PhoenixHouseLinks.EXTRA_BACKUP_PATH,
+                    latestBackup.getAbsolutePath());
+            if(editingModelKey!=null&&editingEntityId>0){
+                result.putExtra(PhoenixHouseLinks.EXTRA_EDIT_MODEL,editingModelKey);
+                result.putExtra(PhoenixHouseLinks.EXTRA_EDIT_ENTITY,editingEntityId);
+            }
             setResult(RESULT_OK,result);
             finish();
             return;
@@ -321,6 +405,14 @@ public final class PhoenixBuilderActivity extends Activity {
                 Files.move(part.toPath(),ready.toPath(),
                     StandardCopyOption.REPLACE_EXISTING);
                 part=null;target=null;bytes=0;
+                if(ready.getName().toLowerCase().endsWith(".phoenix.json")){
+                    latestBackup=ready;
+                    latestGlb=null; // Save BEFORE a new GLB so it matches source.
+                    handler.post(()->{
+                        transfer.setEnabled(false);
+                        status.setText("💾 UV44-проект готов · теперь экспортируй 📦 GLB");
+                    });
+                }
                 if(ready.getName().toLowerCase().endsWith(".glb")){
                     try(InputStream in=new FileInputStream(ready)){
                         byte[] magic=new byte[4];

@@ -13,7 +13,7 @@ cmake = (root / "android/src/main/cpp/CMakeLists.txt").read_text()
 
 # Scene entity validators and both map-touch/add paths accept 17..28.
 assert "gStaticMeshes[oe::phoenix::kLast+1]" in native
-assert "for(int kind=0;kind<29;kind++)if(kind!=6)bakeStaticMesh(kind);" in native
+assert "for(int kind=0;kind<=oe::phoenix::kLast;kind++)if(kind!=6)bakeStaticMesh(kind);" in native
 assert "e.type>=29" in native
 assert "type<0||type>oe::phoenix::kLast||type==6" in native
 assert "type<0||type>16" not in native

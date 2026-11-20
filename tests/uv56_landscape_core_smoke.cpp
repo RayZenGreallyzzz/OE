@@ -46,6 +46,26 @@ int main(){
  assert(drag.at(0,0).h>0&&drag.at(5,0).h>0);
  assert(drag.undo()&&drag.at(0,0).h==0&&drag.at(5,0).h==0);
  assert(drag.redo()&&drag.at(0,0).h>0&&drag.at(5,0).h>0);
+ // Shared-world regression: the editor's selected plot must not crop UV56.
+ Terrain huge;
+ assert(huge.create(10000)); // older 100 m plot-based project
+ huge.beginStroke(0,0);
+ assert(huge.brushAt(0,0,Tool::Raise,4,2));
+ huge.endStroke();
+ const auto oldHeight=huge.at(0,0).h;
+ assert(huge.expandToWorld(16384));
+ assert(huge.areaSqM()==16384*16384);
+ assert(huge.at(0,0).h==oldHeight); // upgrade preserves terrain
+ huge.beginStroke(3000,4000); // well outside any small plot frame
+ assert(huge.brushAt(3000,4000,Tool::Raise,4,2));
+ huge.endStroke();
+ assert(huge.at(3000,4000).h>0);
+ Terrain saved;
+ assert(saved.restore(huge.areaSqM(),huge.snapshot()));
+ assert(saved.at(0,0).h==oldHeight&&saved.at(3000,4000).h>0);
+ assert(!saved.fitToWorld(1024)); // cannot silently discard far-away hills
+ assert(saved.at(3000,4000).h>0);
+ assert(saved.fitToWorld(16384));
 
  std::cout<<"OK: native UV56 heights: cm precision, falloff, no spike, "
              "undo, redo, flatten, smooth and atomic restore\n";

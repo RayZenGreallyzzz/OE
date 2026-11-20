@@ -726,7 +726,7 @@ public class EditorActivity extends Activity {
                     .setMessage("Границы не создают стен и коллизий, не "+
                         "мешают персонажу и не попадают в игровую сцену. "+
                         "Они помогают строить сёла и города на ОДНОЙ карте. "+
-                        "PNG-планы участков добавим отдельным этапом.")
+                        "Границы и размеры сохраняются вместе с проектом.")
                     .setPositiveButton("Понятно",null).show());
         }else if("Коллизии".equals(category)){
             addPaletteOption("✏ Нарисовать границу по точкам",
@@ -1026,31 +1026,10 @@ public class EditorActivity extends Activity {
             "Отображаются твои материалы · высоты и коллизии неизменны");
     }
     private void chooseUv56Territory(int area){
-        if(importing)return;
-        surface.queueEvent(()->{
-            final int old=nativeUv56Area();
-            ui(()->new AlertDialog.Builder(this)
-                .setTitle("🌍 Территория UV56 в городе OE")
-                .setMessage((old>0?"ВНИМАНИЕ: прежний слой высот UV56 будет заменён. "+
-                    "Дома, дороги, старые кисти OE и озёра останутся. "+
-                    "Это действие можно отменить кнопкой ↶. ":"")+
-                    "Новая территория: "+area+" м². Она должна помещаться "+
-                    "в размеры города OE. Продолжить?")
-                .setPositiveButton("Создать землю",(dialog,which)->
-                    surface.queueEvent(()->{
-                        boolean ok=nativeUv56ConfigureArea(area);
-                        surface.requestRender();
-                        if(ok){
-                            message("Территория "+area+" м² создана · ↶ отменить");
-                            ui(()->{
-                                if("Рельеф".equals(activePaletteCategory)&&drawerOpen)
-                                    showPalette("Рельеф");
-                            });
-                        }else message("Не помещается в карту OE. Выбери "+
-                            "меньшую территорию или увеличь размер мира.");
-                    }))
-                .setNegativeButton("Не менять землю",null).show());
-        });
+        // 1000 m² = roughly 32×32 m. These dimensions describe only a
+        // transparent authoring frame, never new or replacement terrain.
+        if(importing||area<1000)return;
+        newEditorPlot((int)Math.round(Math.sqrt(area)));
     }
     private void startBarrierPolyline(){
         if(importing)return;
@@ -1317,13 +1296,12 @@ public class EditorActivity extends Activity {
             ui(()->{
                 final android.widget.EditText input=new android.widget.EditText(this);
                 input.setSingleLine(true);
-                input.setText((size==500?"Село ":"Город ")+(count+1));
+                input.setText("Участок "+(count+1));
                 new AlertDialog.Builder(this)
-                    .setTitle(size==500?"🏘 Новый участок 500×500 м":
-                        "🏙 Новый участок 1000×1000 м")
-                    .setMessage("Рамка появится около центра камеры. "+
-                        "Затем можно задать точные X/Z в списке участков. "+
-                        "Земля и объекты НЕ будут изменены.")
+                    .setTitle("📐 Прозрачная граница "+size+"×"+size+" м")
+                    .setMessage("Рамка появится на общей земле около центра камеры. "+
+                        "Положение и размер можно изменить в разделе «Участки». "+
+                        "Рельеф, покраска и объекты НЕ изменятся.")
                     .setView(input)
                     .setPositiveButton("Создать",(d,w)->{
                         final String name=input.getText().toString().trim();
@@ -1388,7 +1366,8 @@ public class EditorActivity extends Activity {
         body.setOrientation(LinearLayout.VERTICAL);
         body.setPadding(dp(15),dp(6),dp(15),dp(6));
         android.widget.EditText name=new android.widget.EditText(this),
-            x=new android.widget.EditText(this),z=new android.widget.EditText(this);
+            x=new android.widget.EditText(this),z=new android.widget.EditText(this),
+            sizeInput=new android.widget.EditText(this);
         name.setSingleLine(true);name.setText(rec[4]);name.setHint("Название");
         x.setSingleLine(true);x.setText(rec[2]);x.setHint("Центр X, м");
         z.setSingleLine(true);z.setText(rec[3]);z.setHint("Центр Z, м");
@@ -1396,7 +1375,11 @@ public class EditorActivity extends Activity {
             android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL|
             android.text.InputType.TYPE_NUMBER_FLAG_SIGNED;
         x.setInputType(decimal);z.setInputType(decimal);
-        body.addView(name);body.addView(x);body.addView(z);
+        sizeInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        sizeInput.setSingleLine(true);
+        sizeInput.setHint("Сторона рамки, м (16–16384)");
+        sizeInput.setText(String.valueOf(previousSize));
+        body.addView(name);body.addView(x);body.addView(z);body.addView(sizeInput);
         new AlertDialog.Builder(this).setTitle("Изменить участок "+id)
             .setView(body)
             .setNeutralButton("🔎 Найти", (dialog,which)->
@@ -1412,13 +1395,22 @@ public class EditorActivity extends Activity {
                         .trim().replace(',','.'));
                     final float cz=Float.parseFloat(z.getText().toString()
                         .trim().replace(',','.'));
+                    final int newSize=Integer.parseInt(sizeInput.getText().toString().trim());
+                    if(newSize<16||newSize>16384){
+                        message("Сторона участка: от 16 до 16384 м");return;
+                    }
+                    MapGuide plan=plotPlans.get(id);
+                    if(plan!=null&&newSize<previousSize){
+                        message("Сначала измени или отвяжи PNG-план перед уменьшением рамки");
+                        return;
+                    }
                     surface.queueEvent(()->{
-                        boolean ok=nativePlotEdit(id,newName,cx,cz,previousSize);
+                        boolean ok=nativePlotEdit(id,newName,cx,cz,newSize);
                         if(ok){syncPlotPlanCentres();surface.requestRender();
                             message("Участок обновлён · PNG следует за рамкой · ↶ отменить");}
                         else message("Границы участка выходят за пределы мира");
                     });
-                }catch(NumberFormatException ex){message("Введи числа для X/Z");}
+                }catch(NumberFormatException ex){message("Введи числа X/Z и размер участка");}
             })
             .setNegativeButton("🗑 Удалить",(dialog,which)->
                 new AlertDialog.Builder(this).setTitle("Удалить только рамку?")
@@ -1782,7 +1774,7 @@ public class EditorActivity extends Activity {
                     uv56SculptPower=power;
                     precisionPaintOpacity=Math.max(.05f,Math.min(1f,power/2.f));
                 }
-                @Override public void createArea(int areaSqM){
+                @Override public void createPlot(int areaSqM){
                     chooseUv56Territory(areaSqM);
                 }
                 @Override public void neutralPreview(boolean neutral){
@@ -3835,7 +3827,7 @@ public class EditorActivity extends Activity {
                 if(uv56Json.optInt("version",-1)!=1||
                    !"m".equals(uv56Json.optString("unit",""))||
                    uv56Json.optInt("step",-1)!=1||
-                   uv56Area<1000||uv56Area>2000000||
+                   uv56Area<1000||uv56Area>16384*16384||
                    Math.sqrt(uv56Area)>worldSize)
                     throw new Exception("Неверный размер или формат UV56");
                 JSONArray raw=uv56Json.getJSONArray("nodes");
@@ -3883,7 +3875,7 @@ public class EditorActivity extends Activity {
                 double x=plot.getDouble("x"),z=plot.getDouble("z");
                 if(id<1||id>1000000||!plotUniqueIds.add(id)||
                    !validEditorPlotName(label)||
-                   (size!=500&&size!=1000)||
+                   size<16||size>worldSize||
                    !Double.isFinite(x)||!Double.isFinite(z)||
                    Math.abs(x)+size/2.0>worldSize/2.0||
                    Math.abs(z)+size/2.0>worldSize/2.0)

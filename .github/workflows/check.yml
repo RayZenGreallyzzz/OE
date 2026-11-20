@@ -51,6 +51,7 @@ jobs:
       - name: Verify screenshot-inspired UV56 native landscape panel and exact cm controls
         run: |
           python3 tests/uv56_native_video_panel_integration_smoke.py
+          python3 tests/shared_world_plot_overlay_smoke.py
           python3 tests/uv56_landscape_height_bulk_tiles_smoke.py
           python3 tests/uv56_stage4_beige_sculpt_bulk_smoke.py
           python3 tests/uv56_snow_gl_context_camera_smoke.py

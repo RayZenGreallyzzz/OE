@@ -23,7 +23,7 @@ for marker in [
   "gEditorPlots.clear();gNextEditorPlotId=1",
   "gEditorPlotsVisible=true",
   "out<<\"],\\\"editorPlots\\\":[\";",
-  "(p.size!=500.f&&p.size!=1000.f)",
+  "p.size<16.f||p.size>static_cast<float>(world)",
   "for(const auto&p:gEditorPlots)if(std::abs(p.x)+p.size*.5f>half",
 ]:
     assert marker in cpp, ("missing native editor-only plot operation",marker)

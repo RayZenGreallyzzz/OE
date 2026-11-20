@@ -106,7 +106,7 @@ size_t textureCacheBytes(){
   bytes+=tex.bytes.size();
  return bytes;
 }
-static constexpr int MAX_ASSETS=12;
+static constexpr int MAX_ASSETS=32;
 static constexpr int MAX_IMPORTED_TRIANGLES=90000;
 static Shader gShader;
 static std::vector<Entity> gEntities;

@@ -215,7 +215,7 @@ public class EditorActivity extends Activity {
     private static native void nativeMapTopView();
     private static native void nativeMapPerspective();
     private static final int PICK_GLB = 702, PICK_PROJECT=703, SAVE_PROJECT=704, PICK_PAINT=705, PICK_MAP=706, PICK_PLOT_PNG=707, OPEN_UV44_BUILDER=708, PICK_UV44_NATIVE_LIBRARY=709;
-    private static final int MAX_ASSETS = 12;
+    private static final int MAX_ASSETS = 32;
 
     private EditorSurface surface;
     private TextView selectionText;

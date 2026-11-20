@@ -4,6 +4,7 @@ import android.content.Context;
 import android.util.AtomicFile;
 import android.webkit.WebResourceResponse;
 import org.json.JSONObject;
+import org.json.JSONArray;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -27,22 +28,23 @@ final class PhoenixHouseLinks {
     static final String EDIT_ROUTE="/__oe_house.phoenix.json";
     static final long MAX_BACKUP_BYTES=96L*1024L*1024L;
     private static final int MAX_LINKS=8;
+    static final int MAX_ARCHIVED_LINKS=3; // explicit bounded Stage13 milestone
     private static final String FOLDER="uv44_editable_houses",INDEX="model-links.json";
     private PhoenixHouseLinks(){}
 
     private static boolean modelKey(String key){
         return key!=null&&key.matches("oe_[0-9a-f]{24}\\.glb");
     }
-    private static boolean backupKey(String key){
+    static boolean backupKey(String key){
         return key!=null&&key.matches("house_[0-9a-f]{24}\\.phoenix\\.json");
     }
-    private static File directory(Context context) throws IOException{
+    static File directory(Context context) throws IOException{
         File out=new File(context.getFilesDir(),FOLDER);
         if(!out.isDirectory()&&!out.mkdirs())
             throw new IOException("Не создать каталог редактируемых домов");
         return out;
     }
-    private static String shaName(File file) throws Exception {
+    static String shaName(File file) throws Exception {
         MessageDigest digest=MessageDigest.getInstance("SHA-256");
         try(InputStream in=new BufferedInputStream(new FileInputStream(file))){
             byte[] buf=new byte[32768];
@@ -57,7 +59,7 @@ final class PhoenixHouseLinks {
         }
         return key.append(".phoenix.json").toString();
     }
-    private static void validateBackup(File file) throws Exception {
+    static void validateBackup(File file) throws Exception {
         if(!file.isFile()||file.length()<64||file.length()>MAX_BACKUP_BYTES)
             throw new IOException("Редактируемый UV44-проект отсутствует или больше 96 МБ");
         byte[] header=new byte[3072];
@@ -96,6 +98,106 @@ final class PhoenixHouseLinks {
             out.write(json.toString().getBytes(StandardCharsets.UTF_8));
             file.finishWrite(out);
         }catch(Exception ex){file.failWrite(out);throw ex;}
+    }
+    /**
+     * Stage13 portable scene extension. Every archived edit-source maps to
+     * at least one REAL imported GLB in this OE scene. No new runtime entity.
+     */
+    static synchronized JSONArray sceneLinks(Context c,JSONArray items)
+        throws Exception {
+        Map<String,String> all=readLinks(c);
+        java.util.Set<String> present=new java.util.HashSet<>();
+        for(int i=0;i<items.length();i++){
+            JSONObject item=items.getJSONObject(i);
+            if(item.optInt("type",-1)==6)
+                present.add(item.getString("asset"));
+        }
+        JSONArray serialized=new JSONArray();
+        for(Map.Entry<String,String> link:all.entrySet()){
+            if(!present.contains(link.getKey()))continue;
+            File backup=new File(directory(c),link.getValue());
+            validateBackup(backup);
+            if(!shaName(backup).equals(link.getValue()))
+                throw new IOException("Повреждён оригинальный проект UV44");
+            JSONObject record=new JSONObject();
+            record.put("model",link.getKey());
+            record.put("source",link.getValue());
+            serialized.put(record);
+        }
+        if(serialized.length()>MAX_ARCHIVED_LINKS)
+            throw new IOException("Этап 13: пока максимум 3 редактируемых дома в .oezip");
+        return serialized;
+    }
+    static Map<String,String> parseSceneLinks(JSONObject scene) throws Exception{
+        int version=scene.optInt("version",-1);
+        JSONArray records=scene.optJSONArray("uv44Houses");
+        if((version==13&&(records==null||records.length()<1))||
+           (version<13&&scene.has("uv44Houses"))||
+           (scene.has("uv44Houses")&&records==null))
+            throw new IOException("Редактируемые UV44-дома требуют сцену версии 13");
+        Map<String,String> links=new java.util.LinkedHashMap<>();
+        if(records==null)return links;
+        if(records.length()>MAX_ARCHIVED_LINKS)
+            throw new IOException("В архиве не более 3 редактируемых домов");
+        java.util.Set<String> realAssets=new java.util.HashSet<>();
+        JSONArray items=scene.getJSONArray("items");
+        for(int i=0;i<items.length();i++){
+            JSONObject item=items.getJSONObject(i);
+            if(item.getInt("type")==6)
+                realAssets.add(item.getString("asset"));
+        }
+        for(int i=0;i<records.length();i++){
+            JSONObject item=records.getJSONObject(i);
+            String model=item.getString("model"),source=item.getString("source");
+            if(!modelKey(model)||!realAssets.contains(model)||
+               !backupKey(source)||links.put(model,source)!=null)
+                throw new IOException("Неверная ссылка на редактируемый дом UV44");
+        }
+        return links;
+    }
+    static synchronized void stageArchive(Context c,File archiveFolder,
+                                            Map<String,String> links)
+        throws Exception {
+        File targetFolder=directory(c);
+        java.util.Set<String> seen=new java.util.HashSet<>(links.values());
+        for(String sourceName:seen){
+            if(!backupKey(sourceName))throw new IOException("Неверное имя источника");
+            File original=new File(archiveFolder==null?targetFolder:archiveFolder,
+                                   sourceName);
+            validateBackup(original);
+            if(!shaName(original).equals(sourceName))
+                throw new IOException("Контрольная сумма UV44 не совпадает");
+            if(archiveFolder==null)continue;
+            File destination=new File(targetFolder,sourceName);
+            if(destination.isFile()){
+                if(!shaName(destination).equals(sourceName))
+                    throw new IOException("Локальный дом UV44 повреждён");
+                continue;
+            }
+            File temp=new File(targetFolder,sourceName+".part");
+            try {
+                Files.copy(original.toPath(),temp.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING);
+                if(!shaName(temp).equals(sourceName))
+                    throw new IOException("Ошибка копирования UV44");
+                Files.move(temp.toPath(),destination.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING);
+            }finally{Files.deleteIfExists(temp.toPath());}
+        }
+    }
+    static synchronized void commitArchiveLinks(Context c,Map<String,String> links)
+        throws Exception {
+        Map<String,String> list=readLinks(c);
+        for(Map.Entry<String,String> e:links.entrySet()){
+            if(!modelKey(e.getKey())||!backupKey(e.getValue()))
+                throw new IOException("Неверный идентификатор UV44");
+            File src=new File(directory(c),e.getValue());
+            validateBackup(src);
+            list.put(e.getKey(),e.getValue());
+        }
+        if(list.size()>MAX_LINKS)
+            throw new IOException("В библиотеке OE максимум 8 редактируемых домов");
+        writeLinks(c,list);
     }
     static synchronized void remember(Context c,String model,File source)
         throws Exception{

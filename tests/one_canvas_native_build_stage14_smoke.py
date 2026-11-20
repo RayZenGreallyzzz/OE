@@ -39,7 +39,8 @@ for q in (
     else: assert q in java, ("single canvas original UV44 library wiring",q)
 assert "uv56ReverseOrbit=false;" in java
 assert "uv56ReverseOrbit=true;" not in java
-assert "final float ox=x-lastX,oy=y-lastY;" in java
+assert "return surfaceY(y); // paint at the exact finger contact" in java
+assert "paintDragCamera" not in java, "painting cannot silently orbit the camera"
 assert "else nativeOrbit(reverse?-dx:dx,reverse?-dy:dy,1f);" in java
 assert "final boolean pinching=lastPinch>1.f&&" in java
 assert "if(zoom!=1f)nativeOrbit(0,0,zoom);" in java

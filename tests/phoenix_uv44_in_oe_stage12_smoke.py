@@ -56,8 +56,8 @@ for part in (
     'path.startsWith("assets/")',
     'legalPath(path)',
     'new File(staging,rel)',
-    'models<100',
-    'entries<100',
+    'models!=ORIGINAL_PWB_MODELS',
+    'entries<ORIGINAL_PWB_MODELS',
     'builder', # harmless placeholder, checked separately below
     'ORIGIN = "https://uv44.oe.local"',
     'Access-Control-Allow-Origin',

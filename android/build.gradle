@@ -5,11 +5,11 @@ android {
     namespace 'game.oe.editor'
     compileSdk 35
     defaultConfig {
-        applicationId 'game.oe.editor.r57canvas'
+        applicationId 'game.oe.editor.r57canvas.paintfix'
         minSdk 26
         targetSdk 34
-        versionCode 50
-        versionName '0.8.20-r57-one-canvas-empty-uv44-pwb-test'
+        versionCode 51
+        versionName '0.8.21-r57-stage14-paint-fix-test'
         ndk { abiFilters 'arm64-v8a' }
         externalNativeBuild {
             cmake { cppFlags '-std=c++17 -O2 -Wall -Wextra' }

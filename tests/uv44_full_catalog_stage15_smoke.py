@@ -22,12 +22,12 @@ assert "HashSet<String> unique=new HashSet<>();" in java
 assert "UV44_PAGE_SIZE=40" in java
 assert "i<entries.length();i++" in java
 assert 'files.size()<60' not in java, "catalog truncated to 60 model files"
-assert "showNativeUv44Page(null,"",0);" in java
-assert "showNativeUv44Page(folders.get(index-2),"",0);" in java
+assert 'showNativeUv44Page(null,"",0);' in java
+assert 'showNativeUv44Page(folders.get(index-2),"",0);' in java
 assert "showNativeUv44Page(category,query,page+1)" in java
 assert "showNativeUv44Page(category,query,page-1)" in java
 assert "listNativeUv44Parts(String query)" in java
-assert "title+" "+folder+" "+path" in java
+assert 'title+" "+folder+" "+path' in java
 assert "importModelFromUri(Uri.fromFile(files.get(begin+index)))" in java
 assert "PhoenixUv44Bundle.install(this,apk)" in java
 assert "nativeUv44CatalogCache=null;" in java

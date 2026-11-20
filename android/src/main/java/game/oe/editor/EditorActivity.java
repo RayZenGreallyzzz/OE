@@ -2440,6 +2440,14 @@ public class EditorActivity extends Activity {
                 throw new Exception("Сцена содержит неверные физические преграды");
             json.put("version",12);
         }
+        // v13 only when the actual city contains an imported GLB with
+        // a portable, content-addressed UV44 editable source.
+        JSONArray editableHomes=PhoenixHouseLinks.sceneLinks(
+            this,json.getJSONArray("items"));
+        if(editableHomes.length()>0){
+            json.put("uv44Houses",editableHomes);
+            json.put("version",13);
+        }
         String result=json.toString();
         if(result.getBytes(StandardCharsets.UTF_8).length>ProjectArchive.MAX_SCENE_BYTES)
             throw new Exception("Рисунок R4 превысил безопасный размер проекта");
@@ -3338,7 +3346,8 @@ public class EditorActivity extends Activity {
                 try{
                     try(OutputStream stream=getContentResolver().openOutputStream(uri,"w")){
                         if(stream==null)throw new Exception("Нет доступа к файлу");
-                        ProjectArchive.exportProject(scene,modelDir(),textureDir(),originalDir(),referenceDir(),stream);
+                        ProjectArchive.exportProject(scene,modelDir(),textureDir(),originalDir(),
+                            referenceDir(),PhoenixHouseLinks.directory(this),stream);
                     }
                     message("Проект экспортирован · дороги и PNG-подложка сохранены");
                 }catch(Exception e){
@@ -3361,7 +3370,8 @@ public class EditorActivity extends Activity {
                 surface.queueEvent(() -> {
                     final HashSet<String> cached=new HashSet<>(Arrays.asList(nativeLoadedAssetKeys()));
                     new Thread(() -> readAndPrepareScene(cached,staged.sceneFile,staged.modelDir,
-                    staged.textureDir,staged.sourceDir,staged.referenceDir,staged.root),
+                    staged.textureDir,staged.sourceDir,staged.referenceDir,staged.builderDir,
+                        staged.root),
                         "oe-project-validate").start();
                 });
             }catch(Exception e){
@@ -3626,12 +3636,12 @@ public class EditorActivity extends Activity {
         // thread can skip expensive decode work for those immutable GLBs.
         surface.queueEvent(() -> {
             final HashSet<String> cached=new HashSet<>(Arrays.asList(nativeLoadedAssetKeys()));
-            new Thread(() -> readAndPrepareScene(cached,null,null,null,null,null,null),"oe-scene-load").start();
+            new Thread(() -> readAndPrepareScene(cached,null,null,null,null,null,null,null),"oe-scene-load").start();
         });
     }
     private void readAndPrepareScene(HashSet<String> cached,File sourceScene,
             File sourceModels,File sourceTextures,File sourceOriginals,
-            File sourceReferences,File stagingRoot) {
+            File sourceReferences,File sourceBuilders,File stagingRoot) {
         try {
             File file=sourceScene==null?saveFile():sourceScene;
             ByteArrayOutputStream jsonBytes=new ByteArrayOutputStream();
@@ -3647,8 +3657,10 @@ public class EditorActivity extends Activity {
             }
             JSONObject document=new JSONObject(new String(jsonBytes.toByteArray(),StandardCharsets.UTF_8));
             final int sceneVersion=document.optInt("version",-1);
-            if(sceneVersion<1||sceneVersion>12)
-                throw new Exception("Неверная версия сцены (нужна 1–12)");
+            if(sceneVersion<1||sceneVersion>13)
+                throw new Exception("Неверная версия сцены (нужна 1–13)");
+            final java.util.Map<String,String> incomingUv44Houses=
+                PhoenixHouseLinks.parseSceneLinks(document);
             final boolean demoRoads=document.optBoolean("demoRoads",false);
             final int worldSize=document.optInt("worldSize",1024);
             if(worldSize!=1024&&worldSize!=2048&&worldSize!=4096&&worldSize!=8192&&worldSize!=16384)
@@ -4206,6 +4218,9 @@ public class EditorActivity extends Activity {
                     }
                 }
             }
+            // Builder projects can be up to 96 MB. Stream and verify all
+            // sources on this I/O worker before native GLES scene commit.
+            PhoenixHouseLinks.stageArchive(this,sourceBuilders,incomingUv44Houses);
             surface.queueEvent(() -> {
                 ArrayList<String> uploaded=new ArrayList<>();
                 boolean committed=false;
@@ -4236,6 +4251,15 @@ public class EditorActivity extends Activity {
                             uv56Area,uv56Nodes,
                             plotIds,plotNames,plotValues,wallRecords))
                         throw new Exception("Сцена не прошла полную проверку в движке");
+                    try{
+                        PhoenixHouseLinks.commitArchiveLinks(this,incomingUv44Houses);
+                    }catch(Exception sourceError){
+                        // The native city is ALREADY committed at this point.
+                        // Report the re-edit failure without falsely saying
+                        // the entire scene was rolled back.
+                        message("Город загружен, но привязка UV44 не записана: "+
+                            sourceError.getMessage());
+                    }
                     if(previewGuide!=null){
                         if(!nativeMapCommit(previewGuide.centerX,previewGuide.centerZ,
                                 previewGuide.widthMetres,previewGuide.opacity,previewGuide.visible))

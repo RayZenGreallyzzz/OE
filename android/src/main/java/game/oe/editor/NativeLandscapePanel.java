@@ -89,17 +89,19 @@ final class NativeLandscapePanel extends LinearLayout {
         Button city=button("🏙 К городу",host::close);
         title.addView(city,new LayoutParams(px(118),px(46)));
         addView(title);
-        addView(label("СВЕТЛЫЙ ХОЛСТ • один палец — выбранная кисть; "+
+        addView(label("ОДИН 3D-МИР • один палец — выбранная кисть; "+
             "два пальца — камера и масштаб.",12,true));
         LinearLayout modes=new LinearLayout(ctx);
         modes.setOrientation(HORIZONTAL);
         Button beige=button(neutralPreview?"✓ Бежевый":"🟨 Холст",
             ()->host.neutralPreview(true));
-        Button textured=button(neutralPreview?"🎨 Текстуры":"✓ Текстуры",
+        Button textured=button(neutralPreview?"👁 Показать текстуры":"✓ Текстуры видны",
             ()->host.neutralPreview(false));
         modes.addView(beige,new LayoutParams(0,px(46),1));
         modes.addView(textured,new LayoutParams(0,px(46),1));
         addView(modes,new LayoutParams(-1,px(48)));
+        addView(label("Кнопки выше только показывают/скрывают покрытие. "+
+            "Для рисования выбери «Покрасить землю» и материал ниже.",11,false));
         addView(button(reverseCamera?
             "🎥 Камера: обратное направление ✓":
             "🎥 Камера: стандартное направление ✓",
@@ -186,7 +188,7 @@ final class NativeLandscapePanel extends LinearLayout {
         initialized=true;
 
         addView(label("Покрытие / загруженный тайл",13,true));
-        addView(label("Выбери плитку ниже — кисть переключится на покраску. "
+        addView(label("Нажми на плитку ниже — включится кисть покраски. "
                 +"Текущий нативный материал OE имеет минимальный диаметр 1 м; "
                 +"сантиметровые маски UV56 пока переносим.",11,false));
         addView(button("🖼 Добавить ещё PNG / JPG одним выбором",host::uploadTexture),

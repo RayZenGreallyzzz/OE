@@ -14,6 +14,7 @@
 #include "water/lake_surface.h"
 #include "terrainpaint/paint_tiles.h"
 #include "build/phoenix_native_modules.h"
+#include "build/phoenix_room_workflow.h"
 #include "terrainpaint/material_layers.h"
 #include "terrain/uv56_landscape_core.h"
 #include "vendor/basisu/transcoder/basisu_transcoder.h"
@@ -3251,39 +3252,27 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeBuildPhoenixRoom
  float cx=0,cz=0;
  if(!groundPoint(px,py,cx,cz))return 0;
  const int n=metres/2;
- const int count=4*n+n*n*(ceiling==JNI_TRUE?2:1);
+ const int count=oe::phoenix::roomCount(metres,ceiling==JNI_TRUE);
  const float bound=static_cast<float>(metres)*.5f+2.f;
  if(gEntities.size()+static_cast<size_t>(count)>MAX_ENTITIES||
     std::abs(cx)+bound>worldHalf()||std::abs(cz)+bound>worldHalf()||
     gNextId<=0||gNextId>2147483647-count)return 0;
  const float base=terrainHeightAt(cx,cz);
  if(!std::isfinite(base)||base< -24.f||base>154.f)return 0;
- // Stage one room is flat at its centre's ground elevation, matching UV44
- // storey grid. Terrain beneath other room corners may be higher/lower.
- recordEdit();
+ // A flat room is constructed at the touched UV56 terrain elevation.
+ // Native UV44 grid emits EACH independent tile: no stretched box meshes.
+ recordEdit();  // Entire room is one atomic Undo step.
  const int first=gNextId;
- auto spawn=[&](int kind,float x,float y,float z,float yaw){
-  Entity e{};e.id=gNextId++;e.type=kind;
-  e.x=x;e.y=y;e.z=z;e.yaw=yaw;
-  gEntities.push_back(std::move(e));
- };
- for(int col=0;col<n;col++){
-  const float x=cx-metres*.5f+1.f+col*2.f;
-  // One real door opening and one window opening per generated room.
-  spawn(col==n/2?53:56,x,base,cz-metres*.5f,0.f);
-  spawn(col==n/2?54:56,x,base,cz+metres*.5f,0.f);
- }
- for(int row=0;row<n;row++){
-  const float z=cz-metres*.5f+1.f+row*2.f;
-  spawn(56,cx-metres*.5f,base,z,90.f);
-  spawn(56,cx+metres*.5f,base,z,90.f);
- }
- for(int col=0;col<n;col++)for(int row=0;row<n;row++){
-  const float x=cx-metres*.5f+1.f+col*2.f;
-  const float z=cz-metres*.5f+1.f+row*2.f;
-  spawn(29,x,base,z,0.f);  // original UV44 2m floor grid
-  if(ceiling==JNI_TRUE)spawn(29,x,base+2.6f-.18f,z,0.f);
- }
+ const int placed=oe::phoenix::roomPlan(metres,ceiling==JNI_TRUE,
+     cx,base,cz,[&](const oe::phoenix::RoomPiece&piece){
+       Entity entity{};
+       entity.id=gNextId++;
+       entity.type=piece.kind;
+       entity.x=piece.x;entity.y=piece.y;entity.z=piece.z;
+       entity.yaw=piece.yaw;
+       gEntities.push_back(std::move(entity));
+     });
+ if(placed!=count)return 0;
  gSelected=first+(n/2)*2; // door wall is editable immediately
  return count;
 }

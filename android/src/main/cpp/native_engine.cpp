@@ -2255,7 +2255,10 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativePaintTerrainAtSc
  return static_cast<jint>(gTerrainPaint.size());
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeInit(JNIEnv*,jclass){
- setupGL();if(!gSceneInitialized)reset(true);
+ // Fresh OE must start EMPTY: owner deliberately creates a city and terrain.
+ // Demonstration houses/platform are opt-in via Project → Demo only.
+ // GL/EGL context recreation must NOT clear an already edited/loaded scene.
+ setupGL();if(!gSceneInitialized)reset(false);
 }
 JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeResize(JNIEnv*,jclass,jint w,jint h){
  gWidth=std::max(1,int(w));gHeight=std::max(1,int(h));

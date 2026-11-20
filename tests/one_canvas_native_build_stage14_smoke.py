@@ -18,6 +18,8 @@ assert 'Button land=button("🌿 Ландшафт"' in java
 assert "showPalette(\"Стройка\")" in java
 assert 'new String[]{"Стройка","Рельеф","Здания"' in java
 assert 'if("Стройка".equals(category))' in java
+assert '("Стройка".equals(category)&&' in java
+assert '("Рельеф".equals(category)&&placingKind>=0)' in java
 assert 'addPaletteOption("📚 Детали оригинальной библиотеки UV44"' in java
 for q in (
     "private void browseNativeUv44Library()",

@@ -32,14 +32,14 @@ for marker in (
     "TextureReader.decode(original,\"image/png\",1024)",
     'json.put("plotPlans",plans)',
     'json.put("version",11)',
-    'sceneVersion>13',
+    'sceneVersion>14',
     "sourceReferences!=null",
     "!validEditorPlotName(label)",
 ):
     assert marker in java, ("Android editor blueprint missing",marker)
 for marker in (
     "private static Set<String> referenceNames(String scene)",
-    "version>=1&&version<=13",
+    "version>=1&&version<=14",
     'version==11&&plans!=null&&plans.length()>0',
     'Set<String> references=referenceNames(scene)',
     "for(String reference:references)",

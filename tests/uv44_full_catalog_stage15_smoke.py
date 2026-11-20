@@ -31,6 +31,10 @@ assert 'title+" "+folder+" "+path' in java
 assert "importModelFromUri(Uri.fromFile(files.get(begin+index)))" in java
 assert "PhoenixUv44Bundle.install(this,apk)" in java
 assert "nativeUv44CatalogCache=null;" in java
+assert "private static final int MAX_ASSETS = 32;" in java
+assert "public static final int MAX_MODELS=32;" in (
+    root/"android/src/main/java/game/oe/editor/ProjectArchive.java").read_text()
+assert "static constexpr int MAX_ASSETS=32;" in cpp
 assert "nativePlaceImportedAtScreen" in java
 assert "nativePlaceImportedAtScreen" in cpp
 assert "gUv56Terrain" in cpp and "gAssets" in cpp

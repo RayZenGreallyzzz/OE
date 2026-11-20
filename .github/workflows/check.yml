@@ -60,6 +60,17 @@ jobs:
           python3 tests/wall_stage8b_regression_smoke.py
           python3 tests/editor_wall_chain_stage9_smoke.py
           python3 tests/editor_wall_point_stage10_smoke.py
+          python3 tests/editor_linked_nodes_stage11_smoke.py
+  native-linked-collision-nodes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile shared collision nodes and validate T-junction atomicity
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -pedantic \\
+            tests/walk_barrier_linked_nodes_stage11_smoke.cpp \\
+            -o /tmp/oe-linked-walls
+          /tmp/oe-linked-walls
   device-quality:
     runs-on: ubuntu-latest
     steps:

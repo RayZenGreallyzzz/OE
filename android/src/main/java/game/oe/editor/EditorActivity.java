@@ -229,7 +229,7 @@ public class EditorActivity extends Activity {
     private volatile float uv56SculptRadius=4f,uv56SculptPower=2f;
     // First open must select a working brush, not the passive camera mode.
     private volatile int uv56LandscapeMode=1,uv56BrushCm=400;
-    private volatile boolean uv56NeutralCanvas=true; // editor view, not saved game data
+    private volatile boolean uv56NeutralCanvas=false; // show materials by default; editor-only setting
     // UV44/UV56 original OrbitControls is the reference; no mirrored OE default.
     private volatile boolean uv56ReverseOrbit=false; // explicit opt-in toggle
     private static final int MAX_TILE_LIBRARY=32; // imported files, not automatic GPU uploads
@@ -996,7 +996,10 @@ public class EditorActivity extends Activity {
             enterUv56Sculpt(tool);
         }else if(activePaintKey.isEmpty()){
             cancelPlace();
-            message("Для покраски выбери или загрузи PNG/JPG внизу панели");
+            uv56LandscapeMode=0;
+            message("Кисть не включена: выбери или загрузи PNG/JPG внизу панели");
+            if(drawerOpen&&"Рельеф".equals(activePaletteCategory))
+                showPalette("Рельеф");
         }else{
             // Painting must display the owner's actual material textures.
             setUv56NeutralPreview(false);
@@ -1008,6 +1011,10 @@ public class EditorActivity extends Activity {
         }
     }
     private void setUv56NeutralPreview(boolean neutral){
+        if(neutral&&(precisionPaintMode||paintTerrainMode)){
+            message("Кисть активна: выбери «Осмотреть», чтобы скрыть текстуры");
+            return;
+        }
         uv56NeutralCanvas=neutral;
         if(surface==null)return;
         surface.queueEvent(()->{
@@ -3225,10 +3232,10 @@ public class EditorActivity extends Activity {
                         message("Текстура добавлена · теперь нанеси её на деталь или землю");
                         surface.requestRender();
                         ui(()->{
-                            if("Рельеф".equals(activePaletteCategory)&&drawerOpen){
+                            if("Рельеф".equals(activePaletteCategory)){
                                 uv56LandscapeMode=6;
                                 openUv56Mode(6);
-                                showPalette("Рельеф");
+                                if(drawerOpen)showPalette("Рельеф");
                             }
                         });
                     }else message("Лимит видеопамяти. Можно хранить до 32 тайлов, GPU загружается по запросу.");
@@ -3303,6 +3310,7 @@ public class EditorActivity extends Activity {
         terrainMode=0;lakeMode=false;placingKind=-1;placingGlb=null;roadMode=false;roadMoveMode=false;precisionPaintMode=false;materialPaintMode=false;
         surface.queueEvent(()->{nativeRoadFinish();nativePaintStrokeEnd();});
         paintTerrainMode=true;
+        if(uv56NeutralCanvas)setUv56NeutralPreview(false);
         statusText.setText("КИСТЬ ТЕКСТУР: касайся земли · радиус "+(int)paintRadius+
             "м · до 48 мазков · ↶ отменить");
     }
@@ -3315,9 +3323,10 @@ public class EditorActivity extends Activity {
         }
         paintTerrainMode=false;terrainMode=0;lakeMode=false;placingKind=-1;placingGlb=null;roadMode=false;
         precisionPaintErase=erase;precisionPaintMode=true;materialPaintMode=false;roadMoveMode=false;
+        if(uv56NeutralCanvas)setUv56NeutralPreview(false);
         surface.queueEvent(()->{nativeRoadFinish();nativePaintStrokeEnd();});
-        statusText.setText(erase?"ЛАСТИК R4: веди пальцем · курсор на 70 dp выше пальца":
-             "КИСТЬ R4: веди пальцем непрерывно · круг на 70 dp выше пальца. "
+        statusText.setText(erase?"ЛАСТИК R4: веди пальцем прямо по земле":
+             "КИСТЬ R4: веди пальцем по земле под пальцем. "
              +"Размер "+precisionPaintRadius+" м, двухпальцевый зум.");
         message(erase?"Режим стирания покрытия":"Непрерывная кисть · одно касание рисует линию");
     }
@@ -3330,9 +3339,10 @@ public class EditorActivity extends Activity {
         }
         paintTerrainMode=false;terrainMode=0;lakeMode=false;placingKind=-1;placingGlb=null;roadMode=false;
         precisionPaintErase=erase;precisionPaintMode=true;materialPaintMode=true;roadMoveMode=false;
+        if(uv56NeutralCanvas)setUv56NeutralPreview(false);
         surface.queueEvent(()->{nativeRoadFinish();nativePaintStrokeEnd();nativeLayerStrokeEnd();});
         statusText.setText(erase?
-            "ЛАСТИК СЛОЯ: стирает ТОЛЬКО выбранную текстуру. Курсор выше пальца.":
+            "ЛАСТИК СЛОЯ: стирает ТОЛЬКО выбранную текстуру под пальцем.":
             "СЛОИ R4.1: рисуй поверх плана. До 4 материалов на один участок 64м.");
         message(erase?"Стирать выбранный материал, остальные слои не изменятся":
                        "Слои R4.1 · нарисованную текстуру можно править отдельно");
@@ -4494,9 +4504,9 @@ public class EditorActivity extends Activity {
         private boolean gizmoEditStarted=false; // GL thread only.
         private volatile boolean paintStrokeFailed=false;
         private boolean uv56GestureStarted=false; // GL thread only
-        private boolean paintDragCamera=false; // GL thread only: sky pan never paints
+        private int paintFailureReason=0; // GL thread: 1=no ground, 2=stroke rejected
         private float precisionScreenY(float y){
-            return surfaceY(Math.max(0.f,y-dp(70))); // visible cursor ABOVE the finger
+            return surfaceY(y); // paint at the exact finger contact, no hidden offset
         }
         // Render into a scaled GLES buffer, keep touch/viewport full screen.
         private volatile float renderScale=.70f;
@@ -4604,17 +4614,22 @@ public class EditorActivity extends Activity {
                     final String paintKey=activePaintKey;
                     final boolean eraser=precisionPaintErase;
                     final float rad=precisionPaintRadius, strength=precisionPaintOpacity;
+                    paintFailureReason=0;
                     queueEvent(()->{
-                        paintDragCamera=!nativeGroundHitAtScreen(px,cy);
-                        if(paintDragCamera){
-                            // Start in dark background = navigate, never start a brush.
-                            nativePaintStrokeEnd();nativeLayerStrokeEnd();
+                        // Paint owns this one-finger gesture until UP/CANCEL.
+                        // A ground miss must NEVER be routed to camera orbit.
+                        if(!nativeGroundHitAtScreen(px,cy)){
+                            paintStrokeFailed=true;
+                            paintFailureReason=1;
                         }else{
                             nativePaintCursor(px,cy,rad);
                             final boolean ok=materialPaintMode?
                                 nativeLayerStrokeStart(px,cy,rad,strength,paintKey,eraser):
                                 nativePaintStrokeBegin(px,cy,rad,strength,paintKey,eraser);
-                            if(!ok)paintStrokeFailed=true;
+                            if(!ok){
+                                paintStrokeFailed=true;
+                                paintFailureReason=2;
+                            }
                         }
                         requestRender();
                     });
@@ -4669,18 +4684,14 @@ public class EditorActivity extends Activity {
                     float x=e.getX(),y=e.getY();
                     if(precisionPaintMode){
                         final float px=surfaceX(x),py=precisionScreenY(y);
-                        // Camera must use full VIEW pixels as in UV44, not scaled EGL pixels.
-                        final float ox=x-lastX,oy=y-lastY;
-                        final boolean reverse=uv56ReverseOrbit;
                         queueEvent(()->{
-                            if(paintDragCamera){
-                                // A gesture that started outside visible land is
-                                // camera-only for its entire lifetime.
-                                nativeOrbit(reverse?-ox:ox,reverse?-oy:oy,1f);
-                            }else if(!(materialPaintMode?nativeLayerStrokeMove(px,py):
-                                  nativePaintStrokeMove(px,py))){
+                            if(!paintStrokeFailed &&
+                               !(materialPaintMode?nativeLayerStrokeMove(px,py):
+                                 nativePaintStrokeMove(px,py))){
                                 paintStrokeFailed=true;
+                                paintFailureReason=2;
                             }
+                            // Never orbit the scene in any paint gesture.
                             interactiveRender();
                         });
                         lastX=x;lastY=y;
@@ -4848,16 +4859,19 @@ public class EditorActivity extends Activity {
                     final float px=surfaceX(e.getX()),py=precisionScreenY(e.getY());
                     final boolean wasMultiTouch=multiTouch;
                     queueEvent(()->{
-                        if(!paintDragCamera&&!wasMultiTouch&&
+                        if(!paintStrokeFailed&&!wasMultiTouch&&
                            !(materialPaintMode?nativeLayerStrokeMove(px,py):
-                             nativePaintStrokeMove(px,py)))
+                             nativePaintStrokeMove(px,py))){
                             paintStrokeFailed=true;
+                            paintFailureReason=2;
+                        }
                         nativePaintStrokeEnd();nativeLayerStrokeEnd();
-                        final boolean cameraOnly=paintDragCamera;
-                        paintDragCamera=false;
                         requestRender();
-                        if(!cameraOnly&&paintStrokeFailed)
-                            message("Рисование остановлено: лимит участков/материалов, граница или текстура");
+                        if(!wasMultiTouch&&paintStrokeFailed)
+                            message(paintFailureReason==1?
+                                "Кисть не попала на землю. Коснись видимой земли ближе к центру":
+                                "Кисть не рисует: проверь текстуру, границу карты и лимит слоёв");
+                        paintFailureReason=0;
                     });
                     multiTouch=false;
                     return true;
@@ -4960,7 +4974,7 @@ public class EditorActivity extends Activity {
                 queueEvent(()->{nativeGizmoEnd();gizmoEditStarted=false;
                     if(uv56GestureStarted)nativeUv56StrokeEnd();
                     uv56GestureStarted=false;
-                    paintDragCamera=false;
+                    paintFailureReason=0;
                     nativePaintStrokeEnd();nativeLayerStrokeEnd();requestRender();});
                 return true;
             }

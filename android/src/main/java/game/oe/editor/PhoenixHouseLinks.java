@@ -116,9 +116,10 @@ final class PhoenixHouseLinks {
         for(Map.Entry<String,String> link:all.entrySet()){
             if(!present.contains(link.getKey()))continue;
             File backup=new File(directory(c),link.getValue());
+            // Called from the GLES save thread: header check only.
+            // Heavy SHA256 verification is deferred to ZIP export/import
+            // workers, never block a rendered frame hashing 96 MB.
             validateBackup(backup);
-            if(!shaName(backup).equals(link.getValue()))
-                throw new IOException("Повреждён оригинальный проект UV44");
             JSONObject record=new JSONObject();
             record.put("model",link.getKey());
             record.put("source",link.getValue());
@@ -159,6 +160,10 @@ final class PhoenixHouseLinks {
                                             Map<String,String> links)
         throws Exception {
         File targetFolder=directory(c);
+        Map<String,String> combined=readLinks(c);
+        combined.putAll(links);
+        if(combined.size()>MAX_LINKS)
+            throw new IOException("Недостаточно места для ссылок UV44: максимум 8");
         java.util.Set<String> seen=new java.util.HashSet<>(links.values());
         for(String sourceName:seen){
             if(!backupKey(sourceName))throw new IOException("Неверное имя источника");

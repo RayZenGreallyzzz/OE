@@ -3547,8 +3547,9 @@ public class EditorActivity extends Activity {
             new AlertDialog.Builder(this)
                 .setTitle("Phoenix UV44 · "+entries.length()+" моделей")
                 .setMessage("Выбери категорию, затем оригинальную GLB-деталь. "+
-                    "Модели загружаются по одной по мере выбора, "+
-                    "без второго холста и WebView.")
+                    "Все 1 832 модели доступны из приватной библиотеки UV44, "+
+                    "в одном городе можно держать до 32 разных GLB. "+
+                    "Все элементы ставятся на том же 3D-холсте OE.")
                 .setItems(labels.toArray(new String[0]),(dialog,index)->{
                     if(index==0){
                         EditText input=new EditText(this);

@@ -79,8 +79,8 @@ for q in (
   "required=referencedModels(json)",
 ):
   assert q in archive,("portable .oezip UV44 v13 safeguard missing",q)
-assert "applicationId 'game.oe.editor.r57canvas.paintfix'" in gradle
-assert "versionCode 51" in gradle
+assert "applicationId 'game.oe.editor.r57canvas.uv44full'" in gradle
+assert "versionCode 52" in gradle
 assert 'new WebView(' not in editor
 assert "GLSurfaceView.RENDERMODE_WHEN_DIRTY" in editor
 assert not list(root.rglob("Phoenix_Builder_UV44_Install*.apk"))

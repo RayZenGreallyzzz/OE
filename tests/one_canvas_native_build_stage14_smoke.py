@@ -28,7 +28,7 @@ for q in (
     'new File(root,"js/bundled-catalog.js")',
     'id.matches("glb:pwb:[0-9a-f]{24}")',
     'new File(root,"pwb/"+id.substring(8)+".glb")',
-    'importModelFromUri(Uri.fromFile(files.get(index)))',
+    'importModelFromUri(Uri.fromFile(files.get(begin+index)))',
     "PICK_UV44_NATIVE_LIBRARY=709",
     "PhoenixUv44Bundle.install(this,apk)",
     'else if("Здания".equals(category))',
@@ -48,8 +48,8 @@ assert "if(panX!=0f||panY!=0f)nativePan(panX,panY);" in java
 assert "final boolean reverse=uv56ReverseOrbit;" in java
 assert "nativeUv56StrokeStart" in java and "void reverseCamera(boolean reverse)" in panel
 assert 'addPaletteOption("📦 Мой GLB / glTF / VOX",this::pickGlb)' in java
-assert 'applicationId \'game.oe.editor.r57canvas.paintfix\'' in gradle
-assert "versionCode 51" in gradle
+assert 'applicationId \'game.oe.editor.r57canvas.uv44full\'' in gradle
+assert "versionCode 52" in gradle
 assert "ZipInputStream" in bundle and "root(Context c)" in bundle
 assert 'new WebView(' not in java, "OE's main 3D canvas must remain native GLES"
 assert 'json.put("version",13)' in java, "UV44 editable houses must remain compatible"

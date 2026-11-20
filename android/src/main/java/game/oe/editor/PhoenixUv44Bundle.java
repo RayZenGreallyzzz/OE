@@ -21,16 +21,25 @@ final class PhoenixUv44Bundle {
     static final long MAX_UNPACKED = 160L * 1024 * 1024;
     static final long MAX_ENTRY = 24L * 1024 * 1024;
     private static final String DIR = "phoenix_uv44_bundle";
+    static final int ORIGINAL_PWB_MODELS=1832;
     private PhoenixUv44Bundle(){}
 
     static File root(Context c){return new File(c.getFilesDir(),DIR);}
     static boolean ready(Context c){
         File base=root(c);
-        return new File(base,"index.html").isFile()
-            &&new File(base,"js/clean-app.js").isFile()
-            &&new File(base,"js/phoenix-files.js").isFile()
-            &&new File(base,"js/three.min.js").isFile()
-            &&new File(base,".uv44-validated").isFile();
+        File verified=new File(base,".uv44-validated");
+        if(!new File(base,"index.html").isFile()||
+           !new File(base,"js/clean-app.js").isFile()||
+           !new File(base,"js/phoenix-files.js").isFile()||
+           !new File(base,"js/bundled-catalog.js").isFile()||
+           !new File(base,"js/three.min.js").isFile()||
+           !verified.isFile())return false;
+        try{
+            // A partial/older extraction must not masquerade as the FULL
+            // original owner's 1,832-part catalog.
+            return new String(Files.readAllBytes(verified.toPath()),
+                StandardCharsets.UTF_8).contains("models="+ORIGINAL_PWB_MODELS);
+        }catch(IOException ignored){return false;}
     }
     static boolean legalPath(String entry){
         if(entry==null||!entry.startsWith("assets/")||entry.endsWith("/"))return false;
@@ -99,9 +108,11 @@ final class PhoenixUv44Bundle {
                     zip.closeEntry();
                 }
             }
-            if(!index||!clean||!three||!files||models<100||
-               entries<100||total<4_000_000)
-                throw new IOException("Это не полный оригинальный Phoenix Builder UV44");
+            if(!index||!clean||!three||!files||
+               models!=ORIGINAL_PWB_MODELS||entries<ORIGINAL_PWB_MODELS||
+               total<4_000_000)
+                throw new IOException("Нужен полный оригинальный UV44 APK: "+
+                    "получено "+models+" из "+ORIGINAL_PWB_MODELS+" GLB");
             Files.write(new File(staging,".uv44-validated").toPath(),
                 ("uv44\nassets="+entries+"\nmodels="+models+"\n").getBytes(StandardCharsets.UTF_8));
             // Staging directory is in private app storage on the same volume.

@@ -24,7 +24,7 @@ import java.util.zip.ZipOutputStream;
 public final class ProjectArchive {
     private ProjectArchive() {}
     public static final long MAX_UNPACKED_BYTES=384L*1024*1024; // bounded UV44 authoring backups
-    public static final int MAX_MODELS=12;
+    public static final int MAX_MODELS=32;
     public static final int MAX_SCENE_BYTES=8*1024*1024; // bounded R4 composite and R4.1 material masks
     public static final int MAX_TEXTURES=32,MAX_TEXTURE_BYTES=8*1024*1024;
     public static final int MAX_REFERENCE_BYTES=8*1024*1024;

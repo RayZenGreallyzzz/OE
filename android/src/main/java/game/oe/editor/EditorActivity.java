@@ -230,7 +230,8 @@ public class EditorActivity extends Activity {
     // First open must select a working brush, not the passive camera mode.
     private volatile int uv56LandscapeMode=1,uv56BrushCm=400;
     private volatile boolean uv56NeutralCanvas=true; // editor view, not saved game data
-    private volatile boolean uv56ReverseOrbit=true; // owner can toggle direction
+    // UV44/UV56 original OrbitControls is the reference; no mirrored OE default.
+    private volatile boolean uv56ReverseOrbit=false; // explicit opt-in toggle
     private static final int MAX_TILE_LIBRARY=32; // imported files, not automatic GPU uploads
     private volatile String activePaletteCategory="Здания";
     private volatile boolean editorPlotsVisible=true;
@@ -4502,14 +4503,25 @@ public class EditorActivity extends Activity {
                     final float midY=(e.getY(0)+e.getY(1))*.5f;
                     final float dxMid=midX-lastMidX,dyMid=midY-lastMidY;
                     final float zoom=(lastPinch>1 && p>1)?Math.max(.7f,Math.min(1.3f,lastPinch/p)):1f;
-                    if(zoom!=1f||dxMid!=0||dyMid!=0)
-                        queueEvent(() -> {nativePan(dxMid,dyMid);nativeOrbit(0,0,zoom);interactiveRender();});
+                    // Separate pinch zoom from two-finger panning. Minor
+                    // centroid drift while zooming MUST NOT move the world.
+                    final boolean pinching=lastPinch>1.f&&
+                        Math.abs(p-lastPinch)>dp(2);
+                    final float panX=!pinching&&Math.abs(dxMid)>dp(2)?dxMid:0f;
+                    final float panY=!pinching&&Math.abs(dyMid)>dp(2)?dyMid:0f;
+                    if(zoom!=1f||panX!=0f||panY!=0f)
+                        queueEvent(() -> {
+                            if(panX!=0f||panY!=0f)nativePan(panX,panY);
+                            if(zoom!=1f)nativeOrbit(0,0,zoom);
+                            interactiveRender();
+                        });
                     lastPinch=p;lastMidX=midX;lastMidY=midY;
                 } else if(!multiTouch) {
                     float x=e.getX(),y=e.getY();
                     if(precisionPaintMode){
                         final float px=surfaceX(x),py=precisionScreenY(y);
-                        final float ox=surfaceX(x-lastX),oy=surfaceY(y-lastY);
+                        // Camera must use full VIEW pixels as in UV44, not scaled EGL pixels.
+                        final float ox=x-lastX,oy=y-lastY;
                         final boolean reverse=uv56ReverseOrbit;
                         queueEvent(()->{
                             if(paintDragCamera){
@@ -4539,7 +4551,7 @@ public class EditorActivity extends Activity {
                     }
                     final float dx=x-lastX,dy=y-lastY;
                     if(dx!=0||dy!=0){
-                        final float sx=surfaceX(dx),sy=surfaceY(dy);
+                        final float sx=surfaceX(dx),sy=surfaceY(dy); // GLES gizmo only; camera uses dx/dy
                         final boolean reverse=uv56ReverseOrbit;
                         final boolean movedEnough=Math.hypot(x-downX,y-downY)>dp(5);
                         // All input decisions happen on the GLES event queue:
@@ -4551,7 +4563,7 @@ public class EditorActivity extends Activity {
                                     gizmoEditStarted=nativeGizmoBegin(axis);
                                 if(gizmoEditStarted)nativeGizmoDrag(axis,sx,sy);
                             }else if(mapTopViewActive)nativePan(dx,dy);
-                            else nativeOrbit(reverse?-sx:sx,reverse?-sy:sy,1);
+                            else nativeOrbit(reverse?-dx:dx,reverse?-dy:dy,1f);
                             interactiveRender();
                         });
                     }
@@ -4769,7 +4781,14 @@ public class EditorActivity extends Activity {
                             refreshSelected();
                         }else{
                             final float dx=upX-lastX,dy=upY-lastY;
-                            if(dx!=0||dy!=0){if(mapTopViewActive)nativePan(dx,dy);else nativeOrbit(dx,dy,1);}
+                            if(dx!=0||dy!=0){
+                                if(mapTopViewActive)nativePan(dx,dy);
+                                else {
+                                    // ACTION_UP must not briefly flip orbit direction.
+                                    final boolean reverse=uv56ReverseOrbit;
+                                    nativeOrbit(reverse?-dx:dx,reverse?-dy:dy,1f);
+                                }
+                            }
                         }
                         requestRender();touchedGizmoAxis=-1;
                     });

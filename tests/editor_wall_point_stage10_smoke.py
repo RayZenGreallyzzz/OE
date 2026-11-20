@@ -40,7 +40,7 @@ for q in (
     "startBarrierMove(id,k-2);",
     "int id=nativeBarrierPickAtScreen(px,py);",
     "if(generation!=barrierDrawGeneration)return;",
-    "nativeBarrierMoveAtScreen(moveId,moveMode,px,py)",
+    "final int affected=nativeBarrierMoveAtScreen(",
     "(barrierDrawMode||barrierPickMode||barrierMoveId>0)",
     "barrierPickMode=false;barrierMoveId=0",
     "e.getPointerCount()<2)return true;",

@@ -46,7 +46,7 @@ for q in (
     assert q in java, ("Android linked-node menu missing",q)
 assert "if(generation!=barrierDrawGeneration)return;" in java
 assert 'json.put("version",12)' in java
-assert "version>=1&&version<=13" in archive
+assert "version>=1&&version<=14" in archive
 assert "collisionWalls" in cpp
 assert "applicationId 'game.oe.editor.r57canvas.nativebuilder'" in gradle
 assert "versionCode 53" in gradle

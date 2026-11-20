@@ -3426,6 +3426,104 @@ public class EditorActivity extends Activity {
     }
     // The UV44 building editor is part of THIS OE APK, not another app.
     // Android automatically pauses OE's GLES scene while builder owns GPU.
+    // Use the ORIGINAL UV44 PWB asset library on the SAME native OE city
+    // surface, not UV44's separate WebGL editor. Source JS is NOT evaluated;
+    // we only read the owner's private catalog JSON and imported GLB bytes.
+    private void browseNativeUv44Library(){
+        if(importing){message("Дождись завершения загрузки");return;}
+        if(!PhoenixUv44Bundle.ready(this)){
+            new AlertDialog.Builder(this)
+                .setTitle("Библиотека UV44 в нативной стройке OE")
+                .setMessage("Один раз выбери оригинальный APK Phoenix Builder UV44. "+
+                    "OE извлечёт его каталог деталей и GLB только в закрытую "+
+                    "память. На экране останется тот же ландшафт OE.")
+                .setPositiveButton("Выбрать APK",(d,w)->{
+                    Intent pick=new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                    pick.addCategory(Intent.CATEGORY_OPENABLE);
+                    pick.setType("*/*");
+                    try{startActivityForResult(pick,PICK_UV44_NATIVE_LIBRARY);}
+                    catch(Exception e){message("Не открыть APK UV44: "+e.getMessage());}
+                })
+                .setNegativeButton("Отмена",null).show();
+            return;
+        }
+        final EditText name=new EditText(this);
+        name.setSingleLine(true);
+        name.setHint("Поиск: стена, пол, крыша, дверь...");
+        name.setText("стена");
+        name.setSelectAllOnFocus(true);
+        new AlertDialog.Builder(this)
+            .setTitle("📚 Оригинальные детали UV44 · один холст OE")
+            .setMessage("Найди нужную деталь из каталога UV44, "+
+                "она сразу попадёт в нативный режим постановки на ландшафте.")
+            .setView(name)
+            .setPositiveButton("Найти",(d,w)->
+                listNativeUv44Parts(name.getText().toString().trim()))
+            .setNegativeButton("Отмена",null).show();
+    }
+    private void listNativeUv44Parts(String query){
+        try{
+            final File root=PhoenixUv44Bundle.root(this);
+            final File catalog=new File(root,"js/bundled-catalog.js");
+            if(!catalog.isFile()||catalog.length()>2_000_000)
+                throw new Exception("Нет каталога UV44");
+            String raw=new String(Files.readAllBytes(catalog.toPath()),
+                StandardCharsets.UTF_8);
+            int a=raw.indexOf('['),b=raw.lastIndexOf(']');
+            if(a<0||b<=a)throw new Exception("Некорректный каталог UV44");
+            JSONArray entries=new JSONArray(raw.substring(a,b+1));
+            final ArrayList<File> files=new ArrayList<>();
+            final ArrayList<String> labels=new ArrayList<>();
+            final String search=query.toLowerCase(Locale.ROOT);
+            for(int i=0;i<entries.length()&&files.size()<60;i++){
+                JSONObject part=entries.optJSONObject(i);
+                if(part==null)continue;
+                String title=part.optString("name","");
+                String folder=part.optString("folder","");
+                String id=part.optString("id","");
+                if(!(title+" "+folder).toLowerCase(Locale.ROOT).contains(search)||
+                   !id.matches("glb:pwb:[0-9a-f]{24}"))continue;
+                File model=new File(root,"pwb/"+id.substring(8)+".glb");
+                if(!model.isFile()||model.length()<20||
+                   model.length()>GlbReader.MAX_BYTES)continue;
+                files.add(model);
+                labels.add(title.replace('_',' ')+" · "+folder);
+            }
+            if(files.isEmpty()){
+                message("По запросу «"+query+"» нет деталей. Попробуй "+
+                    "«стена», «пол», «крыш», «двер» или другое слово.");
+                return;
+            }
+            new AlertDialog.Builder(this)
+                .setTitle("UV44 → OE · деталей найдено: "+files.size()+
+                    (files.size()==60?" (первые 60)":""))
+                .setItems(labels.toArray(new String[0]),(dialog,index)->{
+                    // Uses the EXISTING native C++ GLB import and placement.
+                    // Camera/terrain and .oezip remain the SAME scene.
+                    if(importing)return;
+                    message("UV44 → общий холст: "+labels.get(index));
+                    importModelFromUri(Uri.fromFile(files.get(index)));
+                })
+                .setNeutralButton("Другой поиск",(dialog,index)->
+                    browseNativeUv44Library())
+                .setNegativeButton("Отмена",null).show();
+        }catch(Exception e){message("Не открыть библиотеку UV44: "+e.getMessage());}
+    }
+    private void installNativeUv44Bundle(Uri apk){
+        message("Загружаю библиотеку деталей UV44 в OE…");
+        new Thread(()->{
+            try{
+                PhoenixUv44Bundle.install(this,apk);
+                ui(()->{
+                    message("✓ Библиотека UV44 готова: стройка на общем холсте");
+                    browseNativeUv44Library();
+                });
+            }catch(Exception ex){
+                message("Неверный UV44 APK: "+ex.getMessage());
+            }
+        },"oe-uv44-native-pwb-library").start();
+    }
+
     private void openPhoenixBuilder(){
         if(importing){message("Сначала заверши импорт сцены");return;}
         cancelPlace();
@@ -3497,6 +3595,11 @@ public class EditorActivity extends Activity {
     }
     @Override protected void onActivityResult(int requestCode,int resultCode,Intent intent) {
         super.onActivityResult(requestCode,resultCode,intent);
+        if(requestCode==PICK_UV44_NATIVE_LIBRARY){
+            if(resultCode==RESULT_OK&&intent!=null&&intent.getData()!=null)
+                installNativeUv44Bundle(intent.getData());
+            return;
+        }
         if(requestCode==PICK_MAP){
             if(resultCode==RESULT_OK&&intent!=null&&intent.getData()!=null)
                 importMapReference(intent.getData());

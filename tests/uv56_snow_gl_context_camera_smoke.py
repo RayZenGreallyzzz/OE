@@ -40,7 +40,7 @@ for q in (
         assert q in panel
     else:
         assert q in java, ("touch gesture must not paint sky",q)
-assert "uv56ReverseOrbit=true;" in java
+assert "uv56ReverseOrbit=false;" in java
 assert '"Рельеф".equals(activePaletteCategory)&&drawerOpen' in java
 assert "MAX_TEXTURES=32" in arch
 assert "version>=1&&version<=13" in arch

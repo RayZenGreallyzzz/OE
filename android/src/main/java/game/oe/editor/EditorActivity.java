@@ -2593,6 +2593,14 @@ public class EditorActivity extends Activity {
             json.put("uv44Houses",editableHomes);
             json.put("version",13);
         }
+        // v14 only for native editable UV44 architecture (29..56).
+        // Original v1..v13 projects remain byte-format compatible.
+        for(int i=0;i<objects.length();i++){
+            if(objects.getJSONObject(i).getInt("type")>=29){
+                json.put("version",14);
+                break;
+            }
+        }
         String result=json.toString();
         if(result.getBytes(StandardCharsets.UTF_8).length>ProjectArchive.MAX_SCENE_BYTES)
             throw new Exception("Рисунок R4 превысил безопасный размер проекта");
@@ -4006,8 +4014,8 @@ public class EditorActivity extends Activity {
             }
             JSONObject document=new JSONObject(new String(jsonBytes.toByteArray(),StandardCharsets.UTF_8));
             final int sceneVersion=document.optInt("version",-1);
-            if(sceneVersion<1||sceneVersion>13)
-                throw new Exception("Неверная версия сцены (нужна 1–13)");
+            if(sceneVersion<1||sceneVersion>14)
+                throw new Exception("Неверная версия сцены (нужна 1–14)");
             final java.util.Map<String,String> incomingUv44Houses=
                 PhoenixHouseLinks.parseSceneLinks(document);
             final boolean demoRoads=document.optBoolean("demoRoads",false);
@@ -4352,7 +4360,8 @@ public class EditorActivity extends Activity {
                 double x=object.getDouble("x"),z=object.getDouble("z");
                 double yaw=object.getDouble("yaw"),size=object.getDouble("size"),
                         y=object.optDouble("y",0.0);
-                if(e.type<0||e.type>28||(e.type>=17&&sceneVersion<6)||
+                if(e.type<0||e.type>56||(e.type>=17&&e.type<=28&&sceneVersion<6)||
+                   (e.type>=29&&sceneVersion<14)||
                    !Double.isFinite(x)||!Double.isFinite(z)||
                     !Double.isFinite(yaw)||!Double.isFinite(size)||!Double.isFinite(y)||
                     Math.abs(z)>worldSize/2.0||Math.abs(x)>worldSize/2.0||

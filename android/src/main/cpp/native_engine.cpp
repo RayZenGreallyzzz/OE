@@ -3629,6 +3629,19 @@ JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_nativeBarrierSelect(
   gSelectedBarrierId=id;return;
  }
 }
+// Connected degree counts physical segments, never editor ribbon geometry.
+// Used only for on-demand menus, not polled every frame or fixed tick.
+JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeBarrierNodeDegree(
+ JNIEnv*,jclass,jint id,jint endpoint){
+ if(id<=0||(endpoint!=0&&endpoint!=1))return 0;
+ for(const auto&w:gWalkBarriers)if(w.id==static_cast<std::uint64_t>(id)){
+  const double x=endpoint==0?w.ax:w.bx;
+  const double z=endpoint==0?w.az:w.bz;
+  return static_cast<jint>(
+      oe::runtime::walkNodeDegree(gWalkBarriers,x,z));
+ }
+ return 0;
+}
 // One tap can move first endpoint (0), last endpoint (1), or translate
 // the WHOLE wall (2) so its midpoint follows the tap. Validation is atomic;
 // malformed geometry never enters runtime or Undo.

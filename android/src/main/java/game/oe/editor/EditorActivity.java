@@ -2397,7 +2397,8 @@ public class EditorActivity extends Activity {
             json.put("mapReference",guide.toJson());
         }
         int[] locations=nativePaintTileCoords();
-        if(locations==null||locations.length%2!=0||locations.length>64)
+        if(locations==null||locations.length%2!=0||
+           locations.length/2>ProjectArchive.MAX_PAINT_TILES_BY_MEMORY)
             throw new Exception("Слишком много участков кисти");
         if(locations.length!=0){
             JSONArray saved=new JSONArray();
@@ -2414,23 +2415,21 @@ public class EditorActivity extends Activity {
         int[] layerLocations=nativeLayerCoords();
         String[] layerMaterials=nativeLayerKeys();
         if(layerLocations==null||layerMaterials==null||
-           layerLocations.length%2!=0||layerLocations.length>256||
+           layerLocations.length%2!=0||
+           layerLocations.length/2>ProjectArchive.MAX_MATERIAL_MASKS_BY_MEMORY||
            layerLocations.length/2!=layerMaterials.length)
             throw new Exception("Превышены границы R4.1");
         if(layerMaterials.length!=0){
             JSONArray serialized=new JSONArray();
-            HashSet<String> tileLocations=new HashSet<>();
             for(int i=0;i<layerMaterials.length;i++){
                 if(!validTexture(layerMaterials[i]))
                     throw new Exception("Неизвестный материал слоя");
-                tileLocations.add(layerLocations[2*i]+":"+layerLocations[2*i+1]);
                 JSONArray layer=new JSONArray();
                 layer.put(layerLocations[2*i]);layer.put(layerLocations[2*i+1]);
                 layer.put(layerMaterials[i]);
                 layer.put(compressedMaterialMask(nativeLayerMask(i)));
                 serialized.put(layer);
             }
-            if(tileLocations.size()>32)throw new Exception("Превышено число участков");
             json.put("paintLayers",serialized);
             json.put("version",5);
         }
@@ -4061,7 +4060,8 @@ public class EditorActivity extends Activity {
                (document.has("paintTiles")&&paintTilesJson==null))
                 throw new Exception("Неверная версия данных кисти R4");
             final int tileCount=paintTilesJson==null?0:paintTilesJson.length();
-            if(tileCount>32)throw new Exception("Слишком много текстурных участков");
+            if(tileCount>ProjectArchive.MAX_PAINT_TILES_BY_MEMORY)
+                throw new Exception("Превышен бюджет памяти кисти земли");
             int[] preciseTileCoords=new int[tileCount*2];
             byte[][] preciseTileBytes=new byte[tileCount][];
             HashSet<String> tilePairs=new HashSet<>();
@@ -4082,14 +4082,13 @@ public class EditorActivity extends Activity {
                (document.has("paintLayers")&&savedLayers==null))
                 throw new Exception("Неверная версия независимых слоёв");
             final int materialCount=savedLayers==null?0:savedLayers.length();
-            if(materialCount>128)throw new Exception("Слишком много слоёв материала");
+            if(materialCount>ProjectArchive.MAX_MATERIAL_MASKS_BY_MEMORY)
+                throw new Exception("Превышен бюджет памяти слоёв материала");
             int[] materialCoords=new int[materialCount*2];
             String[] materialKeys=new String[materialCount];
             byte[][] materialWeights=new byte[materialCount][];
             HashSet<String> uniqueMaterialTile=new HashSet<>();
-            HashSet<String> touchedTileKeys=new HashSet<>();
             HashSet<String> requiredMaterials=new HashSet<>();
-            java.util.Map<String,Integer> materialCounts=new java.util.HashMap<>();
             for(int i=0;i<materialCount;i++){
                 JSONArray layer=savedLayers.getJSONArray(i);
                 if(layer.length()!=4)throw new Exception("Неверная запись R4.1");
@@ -4100,15 +4099,11 @@ public class EditorActivity extends Activity {
                    tx*64>=worldSize/2||tx*64+64<=-worldSize/2||
                    tz*64>=worldSize/2||tz*64+64<=-worldSize/2)
                     throw new Exception("Повтор или неверный материал R4.1");
-                int count=materialCounts.containsKey(pair)?materialCounts.get(pair)+1:1;
-                if(count>4)throw new Exception("Не больше четырёх материалов на участок");
-                materialCounts.put(pair,count);touchedTileKeys.add(pair);
                 materialCoords[2*i]=tx;materialCoords[2*i+1]=tz;
                 materialKeys[i]=key;
                 materialWeights[i]=restoredMaterialMask(layer.getString(3));
                 requiredMaterials.add(key);
             }
-            if(touchedTileKeys.size()>32)throw new Exception("Превышен лимит участков R4.1");
             JSONArray arr=document.getJSONArray("items");
             if(arr.length()>300)throw new Exception("Слишком много объектов");
             SavedEntity[] items=new SavedEntity[arr.length()];

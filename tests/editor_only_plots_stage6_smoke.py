@@ -49,7 +49,7 @@ for marker in [
     "((version==10||version==11)&&plots!=null&&plots.length()>0)",
 ]:
     assert marker in archive, ("missing legacy compatible v10 archive gate",marker)
-assert "applicationId 'game.oe.editor.r57canvas.paintfix'" in gradle
+assert "applicationId 'game.oe.editor.r58canvas.paintcapacity'" in gradle
 assert "MAX_TEXTURES=32" in archive
 # Crucial: no plot geometry is added to gameplay walker/runtime.
 walk=cpp.split('Java_game_oe_editor_EditorActivity_nativeRuntimeCoreReport(',1)[1]

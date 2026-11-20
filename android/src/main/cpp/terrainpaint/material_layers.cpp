@@ -94,11 +94,14 @@ bool MaterialCanvas::stroke(double x0,double z0,double x1,double z1,
   if(erase)continue; // erase only existing material masks
   if(!tile){missingTiles.emplace_back(x,z);continue;}
   if(!findMask(*tile,material)){
-   if(tile->materials.size()>=kMaxMaterialsPerTile)return false;
    missingMasks.emplace_back(x,z);
   }
  }
- if(tiles_.size()+missingTiles.size()>kMaxMaterialTiles)return false;
+ std::size_t existingMasks=0;
+ for(const auto&tile:tiles_)existingMasks+=tile.materials.size();
+ const std::size_t additions=missingTiles.size()+missingMasks.size();
+ if(additions>kMaxMaterialMasksByMemory||
+    existingMasks>kMaxMaterialMasksByMemory-additions)return false;
  for(const auto&position:missingTiles){
   MaterialTile tile;tile.x=position.first;tile.z=position.second;
   tile.materials.push_back({material,std::vector<std::uint8_t>(kMaterialMaskBytes,0),1});
@@ -114,7 +117,7 @@ bool MaterialCanvas::stroke(double x0,double z0,double x1,double z1,
   const double t=double(i)/count;
   stamp(tiles_,x0+(x1-x0)*t,z0+(z1-z0)*t,radius,opacity,material,erase,worldSize);
  }
- // Reclaim erased material slots/empty tiles to keep the 2 MiB cap meaningful.
+ // Reclaim empty masks and tiles so erased materials free the memory budget.
  if(erase){
   for(auto&tile:tiles_){
    auto& layers=tile.materials;
@@ -130,11 +133,14 @@ bool MaterialCanvas::stroke(double x0,double z0,double x1,double z1,
 }
 
 bool MaterialCanvas::replaceAll(std::vector<MaterialTile> incoming,int worldSize){
- if(!validWorld(worldSize)||incoming.size()>kMaxMaterialTiles)return false;
+ if(!validWorld(worldSize))return false;
+ std::size_t maskCount=0;
  std::set<std::pair<int,int>> positions;
  for(auto&tile:incoming){
   if(!tileInside(tile.x,tile.z,worldSize)||!positions.insert({tile.x,tile.z}).second||
-     tile.materials.empty()||tile.materials.size()>kMaxMaterialsPerTile)return false;
+     tile.materials.empty())return false;
+ if(tile.materials.size()>kMaxMaterialMasksByMemory-maskCount)return false;
+ maskCount+=tile.materials.size();
   std::set<std::string> keys;
   for(auto&mask:tile.materials){
    if(!validMaterialKey(mask.material)||!keys.insert(mask.material).second||

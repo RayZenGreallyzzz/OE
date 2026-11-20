@@ -23,8 +23,8 @@ int main(){
  assert(canvas.stroke(11,10,13,10,1.0,1.0,grass,false,1024));
  assert(canvas.stroke(11,10,13,10,1.0,1.0,sand,false,1024));
  assert(canvas.tiles()[0].materials.size()==4);
- assert(!canvas.stroke(11,10,13,10,1.0,1.0,brick,false,1024));
- assert(canvas.tiles()[0].materials.size()==4); // full-tile refused atomically
+ assert(canvas.stroke(11,10,13,10,1.0,1.0,brick,false,1024));
+ assert(canvas.tiles()[0].materials.size()==5); // no arbitrary four-layer cap
  auto original=canvas.tiles();
  assert(canvas.replaceAll(original,1024));
  assert(canvas.tiles()[0].materials[1].weights==preserved);
@@ -37,13 +37,24 @@ int main(){
  assert(!canvas.stroke(0,0,200,0,1,1,stone,false,1024));
  assert(!canvas.stroke(std::numeric_limits<double>::quiet_NaN(),0,0,0,1,1,stone,false,1024));
  MaterialCanvas budget;
- for(int i=0;i<32;i++){
+ for(int i=0;i<40;i++){
   int x=-480+(i%8)*64,z=-480+(i/8)*64;
   assert(budget.stroke(x+10,z+10,x+11,z+10,1,1,stone,false,1024));
  }
- assert(budget.tiles().size()==32);
- assert(!budget.stroke(400,400,401,400,1,1,stone,false,1024));
- assert(budget.tiles().size()==32); // cap 32 tiles
+ assert(budget.tiles().size()==40);
+ // 200 independent masks across 40 areas: crosses former 32/128 ceilings.
+ for(int i=0;i<40;i++){
+  int x=-480+(i%8)*64,z=-480+(i/8)*64;
+  for(const auto&name:{dirt,grass,sand,brick})
+   assert(budget.stroke(x+10,z+10,x+11,z+10,1,1,name,false,1024));
+ }
+ assert(budget.tiles().size()==40);
+ std::size_t masks=0;
+ for(const auto&tile:budget.tiles())masks+=tile.materials.size();
+ assert(masks==200);
+ MaterialCanvas fromDisk;
+ assert(fromDisk.replaceAll(budget.tiles(),1024));
+ assert(fromDisk.tiles().size()==40);
  assert(!budget.replaceAll({MaterialTile{0,0,{}}},1024));
- std::cout<<"OE_MATERIAL_LAYERS_OK: 4 independent masks/tile, eraser isolation, roundtrip, bounded memory\n";
+ std::cout<<"OE_MATERIAL_LAYERS_OK: 200 masks, 5 materials/tile, eraser isolation, restore\n";
 }

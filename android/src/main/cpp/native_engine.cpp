@@ -119,7 +119,7 @@ static Vec3 gTarget{0,1.2f,1.3f};
 static bool gMapTopDown=false;
 static bool gSceneInitialized=false, gDemoRoads=false;
 constexpr float WORLD_TILE=64.0f;
-static int gWorldSize=1024; // Set in app to 1024/2048/4096/8192/16384 meters.
+static int gWorldSize=16384; // One shared 16 km world; GLES streams nearby 64 m tiles.
 struct TerrainBrush {float x,z,radius,strength;};
 struct TerrainPaint {float x,z,radius;std::string texture;};
 static std::vector<TerrainPaint> gTerrainPaint;
@@ -1268,9 +1268,12 @@ void drawEditorPlots(const Mat4&vp){
  glUniform1f(gShader.locMaterialLayer,0.f);
  glUniform1f(gShader.locTextured,0.f);
  glUniform1f(gShader.locGuide,0.f);
- glUniform1f(gShader.locOpacity,1.f);
+ // The frame is a translucent editing guide, never a new land surface.
+ glUniform1f(gShader.locOpacity,.38f);
  glUniform1f(gShader.locPaintOverride,0.f);
  glUniform1f(gShader.locOverlay,0.f);
+ glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+ glDepthMask(GL_FALSE);
  const float visible=std::max(quality().viewRangeMetres+128.f,gDistance*1.35f);
  std::vector<float> v;
  for(const auto&plot:gEditorPlots){
@@ -1289,7 +1292,8 @@ void drawEditorPlots(const Mat4&vp){
   auto edge=[&](float ax,float az,float bx,float bz){
    const float len=std::hypot(bx-ax,bz-az);
    const int segments=std::max(1,static_cast<int>(std::ceil(len/8.f)));
-   const float nx=-(bz-az)/len*.7f,nz=(bx-ax)/len*.7f;
+   const float halfRibbon=std::clamp(plot.size*.0035f,.12f,.7f);
+   const float nx=-(bz-az)/len*halfRibbon,nz=(bx-ax)/len*halfRibbon;
    for(int j=0;j<segments;j++){
     const float t0=float(j)/segments,t1=float(j+1)/segments;
     float x0=ax+(bx-ax)*t0,z0=az+(bz-az)*t0,
@@ -1319,6 +1323,8 @@ void drawEditorPlots(const Mat4&vp){
   ++gDrawCalls;gTriangles+=static_cast<int>(v.size()/33);
  }
  glBindVertexArray(0);
+ glDepthMask(GL_TRUE);glDisable(GL_BLEND);
+ glUniform1f(gShader.locOpacity,1.f);
 }
 // Visual guides for authored physical barriers; no renderer geometry is
 // ever used in the collision solver. Hidden in the actual game export.
@@ -3154,8 +3160,13 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeSetWorldSize
  oe::terrainpaint::MaterialCanvas nextMasks;
  if(!nextMasks.replaceAll(gMaterialCanvas.tiles(),newSize))return JNI_FALSE;
  if(gWorldSize==newSize)return JNI_TRUE;
+ // A smaller world must never clip existing UV56 sculpted heights.
+ oe::uv56::Terrain scaledUv56=gUv56Terrain;
+ if(!scaledUv56.fitToWorld(newSize))return JNI_FALSE;
  recordEdit();
  gWorldSize=newSize;
+ gUv56Terrain=std::move(scaledUv56);
+ ++gTerrainRevision;
  gTarget.x=clampf(gTarget.x,-half+4.f,half-4.f);
  gTarget.z=clampf(gTarget.z,-half+4.f,half-4.f);
  return JNI_TRUE;
@@ -3347,23 +3358,16 @@ JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeUv56Area(
  JNIEnv*,jclass){return gUv56Terrain.areaSqM();}
 JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeUv56ConfigureArea(
  JNIEnv*,jclass,jint area){
- if(gUv56StrokeActive||area<1000||area>2000000||
-    std::sqrt(static_cast<double>(area))>static_cast<double>(gWorldSize))
-     return JNI_FALSE;
- if(gUv56Terrain.active()&&gUv56Terrain.areaSqM()==area)return JNI_TRUE;
- oe::uv56::Terrain next;
- if(!next.create(area))return JNI_FALSE;
+ // Compatibility method: never replace or clear the existing heightfield.
+ // Plot selection belongs to nativePlotAdd and is an overlay-only operation.
+ if(gUv56StrokeActive||area<1000||area>gWorldSize*gWorldSize)return JNI_FALSE;
+ if(gUv56Terrain.active()&&gUv56Terrain.areaSqM()>=gWorldSize*gWorldSize)
+  return JNI_TRUE;
+ oe::uv56::Terrain next=gUv56Terrain;
+ if(!next.expandToWorld(gWorldSize))return JNI_FALSE;
  recordEdit();
  gUv56Terrain=std::move(next);
  ++gTerrainRevision;++gRoadRevision;
- // UV56 areas are centred at world origin. Re-centre the camera ONLY when
- // its current focus is outside the new visible editable territory.
- const float half=std::sqrt(static_cast<float>(area))*.5f;
- if(gTarget.x< -half+2.f||gTarget.x>half-2.f||
-    gTarget.z< -half+2.f||gTarget.z>half-2.f){
-  gTarget.x=0.f;gTarget.z=0.f;
- }
- gTarget.y=terrainHeightAt(gTarget.x,gTarget.z)+1.2f;
  return JNI_TRUE;
 }
 JNIEXPORT jint JNICALL Java_game_oe_editor_EditorActivity_nativeUv56LastStrokeError(
@@ -3380,12 +3384,8 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeUv56StrokeSt
     gUv56LastStrokeError=2;return JNI_FALSE;
  }
  oe::uv56::Terrain proposal=gUv56Terrain;
- if(!proposal.active()){
-  // Stage 1-compatible default. Explicit selection uses ConfigureArea.
-  const int area=std::min(2000000,static_cast<int>(
-       static_cast<long long>(gWorldSize)*gWorldSize));
-  if(!proposal.create(area)){gUv56LastStrokeError=1;return JNI_FALSE;}
- }
+ // Every UV56 brush acts on the ONE shared world, not inside a plot outline.
+ if(!proposal.expandToWorld(gWorldSize)){gUv56LastStrokeError=1;return JNI_FALSE;}
  if(!proposal.valid(x,z)){
   gUv56LastStrokeError=3;return JNI_FALSE;
  }
@@ -3435,11 +3435,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeUv56SculptAt
  float x=0,z=0;
  if(!groundPoint(px,py,x,z))return JNI_FALSE;
  oe::uv56::Terrain proposal=gUv56Terrain;
- if(!proposal.active()){
-  const int area=std::min(2000000,static_cast<int>(
-      static_cast<long long>(gWorldSize)*gWorldSize));
-  if(!proposal.create(area))return JNI_FALSE;
- }
+ if(!proposal.expandToWorld(gWorldSize))return JNI_FALSE;
  if(!proposal.valid(x,z))return JNI_FALSE;
  proposal.beginStroke(x,z);
  if(!proposal.brushAt(x,z,static_cast<oe::uv56::Tool>(tool),radius,power))
@@ -3519,7 +3515,8 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceUv44H
 bool validEditorPlot(const EditorPlot&p,int world){
  if(p.id<=0||p.id>1000000||p.label.empty()||p.label.size()>100||
     !std::isfinite(p.x)||!std::isfinite(p.z)||
-    (p.size!=500.f&&p.size!=1000.f))return false;
+    p.size<16.f||p.size>static_cast<float>(world)||
+    std::floor(p.size)!=p.size)return false;
  for(unsigned char c:p.label)if(c<0x20||c=='|'||c==0x7f)return false;
  const float h=static_cast<float>(world)*.5f;
  return std::abs(p.x)+p.size*.5f<=h&&

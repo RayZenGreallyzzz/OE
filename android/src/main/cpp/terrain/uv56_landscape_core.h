@@ -22,10 +22,33 @@ class Terrain {
 public:
  static constexpr std::size_t kNodeLimit=32768; // bounded 4 GiB tablet budget
  static constexpr std::size_t kUndoLimit=16;
+ static constexpr int kMaxWorldArea=16384*16384; // one 16 km shared world, sparse height nodes
  bool create(int areaSqM){
-  if(areaSqM<1000||areaSqM>2000000)return false;
+  if(areaSqM<1000||areaSqM>kMaxWorldArea)return false;
   area_=areaSqM;points_.clear();undo_.clear();redo_.clear();stroke_.clear();
   strokeActive_=false;strokeLevel_=0;return true;
+ }
+ // Expand an older UV56 project into the existing OE world without erasing nodes.
+ // The chosen editor plot is an overlay; it never defines the terrain domain.
+ bool expandToWorld(int worldMetres){
+  if(worldMetres<1024||worldMetres>16384||
+     (worldMetres&(worldMetres-1))!=0)return false;
+  const int fullArea=worldMetres*worldMetres;
+  if(!active())return create(fullArea);
+  if(area_<fullArea)area_=fullArea;
+  return true;
+ }
+ // Shrinking the world is allowed only if no sculpted data would be lost.
+ bool fitToWorld(int worldMetres){
+  if(worldMetres<1024||worldMetres>16384||
+     (worldMetres&(worldMetres-1))!=0)return false;
+  const int half=worldMetres/2;
+  for(const auto&entry:points_)
+   if(std::abs(entry.first.first)>half||std::abs(entry.first.second)>half)return false;
+  if(!active())return true;
+  area_=worldMetres*worldMetres;
+  undo_.clear();redo_.clear();stroke_.clear();strokeActive_=false;
+  return true;
  }
  int areaSqM()const{return area_;}
  bool active()const{return area_!=0;}
@@ -59,7 +82,7 @@ public:
  }
  // Original UV56 nodes are [x,z,heightCm,materialId]. Validate before swap.
  bool restore(int area,const std::vector<std::array<int,4>>&raw,int customTileCount=0){
-  if(area<1000||area>2000000||customTileCount<0||customTileCount>64||
+  if(area<1000||area>kMaxWorldArea||customTileCount<0||customTileCount>64||
      raw.size()>kNodeLimit)return false;
   std::map<Point,Node> proposed;
   const double half=std::sqrt(static_cast<double>(area))*.5;

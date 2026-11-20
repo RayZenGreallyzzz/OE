@@ -220,7 +220,7 @@ public final class ProjectArchive {
         final double area=field.getDouble("areaSqM");
         final double world=doc.getDouble("worldSize");
         check(Double.isFinite(area)&&area==Math.rint(area)&&
-              area>=1000&&area<=2000000&&Math.sqrt(area)<=world,
+              area>=1000&&area<=16384.0*16384.0&&Math.sqrt(area)<=world,
               "Рельеф UV56 не помещается в сцене");
         JSONArray nodes=field.getJSONArray("nodes");
         check(nodes.length()>0&&nodes.length()<=32768,
@@ -268,7 +268,7 @@ public final class ProjectArchive {
                   label.getBytes(StandardCharsets.UTF_8).length<=100&&
                   label.indexOf('|')<0&&label.chars().noneMatch(c->Character.isISOControl((char)c)),
                   "Некорректное название участка");
-            check((size==500||size==1000)&&Double.isFinite(x)&&
+            check(size>=16&&size<=world*2&&Double.isFinite(x)&&
                   Double.isFinite(z)&&Math.abs(x)+size*.5<=world&&
                   Math.abs(z)+size*.5<=world,
                   "Участок выходит за пределы мира");

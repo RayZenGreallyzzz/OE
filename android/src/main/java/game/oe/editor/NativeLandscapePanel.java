@@ -34,7 +34,7 @@ final class NativeLandscapePanel extends LinearLayout {
         void tool(int choice); // 0 look; 1..5 UV56 sculpt; 6 paint; 7 erase
         void brushCentimeters(int centimeters);
         void brushPower(float power);
-        void createArea(int areaSqM);
+        void createPlot(int approximateAreaSqM); // overlay-only, never replaces land
         void uploadTexture();
         void chooseTexture(String key);
         void neutralPreview(boolean neutral);
@@ -110,13 +110,13 @@ final class NativeLandscapePanel extends LinearLayout {
         addView(button("🖼 Загрузить сразу 10–32 PNG/JPG",host::uploadTexture),
             new LayoutParams(-1,px(46)));
 
-        addView(label("Размер территории",12,false));
+        addView(label("Размер прозрачной границы участка",12,false));
         Spinner areas=spinner(AREA_NAMES);
         areasSpinner=areas;
         areas.setSelection(3);
         addView(areas,new LayoutParams(-1,px(46)));
-        Button applyArea=button("🌍 Создать / заменить землю",
-            ()->host.createArea(AREAS[areas.getSelectedItemPosition()]));
+        Button applyArea=button("📐 Добавить рамку на общей карте",
+            ()->host.createPlot(AREAS[areas.getSelectedItemPosition()]));
         addView(applyArea,new LayoutParams(-1,px(48)));
         status=label("Общая земля OE · высоты UV56 · шаг 1 м",11,false);
         status.setTextColor(Color.rgb(117,217,192));
@@ -240,13 +240,9 @@ final class NativeLandscapePanel extends LinearLayout {
     }
 
     void setAreaStatus(int nativeArea){
-        if(nativeArea>0){
-            for(int i=0;i<AREAS.length;i++)
-                if(AREAS[i]==nativeArea)areasSpinner.setSelection(i);
-            status.setText("✓ Территория "+nativeArea+" м² · шаг 1 м · "+
-                "редактирование в городе OE");
-        }else status.setText("Новая территория ещё не создана · "+
-            "нажми «Создать землю»");
+        // Area selector is a visual frame only. World heights always persist.
+        status.setText("✓ Одна большая карта · UV56 меняет землю везде · "+
+            "границы участков прозрачные и сохраняются в проекте");
     }
     private void setCentimeters(int input,boolean fire){
         int min=selectedTool<=5?275:100;

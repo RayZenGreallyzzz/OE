@@ -14,8 +14,8 @@ cpp=(root/"android/src/main/cpp/native_engine.cpp").read_text()
 archive=(root/"android/src/main/java/game/oe/editor/ProjectArchive.java").read_text()
 gradle=(root/"android/build.gradle").read_text()
 for needle in (
-    "🌳 Ландшафт · UV56", "Размер территории",
-    "🌍 Создать / заменить землю", "Инструмент кисти",
+    "🌳 Ландшафт · UV56", "Размер прозрачной границы участка",
+    "📐 Добавить рамку на общей карте", "Инструмент кисти",
     "⛰ Поднять землю", "⬇ Опустить землю", "🌄 Горный хребет",
     "〰 Сгладить землю", "▰ Выровнять", "🎨 Покрасить землю",
     "Диаметр кисти", "Радиус кисти",
@@ -23,7 +23,7 @@ for needle in (
     "setOnSeekBarChangeListener", "Сила кисти",
     "Покрытие / загруженный тайл", "Загрузить сразу 10–32 PNG/JPG",
     "smallPreview", "inJustDecodeBounds", "inSampleSize",
-    "host.chooseTexture(key)", "host.createArea(",
+    "host.chooseTexture(key)", "host.createPlot(",
 ):
     assert needle in panel, ("UV56 owner-video control missing",needle)
 for needle in (
@@ -32,7 +32,7 @@ for needle in (
     'nativeUv56StrokeEnd()', 'private boolean uv56GestureStarted=false',
     'if(uv56SculptTool>0)', 'openUv56Mode(6)',
     'usePaintTexture(key,true)', 'activePaletteCategory',
-    'nativeUv56ConfigureArea(area)', 'nativeUv56Area()',
+    'newEditorPlot((int)Math.round(Math.sqrt(area)))', 'nativeUv56Area()',
 ):
     assert needle in java, ("Android native renderer wiring missing",needle)
 for needle in (

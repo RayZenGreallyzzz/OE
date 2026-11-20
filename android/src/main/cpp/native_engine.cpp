@@ -4208,7 +4208,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  // Construct paint layers before committing objects or terrain.
  const jsize tilePairs=env->GetArrayLength(tileCoords);
  if(tilePairs<0||tilePairs%2!=0||
-    tilePairs>static_cast<jsize>(oe::terrainpaint::kMaxTiles*2)||
+    tilePairs>static_cast<jsize>(oe::terrainpaint::kMaxPaintTilesByMemory*2)||
     env->GetArrayLength(tileData)!=tilePairs/2)return JNI_FALSE;
  std::vector<jint> tileLocations(static_cast<size_t>(tilePairs));
  if(tilePairs)env->GetIntArrayRegion(tileCoords,0,tilePairs,tileLocations.data());
@@ -4234,8 +4234,7 @@ JNIEXPORT jboolean JNICALL Java_game_oe_editor_EditorActivity_nativeReplaceScene
  // Validate independent material masks, and verify every source texture is loaded.
  const jsize layerPairs=env->GetArrayLength(layerCoords);
  if(layerPairs<0||layerPairs%2!=0||
-    layerPairs>static_cast<jsize>(oe::terrainpaint::kMaxMaterialTiles*
-                                 oe::terrainpaint::kMaxMaterialsPerTile*2)||
+    layerPairs>static_cast<jsize>(oe::terrainpaint::kMaxMaterialMasksByMemory*2)||
     env->GetArrayLength(layerKeys)!=layerPairs/2||
     env->GetArrayLength(layerMasks)!=layerPairs/2)return JNI_FALSE;
  std::vector<jint> materialLocations(static_cast<size_t>(layerPairs));

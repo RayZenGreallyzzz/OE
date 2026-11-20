@@ -213,7 +213,7 @@ public class EditorActivity extends Activity {
     private static native void nativeMapClear();
     private static native void nativeMapTopView();
     private static native void nativeMapPerspective();
-    private static final int PICK_GLB = 702, PICK_PROJECT=703, SAVE_PROJECT=704, PICK_PAINT=705, PICK_MAP=706, PICK_PLOT_PNG=707, OPEN_UV44_BUILDER=708;
+    private static final int PICK_GLB = 702, PICK_PROJECT=703, SAVE_PROJECT=704, PICK_PAINT=705, PICK_MAP=706, PICK_PLOT_PNG=707, OPEN_UV44_BUILDER=708, PICK_UV44_NATIVE_LIBRARY=709;
     private static final int MAX_ASSETS = 12;
 
     private EditorSurface surface;
@@ -417,7 +417,7 @@ public class EditorActivity extends Activity {
         top.setPadding(dp(5),dp(2),dp(5),dp(2));
         top.setBackgroundColor(Color.argb(220,14,21,32));
         TextView title=new TextView(this);
-        title.setText("OE R5.7 · 🌳 Ландшафт UV56");
+        title.setText("OE R5.7 · один мир · Ландшафт + Стройка");
         title.setTextColor(gold);
         title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
         title.setTextSize(12);
@@ -431,6 +431,13 @@ public class EditorActivity extends Activity {
             toggleDrawer(true);
         });
         top.addView(land,new LinearLayout.LayoutParams(dp(112),dp(43)));
+        // Same GLES world, same camera and .oezip: choose a different TOOL,
+        // never a second renderer or another construction scene.
+        Button build=button("🏗 Стройка",()->{
+            showPalette("Стройка");
+            toggleDrawer(true);
+        });
+        top.addView(build,new LinearLayout.LayoutParams(dp(112),dp(43)));
         Button save=button("💾 Сохранить",this::saveScene);
         top.addView(save,new LinearLayout.LayoutParams(dp(112),dp(43)));
         Button undo=button("↶",this::undoAction);
@@ -447,7 +454,7 @@ public class EditorActivity extends Activity {
         HorizontalScrollView categoryScroll=new HorizontalScrollView(this);
         categoryScroll.setHorizontalScrollBarEnabled(false);
         LinearLayout categoryRow=row();
-        for(String category:new String[]{"Здания","Детали","Мосты","Фундаменты","Декор","Рельеф","Участки","Коллизии","Вода","Дороги","Текстуры","Проект"}){
+        for(String category:new String[]{"Стройка","Рельеф","Здания","Детали","Мосты","Фундаменты","Декор","Участки","Коллизии","Вода","Дороги","Текстуры","Проект"}){
             Button tab=button(category,()->showPalette(category));
             LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(dp(98),dp(44));
             p.setMargins(dp(2),0,dp(2),0);categoryRow.addView(tab,p);
@@ -470,7 +477,7 @@ public class EditorActivity extends Activity {
         drawerParams.bottomMargin=dp(8);
         root.addView(toolDrawer,drawerParams);
         toolDrawer.setVisibility(View.GONE);
-        showPalette("Здания");
+        showPalette("Стройка");
 
         // Tiny, context-sensitive inspector. No selection => no inspector at all.
         inspectorPanel=new LinearLayout(this);
@@ -605,8 +612,36 @@ public class EditorActivity extends Activity {
         paletteItems.removeAllViews();
         activeLandscapePanel=null;
         activePaletteCategory=category;
-        if("Здания".equals(category)){
-            addPaletteOption("🏗 Phoenix Builder UV44 · стройка",this::openPhoenixBuilder);
+        if("Стройка".equals(category)){
+            addPaletteOption("🏗 СТРОЙКА НА ЭТОМ ЖЕ ХОЛСТЕ — OE",()->{
+                message("Стройка и ландшафт в одном нативном 3D-мире OE");
+            });
+            addPaletteOption("📚 Детали оригинальной библиотеки UV44",
+                this::browseNativeUv44Library);
+            addPaletteOption("🧱 Стена",()->enterPlaceMode(10,null));
+            addPaletteOption("▤ Пол",()->enterPlaceMode(11,null));
+            addPaletteOption("⌂ Крыша",()->enterPlaceMode(12,null));
+            addPaletteOption("▯ Дверная рама",()->enterPlaceMode(13,null));
+            addPaletteOption("▣ Окно",()->enterPlaceMode(14,null));
+            addPaletteOption("▥ Колонна",()->enterPlaceMode(15,null));
+            addPaletteOption("↗ Лестница",()->enterPlaceMode(16,null));
+            addPaletteOption("🧱 Фундамент",()->enterPlaceMode(19,null));
+            addPaletteOption("📦 Мой GLB / glTF / VOX",this::pickGlb);
+            addPaletteOption("↔ Двигать выбранную деталь",()->changeGizmoMode(0));
+            addPaletteOption("⟳ Повернуть выбранную деталь",()->changeGizmoMode(1));
+            addPaletteOption("⤢ Масштаб выбранной детали",()->changeGizmoMode(2));
+            addPaletteOption("ℹ UV44: перенос оригинальных процедур редактирования "+
+                "в нативное ядро будет поэтапным",()->new AlertDialog.Builder(this)
+                .setTitle("Один холст: Стройка + Ландшафт")
+                .setMessage("Здесь работают нативные инструменты OE и "+
+                    "оригинальная библиотека деталей GLB из UV44. "+
+                    "Полный перенос процедурной стройки, персонажа и дрона "+
+                    "из UV44 ещё не завершён. Старый Builder доступен "+
+                    "только в разделе «Проект» для совместимости.")
+                .setPositiveButton("Понятно",null).show());
+        }else if("Здания".equals(category)){
+            addPaletteOption("🏗 Детали стройки в общем мире",()->
+                showPalette("Стройка"));
             addPaletteOption("✏ Редактировать выделенный дом UV44",
                 this::editSelectedPhoenixHouse);
             addPaletteOption("+ Таверна",()->enterPlaceMode(0,null));
@@ -789,7 +824,10 @@ public class EditorActivity extends Activity {
                     +"Draco пока не поддерживается. KTX2 BasisU ETC1S/UASTC LDR -> ETC2 подключён (тест).")
                 .setPositiveButton("Понятно",null).show());
         }else if("Проект".equals(category)){
-            addPaletteOption("🏗 Строительство UV44 в OE",this::openPhoenixBuilder);
+            addPaletteOption("🏗 Стройка на общем холсте",()->
+                showPalette("Стройка"));
+            addPaletteOption("📦 Оригинальный UV44 · старый режим "+
+                "для сохранений (совместимость)",this::openPhoenixBuilder);
             addPaletteOption("✏ Редактировать выделенный дом UV44",
                 this::editSelectedPhoenixHouse);
             addPaletteOption("🧠 Ядро игры · проверить",this::showRuntimeCoreStatus);

@@ -67,8 +67,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Compile shared collision nodes and validate T-junction atomicity
         run: |
-          g++ -std=c++17 -O2 -Wall -Wextra -Werror -pedantic \\
-            tests/walk_barrier_linked_nodes_stage11_smoke.cpp \\
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -pedantic \
+            tests/walk_barrier_linked_nodes_stage11_smoke.cpp \
             -o /tmp/oe-linked-walls
           /tmp/oe-linked-walls
   device-quality:

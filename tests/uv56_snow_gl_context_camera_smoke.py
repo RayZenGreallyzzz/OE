@@ -28,21 +28,20 @@ draw=cpp.split('JNIEXPORT void JNICALL Java_game_oe_editor_EditorActivity_native
 assert "if(!gNeutralLandPreview){" in draw
 assert "drawPrecisionPaint(vp);" in draw.split("if(!gNeutralLandPreview){",1)[1].split("}",1)[0]
 assert "drawMaterialLayers(vp);" in draw.split("if(!gNeutralLandPreview){",1)[1].split("}",1)[0]
+# Stage14: an off-ground paint gesture reports a miss but must never
+# become an orbit (the previous camera fallback broke brush painting).
 for q in (
     "nativeGroundHitAtScreen(px,cy)",
-    "paintDragCamera=!nativeGroundHitAtScreen(px,cy)",
-    "if(paintDragCamera){",
-    "if(!paintDragCamera&&!wasMultiTouch",
-    "if(!cameraOnly&&paintStrokeFailed)",
-    "void reverseCamera(boolean reverse)",
+    "if(!nativeGroundHitAtScreen(px,cy))",
+    "paintFailureReason=1;",
+    "if(!paintStrokeFailed &&",
 ):
-    if q=="void reverseCamera(boolean reverse)":
-        assert q in panel
-    else:
-        assert q in java, ("touch gesture must not paint sky",q)
+    assert q in java, ("paint gesture must reject sky without camera orbit",q)
+assert "paintDragCamera" not in java
+assert "void reverseCamera(boolean reverse)" in panel
 assert "uv56ReverseOrbit=false;" in java
 assert '"Рельеф".equals(activePaletteCategory)&&drawerOpen' in java
 assert "MAX_TEXTURES=32" in arch
 assert "version>=1&&version<=13" in arch
 print("OE_VIDEO_BLACK_SNOW_FIX_OK: EGL layer cache recovery, blank sky look-only, "
-      "camera direction toggle, user paint tiles preserved, R5.7 scenes compatible")
+      "camera direction toggle, no paint-orbit fallback, user tiles preserved")

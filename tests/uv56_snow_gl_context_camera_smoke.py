@@ -40,7 +40,8 @@ for q in (
 assert "paintDragCamera" not in java
 assert "void reverseCamera(boolean reverse)" in panel
 assert "uv56ReverseOrbit=false;" in java
-assert '"Рельеф".equals(activePaletteCategory)&&drawerOpen' in java
+assert 'if("Рельеф".equals(activePaletteCategory)){' in java
+assert 'if(drawerOpen)showPalette("Рельеф");' in java
 assert "MAX_TEXTURES=32" in arch
 assert "version>=1&&version<=13" in arch
 print("OE_VIDEO_BLACK_SNOW_FIX_OK: EGL layer cache recovery, blank sky look-only, "
